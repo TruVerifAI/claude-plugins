@@ -31,7 +31,32 @@ malformed-URL error.
 [truverif.ai/settings/api-keys](https://truverif.ai/settings/api-keys)),
 click **Save configuration**, then run `/reload-plugins` again.
 
-**5. Verify everything's wired up:** run `/truverifai-setup`.
+**5. Enable auto-update (recommended).** While you're in the `/plugin`
+UI, click the **Marketplaces** tab, select **truverifai**, and toggle
+**Enable auto-update** on. This is a one-time setting — once enabled,
+future plugin updates (new skills, bug fixes, new tools) flow in
+automatically on the next Claude Code session start. Without this,
+you'd have to run the three-command manual update sequence below
+every time a new version ships.
+
+**6. Verify everything's wired up:** run `/truverifai-setup`.
+
+## Manual update (only if you skipped Step 5)
+
+If you didn't enable auto-update, pull the latest release with these
+three commands (submit each on its own):
+
+```
+/plugin marketplace update truverifai
+```
+
+```
+/plugin install truverifai@truverifai
+```
+
+```
+/reload-plugins
+```
 
 ## Uninstall
 
@@ -52,18 +77,11 @@ Optional — remove the marketplace registration too:
 /plugin marketplace remove truverifai
 ```
 
-To update an installed plugin to the latest release instead of doing a
-full uninstall + reinstall:
-
-```
-/plugin update truverifai
-```
-
 ## What's in here
 
 | Plugin | Description |
 |---|---|
-| [`truverifai`](./plugins/truverifai) | Multi-model second-opinion deliberation for high-stakes coding decisions. Three skills (audit / deliberate / synthesize) route your agent to TruVerifAI's MCP server, where four frontier models reason independently and conflict-target each other's positions to produce decision-grade output. |
+| [`truverifai`](./plugins/truverifai) | Multi-model second-opinion deliberation for high-stakes coding decisions. Four skills — three primary (audit / deliberate / synthesize) that route your agent to TruVerifAI's MCP server, plus a follow-up skill (record-outcome) that fires after acting on a response. Four frontier models reason independently and conflict-target each other's positions to produce decision-grade output; outcome reporting closes the loop with measurable per-call impact data on the dashboard. |
 
 ## Setup guide
 
