@@ -1,7 +1,7 @@
 {
   "name": "truverifai",
   "displayName": "TruVerifAI",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Multi-model second-opinion deliberation for high-stakes coding decisions. Three skills (audit / deliberate / synthesize) route to the TruVerifAI MCP server, where four frontier models reason independently and conflict-target each other's positions to produce decision-grade output.",
   "author": {
     "name": "TruVerifAI",
@@ -29,13 +29,8 @@
       "type": "string",
       "title": "TruVerifAI API key",
       "description": "Your tvai_... key. Sign up at https://truverif.ai/signup and generate a key at https://truverif.ai/settings/api-keys.",
-      "sensitive": true
-    },
-    "enable_forced_eval": {
-      "type": "boolean",
-      "title": "Enable forced-eval hook (opt-in)",
-      "description": "Adds a small per-prompt overhead (~2s, no API cost) but improves how reliably your agent reaches for TruVerifAI on relevant prompts. Recommended only if you've observed your agent skipping TruVerifAI invocations despite the skills being installed. Default off.",
-      "default": false
+      "sensitive": true,
+      "required": true
     },
     "enable_adherence_telemetry": {
       "type": "boolean",

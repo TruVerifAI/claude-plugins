@@ -14,20 +14,29 @@ Each skill calls the matching MCP tool with structured inputs (`proposed_action`
 
 ## Install
 
+Submit each of these slash commands on its own — Claude Code parses one slash command per submission, so pasting them all in a single block produces a malformed-URL error.
+
+**1. Add the TruVerifAI marketplace:**
+
 ```
-/plugin marketplace add truverifai/claude-plugins
+/plugin marketplace add https://github.com/TruVerifAI/claude-plugins.git
+```
+
+**2. Install the plugin:**
+
+```
 /plugin install truverifai@truverifai
 ```
 
-You'll be prompted for your TruVerifAI API key during install. Sign up at https://truverif.ai/signup and generate a key at https://truverif.ai/settings/api-keys.
+**3. Reload Claude Code's plugin set:**
 
-After install, run `/truverifai-setup` once to verify connectivity and configure optional settings.
+```
+/reload-plugins
+```
 
-## Optional: forced-eval hook
+**4. Configure your API key.** Run `/plugin`, click **Installed** → **TruVerifAI**, paste your `tvai_…` key (generate one at https://truverif.ai/settings/api-keys), click **Save configuration**, then run `/reload-plugins` again.
 
-This plugin ships with an opt-in `UserPromptSubmit` hook that nudges your agent to evaluate skill relevance before responding. It adds about 2 seconds of latency per prompt with no API cost. Enable it during install (toggle in `userConfig`) or via `/truverifai-setup` if you've observed your agent skipping TruVerifAI invocations despite the skills being installed.
-
-Default: off. We measured empirically before shipping this — directive descriptions alone are usually sufficient. Turn the hook on if you have a specific reliability concern.
+**5. Verify everything's wired up:** run `/truverifai-setup`. It pings the MCP server, confirms the API key is valid, and reports which skills are loaded.
 
 ## Adherence telemetry
 

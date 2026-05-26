@@ -4,15 +4,34 @@ The official Claude Code marketplace for [TruVerifAI](https://truverif.ai).
 
 ## Install
 
-In Claude Code:
+Submit each slash command on its own — Claude Code parses one slash
+command per submission. Pasting them all together produces a
+malformed-URL error.
+
+**1. Add the marketplace:**
 
 ```
-/plugin marketplace add TruVerifAI/claude-plugins
+/plugin marketplace add https://github.com/TruVerifAI/claude-plugins.git
+```
+
+**2. Install the plugin:**
+
+```
 /plugin install truverifai@truverifai
 ```
 
-You'll be prompted for your TruVerifAI API key during install. Get one at
-[truverif.ai/settings/api-keys](https://truverif.ai/settings/api-keys).
+**3. Reload Claude Code's plugin set:**
+
+```
+/reload-plugins
+```
+
+**4. Configure your API key.** Run `/plugin`, click **Installed** →
+**TruVerifAI**, paste your `tvai_…` key (generate one at
+[truverif.ai/settings/api-keys](https://truverif.ai/settings/api-keys)),
+click **Save configuration**, then run `/reload-plugins` again.
+
+**5. Verify everything's wired up:** run `/truverifai-setup`.
 
 ## What's in here
 
