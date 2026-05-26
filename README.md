@@ -33,6 +33,32 @@ click **Save configuration**, then run `/reload-plugins` again.
 
 **5. Verify everything's wired up:** run `/truverifai-setup`.
 
+## Uninstall
+
+To remove the plugin (and optionally the marketplace registration), submit
+each slash command on its own:
+
+```
+/plugin uninstall truverifai@truverifai
+```
+
+```
+/reload-plugins
+```
+
+Optional — remove the marketplace registration too:
+
+```
+/plugin marketplace remove truverifai
+```
+
+To update an installed plugin to the latest release instead of doing a
+full uninstall + reinstall:
+
+```
+/plugin update truverifai
+```
+
 ## What's in here
 
 | Plugin | Description |
@@ -52,7 +78,7 @@ trigger-rule paste targets.
 
 - [TruVerifAI homepage](https://truverif.ai)
 - [Public MCP docs](https://truverif.ai/docs/mcp)
-- [Skills guide](https://truverif.ai/docs/mcp) (when published)
+- [Skills guide](https://truverif.ai/docs/mcp)
 
 ## Support
 

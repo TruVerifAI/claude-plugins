@@ -38,6 +38,30 @@ Submit each of these slash commands on its own — Claude Code parses one slash 
 
 **5. Verify everything's wired up:** run `/truverifai-setup`. It pings the MCP server, confirms the API key is valid, and reports which skills are loaded.
 
+## Uninstall
+
+To remove the plugin, submit each slash command on its own:
+
+```
+/plugin uninstall truverifai@truverifai
+```
+
+```
+/reload-plugins
+```
+
+Optional — also remove the marketplace registration:
+
+```
+/plugin marketplace remove truverifai
+```
+
+To pull the latest release without doing a full uninstall + reinstall:
+
+```
+/plugin update truverifai
+```
+
 ## Adherence telemetry
 
 The plugin includes a `PostToolUse` hook that detects when your agent runs `git commit` and reports the timing (not content) to truverif.ai. This populates the adherence card on https://truverif.ai/settings/mcp showing:
