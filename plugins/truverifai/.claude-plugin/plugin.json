@@ -1,7 +1,7 @@
 {
   "name": "truverifai",
   "displayName": "TruVerifAI",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Multi-model second-opinion deliberation for high-stakes coding decisions. Three skills (audit / deliberate / synthesize) route to the TruVerifAI MCP server, where four frontier models reason independently and conflict-target each other's positions to produce decision-grade output.",
   "author": {
     "name": "TruVerifAI",
