@@ -37,7 +37,9 @@ Submit each of these slash commands on its own — Claude Code parses one slash 
 
 **4. Configure your API key.** Run `/plugin`, click **Installed** → **TruVerifAI**, paste your `tvai_…` key (generate one at https://truverif.ai/settings/api-keys), click **Save configuration**, then run `/reload-plugins` again.
 
-**5. Verify everything's wired up:** run `/truverifai-setup`. It pings the MCP server, confirms the API key is valid, and reports which skills are loaded.
+**5. Enable auto-update (recommended).** While you're in the `/plugin` UI, click the **Marketplaces** tab, select **truverifai**, and toggle **Enable auto-update** on. This is a one-time setting — once enabled, future plugin updates (new skills, bug fixes, new tools) flow in automatically on the next Claude Code session start. Without this, you'd have to run `/plugin marketplace update truverifai && /plugin install truverifai@truverifai && /reload-plugins` manually every time a new version ships.
+
+**6. Verify everything's wired up:** run `/truverifai-setup`. It pings the MCP server, confirms the API key is valid, and reports which skills are loaded.
 
 ## Uninstall
 
