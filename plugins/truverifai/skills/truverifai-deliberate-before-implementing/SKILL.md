@@ -40,6 +40,19 @@ You're about to commit to a design choice where multiple approaches are defensib
 
 4. **Use the synthesized conclusion to make your decision.** If `agreement_score < 0.7` AND severity tags on the dimensions are critical, treat the decision as still open and either gather more context or escalate to the user.
 
+## After acting on the response
+
+Once you've committed to a design choice — whether you went with the deliberation's recommendation, picked a different option, or escalated — call `mcp__truverifai__record_outcome` to report the outcome:
+
+- **call_id** — the `request_id` from the deliberate response (visible in `_meta.post_action.args.call_id` or in `usage.request_id`).
+- **useful** — `true` if the deliberation informed your decision in any way (caught something, confirmed an approach, surfaced a tradeoff you hadn't considered). `false` only if it was noise or duplicated what you already knew.
+- **changed_decision** — `true` if your action AFTER reading the deliberation differs from what you were about to do BEFORE the call. `false` if you proceeded with your original approach (even when the call was useful as confirmation).
+- **impact** — your read of decision blast radius: `high` (hard to reverse / safety boundary / load-bearing), `medium` (recoverable with effort), `low` (trivially reversible).
+- **category** — kind of decision: `security`, `billing_credits`, `data_modeling`, `api_contract`, `architecture`, `performance`, `dependency`, `refactor`, `error_handling`, `testing`, `deployment_ops`, or `other`.
+- **notes** — required when `useful=false` OR `changed_decision=false` OR `category='other'`. 1-2 sentences on the specific reason. **Do NOT include confidential or code-specific details** — no file paths, function names, secrets, or proprietary identifiers. Describe the decision in general terms only.
+
+This is a free call (no credits charged). The user sees the aggregate on their TruVerifAI dashboard; outcome reporting is how they evaluate whether the tool is worth keeping.
+
 ## Worked examples
 
 - `examples/schema-design.md` — database schema choice (column types + index strategy)

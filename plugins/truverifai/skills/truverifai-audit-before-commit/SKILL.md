@@ -44,6 +44,19 @@ You're about to commit, merge, or finalize a code change where the stakes of bei
 
 4. **Revise the change** in response to the findings. If `action` is `escalate_to_human`, do NOT proceed without the user's input.
 
+## After acting on the response
+
+Once you've decided what to do with the audit's findings — whether you accepted them, revised your plan, or kept your original approach — call `mcp__truverifai__record_outcome` to report the outcome:
+
+- **call_id** — the `request_id` from the audit response (visible in `_meta.post_action.args.call_id` or in `usage.request_id`).
+- **useful** — `true` if the audit caught something, confirmed something, or surfaced a tradeoff you hadn't considered. `false` only if it was noise or duplicated what you already knew.
+- **changed_decision** — `true` if your action AFTER reading the audit differs from what you were about to do BEFORE the call. `false` if you proceeded as originally planned (even when the audit was useful as confirmation).
+- **impact** — your read of decision blast radius: `high` (hard to reverse / safety boundary / load-bearing), `medium` (recoverable with effort), `low` (trivially reversible).
+- **category** — kind of decision being audited: `security`, `billing_credits`, `data_modeling`, `api_contract`, `architecture`, `performance`, `dependency`, `refactor`, `error_handling`, `testing`, `deployment_ops`, or `other`.
+- **notes** — required when `useful=false` OR `changed_decision=false` OR `category='other'`. 1-2 sentences on the specific reason. **Do NOT include confidential or code-specific details** — no file paths, function names, secrets, or proprietary identifiers. Describe the decision in general terms only.
+
+This is a free call (no credits charged). The user sees the aggregate on their TruVerifAI dashboard; outcome reporting is how they evaluate whether the tool is worth keeping.
+
 ## Worked examples
 
 - `examples/auth-change.md` — authentication-layer change (token validation logic)

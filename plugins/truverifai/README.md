@@ -4,13 +4,14 @@ Multi-model second-opinion deliberation for high-stakes coding decisions. Routes
 
 ## What this plugin does
 
-When you install this plugin, your Claude Code agent gets three skills that auto-activate at decision moments:
+When you install this plugin, your Claude Code agent gets four skills that auto-activate at decision moments — three that fire BEFORE a decision and one that fires AFTER:
 
 - **`truverifai-audit-before-commit`** — Use before committing a code change that's hard to undo, touches a security/safety boundary (auth, crypto, input validation, payment, PII, persistence), or replaces load-bearing logic. Four frontier models stress-test it for blind spots.
 - **`truverifai-deliberate-before-implementing`** — Use when about to commit to a design choice with multiple defensible answers (schema design, API shape, library/framework selection, caching strategy, concurrency model). Four models reason independently, then route conflicts back to each model for revision.
 - **`truverifai-synthesize-quick-check`** — Use for quick sanity checks (idiomatic patterns, bounded library choices, "is there a standard way to do X?" questions). Faster than the other two.
+- **`truverifai-record-outcome-after-acting`** (V1.1) — Fires AFTER acting on a response from any of the three above. Reports whether the deliberation was useful and whether it changed the agent's decision (free of credits). Powers the Impact card on the dashboard so you can see what % of MCP calls actually mattered.
 
-Each skill calls the matching MCP tool with structured inputs (`proposed_action`, `relevant_code`, `architectural_context`, etc.) and returns a decision-grade response: agreement signal, dimensions of disagreement, severity tags, recommended action class.
+Each of the three primary skills calls the matching MCP tool with structured inputs (`proposed_action`, `relevant_code`, `architectural_context`, etc.) and returns a decision-grade response: agreement signal, dimensions of disagreement, severity tags, recommended action class. The follow-up skill calls `record_outcome` with the prior call's `request_id` plus the agent's self-reported outcome.
 
 ## Install
 

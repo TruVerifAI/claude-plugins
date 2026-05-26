@@ -36,6 +36,19 @@ You want a quick multi-model sanity check before going with an approach. Lower s
 
 5. **Apply the answer.** For low-stakes decisions this is usually the end of the loop. If the synthesize result raises questions you didn't expect, escalate to deliberate.
 
+## After acting on the response
+
+Once you've used (or rejected) the synthesized answer, call `mcp__truverifai__record_outcome` to report the outcome:
+
+- **call_id** — the `request_id` from the synthesize response (visible in `_meta.post_action.args.call_id` or in `usage.request_id`).
+- **useful** — `true` if the answer informed your decision in any way (confirmed your approach, surfaced an alternative, caught an edge case). `false` only if it was noise or duplicated what you already knew.
+- **changed_decision** — `true` if your action AFTER reading the answer differs from what you were about to do BEFORE the call. `false` if you proceeded as originally planned. Synthesize is the fast-confirmation path, so `changed_decision=false` is common and informative — it means the existing approach was right.
+- **impact** — your read of decision blast radius: `high` (hard to reverse / safety boundary / load-bearing — though if it were truly high-impact you should have used `deliberate` instead), `medium` (recoverable with effort), `low` (trivially reversible). Most synthesize calls are `low`.
+- **category** — kind of decision: `security`, `billing_credits`, `data_modeling`, `api_contract`, `architecture`, `performance`, `dependency`, `refactor`, `error_handling`, `testing`, `deployment_ops`, or `other`.
+- **notes** — required when `useful=false` OR `changed_decision=false` OR `category='other'`. 1-2 sentences on the specific reason. **Do NOT include confidential or code-specific details** — no file paths, function names, secrets, or proprietary identifiers. Describe the decision in general terms only.
+
+This is a free call (no credits charged). The user sees the aggregate on their TruVerifAI dashboard; outcome reporting is how they evaluate whether the tool is worth keeping.
+
 ## Worked examples
 
 - `examples/idiomatic-pattern.md` — language-idiom question

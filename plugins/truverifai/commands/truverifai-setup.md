@@ -19,11 +19,12 @@ If the call times out: report "✗ Could not reach mcp.truverif.ai. Check your n
 
 ## Step 3 — Report which skills are installed
 
-Confirm the three skills are present: `truverifai-audit-before-commit`, `truverifai-deliberate-before-implementing`, `truverifai-synthesize-quick-check`. List them to the user with one-line summaries:
+Confirm the four skills are present: `truverifai-audit-before-commit`, `truverifai-deliberate-before-implementing`, `truverifai-synthesize-quick-check`, `truverifai-record-outcome-after-acting`. List them to the user with one-line summaries:
 
 - `audit` — Before committing high-stakes changes. ~60-120s.
 - `deliberate` — For design choices with multiple defensible answers. ~60-120s.
 - `synthesize` — Quick sanity checks. ~15-30s.
+- `record-outcome` (V1.1) — AFTER acting on any of the three above; reports whether the deliberation mattered. Free of credits.
 
 ## Step 4 — Adherence telemetry status
 
@@ -40,6 +41,6 @@ If `false`: tell the user telemetry is off:
 ## Step 5 — Final summary
 
 Report a one-paragraph summary:
-> "TruVerifAI plugin is installed and connected. Three skills are active; adherence telemetry is [on/off]. Your agent will reach for TruVerifAI automatically when it encounters decision moments matching the skill triggers. Run `/truverifai-setup` again any time to re-verify."
+> "TruVerifAI plugin is installed and connected. Four skills are active (three primary plus the V1.1 record-outcome follow-up); adherence telemetry is [on/off]. Your agent will reach for TruVerifAI automatically when it encounters decision moments matching the skill triggers, and will report outcomes back to your dashboard after acting on responses. Run `/truverifai-setup` again any time to re-verify."
 
 Then end the command. Do not start a conversation thread beyond the setup report unless the user asks a follow-up.
