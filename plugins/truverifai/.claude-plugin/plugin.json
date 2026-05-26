@@ -1,0 +1,47 @@
+{
+  "name": "truverifai",
+  "displayName": "TruVerifAI",
+  "version": "0.1.0",
+  "description": "Multi-model second-opinion deliberation for high-stakes coding decisions. Three skills (audit / deliberate / synthesize) route to the TruVerifAI MCP server, where four frontier models reason independently and conflict-target each other's positions to produce decision-grade output.",
+  "author": {
+    "name": "TruVerifAI",
+    "email": "support@truverif.ai",
+    "url": "https://truverif.ai"
+  },
+  "homepage": "https://truverif.ai/mcp",
+  "repository": "https://github.com/truverifai/claude-plugins",
+  "license": "MIT",
+  "keywords": [
+    "code-review",
+    "audit",
+    "deliberation",
+    "mcp",
+    "multi-model",
+    "second-opinion",
+    "claude-code"
+  ],
+  "mcpServers": "./.mcp.json",
+  "skills": "./skills/",
+  "commands": ["./commands/truverifai-setup.md"],
+  "hooks": "./hooks.json",
+  "userConfig": {
+    "api_token": {
+      "type": "string",
+      "title": "TruVerifAI API key",
+      "description": "Your tvai_... key. Sign up at https://truverif.ai/signup and generate a key at https://truverif.ai/settings/api-keys.",
+      "sensitive": true
+    },
+    "enable_forced_eval": {
+      "type": "boolean",
+      "title": "Enable forced-eval hook (opt-in)",
+      "description": "Adds a small per-prompt overhead (~2s, no API cost) but improves how reliably your agent reaches for TruVerifAI on relevant prompts. Recommended only if you've observed your agent skipping TruVerifAI invocations despite the skills being installed. Default off.",
+      "default": false
+    },
+    "enable_adherence_telemetry": {
+      "type": "boolean",
+      "title": "Enable adherence telemetry (timing only)",
+      "description": "When enabled, the plugin reports the TIMING of git commits the agent runs to TruVerifAI. NEVER reported: commit messages, file paths, diff content, branch names, repo identifiers, working directory, raw commands, or commit SHAs. Used to compute the adherence card on https://truverif.ai/settings/mcp showing 'agent committed N times this week; invoked TruVerifAI M times'. Set to false to opt out entirely. Default true. See the data-handling document at https://truverif.ai/data-handling for the full disclosure.",
+      "default": true
+    }
+  }
+}

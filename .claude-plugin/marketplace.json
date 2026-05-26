@@ -1,0 +1,19 @@
+{
+  "name": "truverifai",
+  "owner": {
+    "name": "TruVerifAI",
+    "email": "support@truverif.ai",
+    "url": "https://truverif.ai"
+  },
+  "metadata": {
+    "description": "Multi-model second-opinion deliberation for high-stakes coding decisions. Three skills route your agent to TruVerifAI's MCP server (audit / deliberate / synthesize); the plugin ships with adherence telemetry.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "truverifai",
+      "source": "./plugins/truverifai",
+      "description": "Multi-model second-opinion deliberation for high-stakes coding decisions"
+    }
+  ]
+}
