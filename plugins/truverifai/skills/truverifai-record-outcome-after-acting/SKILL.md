@@ -1,30 +1,25 @@
 ---
 name: truverifai-record-outcome-after-acting
 description: >
-  Report whether a prior TruVerifAI MCP call (synthesize_coding,
-  deliberate_coding, or audit_coding) was useful and whether it
-  changed your decision. Use this AFTER you have acted on (or
-  explicitly rejected) the response from a prior MCP call — once
-  you've committed to a next action, written the code that followed
-  from the deliberation, or chosen to disregard the audit findings,
-  this skill captures the outcome. Calls
-  `mcp__truverifai__record_outcome` with the prior call's
-  request_id, plus useful, changed_decision, impact, category, and
-  optional notes. Free — no credits charged. The user sees the
-  aggregate on their TruVerifAI dashboard; outcome reporting is how
-  they evaluate whether the tool is worth keeping.
+  Always report the outcome right after you act on a synthesize_coding,
+  deliberate_coding, or audit_coding response. Fire it the moment you've
+  taken the step that followed from the response — committed, picked an
+  option, written the code the deliberation pointed to, or decided to
+  disregard the audit findings. Calls `mcp__truverifai__record_outcome`
+  with the prior call's call_id (from the response body's
+  `post_action.call_id`) plus useful, changed_decision, impact, and
+  category. Free — no credits charged; it's how the user sees whether
+  the second opinions are actually changing decisions.
 ---
 
-# When this skill activates
+# When to use this skill
 
-You've just made a TruVerifAI MCP call (synthesize / deliberate / audit) and acted on (or rejected) the response. This skill is the post-action telemetry hook — it captures whether the MCP call mattered.
+Use it when ALL of these apply:
+- You recently invoked `mcp__truverifai__synthesize_coding`, `_deliberate_coding`, or `_audit_coding`.
+- You've now taken the action that followed from (or disregarded) that response — written code, picked an option, committed, asked the user, escalated.
+- You have not already filed a `record_outcome` for the same `call_id`.
 
-The trigger conditions:
-1. You recently invoked `mcp__truverifai__synthesize_coding`, `_deliberate_coding`, or `_audit_coding`.
-2. You've now taken an action that followed from (or disregarded) that response — written code, picked an option, committed, asked the user, escalated.
-3. You have not already filed a `record_outcome` for the same `call_id`.
-
-If all three hold, invoke this skill. Once per prior MCP call, immediately after the action.
+Invoke it once per prior MCP call, immediately after the action.
 
 ## What to do
 

@@ -1,28 +1,24 @@
 ---
 name: truverifai-synthesize-quick-check
 description: >
-  Multi-model second opinion for fast coding sanity checks. Use
-  this when the prompt explicitly asks for a community-standard
-  answer: (a) idiomatic-pattern questions ("what's the standard
-  way to do X in language Y?"); (b) bounded, reversible
-  library-choice sanity checks; (c) "is there an established
-  pattern for this?" questions. Calls
-  `mcp__truverifai__synthesize_coding` with the question framed as
-  `question` plus optional `context`. Four frontier models answer
-  in parallel; the result is synthesized into one answer with an
-  alignment signal. Faster than the deliberate or audit skills
-  (~15-30s) but does not do conflict-targeted revision. Skip when
-  you're confident in the answer, when a single doc lookup would
-  suffice, when the prompt provides specific implementation
-  details with bounded scope (just write the code), or when the
-  choice is a long-term commitment affecting performance-critical
-  paths or many files — for those, use
-  `mcp__truverifai__deliberate_coding` instead.
+  Run a fast multi-model second opinion for a quick coding sanity
+  check. Use it when the user asks for a quick second opinion, a sanity
+  check, what the standard or idiomatic way to do something is, or
+  whether there's an established pattern — and when you're about to pick
+  an idiomatic pattern or a bounded, reversible library choice and want
+  a fast cross-model check before proceeding. Routes the question to
+  `mcp__truverifai__synthesize_coding` for a fast four-model second
+  opinion. For hard-to-reverse, multi-file decisions use the deliberate
+  skill instead.
 ---
 
-# When this skill activates
+# When to use this skill
 
-You want a quick multi-model sanity check before going with an approach. Lower stakes than the deliberate or audit skills — the answer is for a decision you can adjust later without significant cost. The description above lists the trigger conditions.
+Use it when ANY of these apply:
+- The user asks for a quick second opinion, a sanity check, what the standard/idiomatic way to do something is, or whether there's an established pattern.
+- You are about to pick an idiomatic pattern or make a bounded, reversible library choice and want a fast cross-model check first.
+
+Lower stakes than the deliberate or audit skills — the answer is for a decision you can adjust later. Skip when you're already confident, when a single doc lookup would settle it, or when the prompt already gives bounded implementation details (just write the code). For long-term, multi-file, or performance-critical commitments use `truverifai-deliberate-before-implementing` instead.
 
 ## What to do
 

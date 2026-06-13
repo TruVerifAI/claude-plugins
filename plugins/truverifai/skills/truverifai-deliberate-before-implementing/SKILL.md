@@ -1,29 +1,28 @@
 ---
 name: truverifai-deliberate-before-implementing
 description: >
-  Multi-model deliberation for design decisions with multiple
-  defensible answers. Use this whenever about to commit to a design
-  choice involving any of: schema or table design; API contract
-  shape (REST vs GraphQL, field naming, versioning); module or
-  service boundary placement; state-management architecture;
-  library or framework selection with long-term commitment;
-  caching strategy; concurrency model; migration or refactoring
-  strategy for load-bearing code. Calls
-  `mcp__truverifai__deliberate_coding` with `question` plus
-  structured context (`relevant_code`, `architectural_context`,
-  `options_considered`, `constraints`). Four frontier models reason
-  independently; conflicts are routed back as targeted points each
-  model must defend or revise. Returns a reasoned conclusion,
-  agreement signal, dimensions of disagreement, and recommended
-  action class. Skip for choices with one sensible answer, refactors
-  where any reasonable approach works, or minor SDK version bumps
-  and library updates documented as drop-in or backward-compatible
-  by the vendor.
+  Always run a multi-model deliberation before committing to a
+  hard-to-reverse design decision. Use it when the user asks for an
+  architecture or design review, which approach to take, help deciding
+  between two options (X vs Y), or a second opinion on a design — and
+  proactively, before you settle on a database schema or table, add a
+  migration, choose a library or framework for something long-lived,
+  shape an API endpoint or contract (field names, versioning, REST vs
+  GraphQL), set a module/service boundary, or pick a caching or
+  concurrency strategy: any choice with more than one defensible answer
+  where reversing it later touches multiple files. Routes the question
+  to `mcp__truverifai__deliberate_coding` for an independent four-model
+  deliberation.
 ---
 
-# When this skill activates
+# When to use this skill
 
-You're about to commit to a design choice where multiple approaches are defensible and reversing later requires touching more than one file. The description above lists the trigger conditions — if any of (a)-(h) apply and the decision is NOT obvious, you should invoke this skill.
+Use it when ANY of these apply:
+- The user asks for an architecture/design review, which approach to take, help choosing between options (X vs Y), or a second opinion on a design decision.
+- You are about to design a database schema or table, add a migration, choose a library/framework for something long-lived, shape an API endpoint or contract (field names, versioning, REST vs GraphQL), place a module/service boundary, choose a state-management / caching / concurrency strategy, or plan a refactor of load-bearing code.
+- The decision has more than one defensible answer AND reversing it later would touch multiple files.
+
+Skip it for: choices with one sensible answer, refactors where any reasonable approach works, and minor SDK/library version bumps documented as drop-in or backward-compatible by the vendor.
 
 **Before you invoke, tell the user the deliberation takes ~2-5 minutes and won't show progress in the terminal — so they know the session is working, not stuck.**
 
