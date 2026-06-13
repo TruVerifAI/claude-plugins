@@ -28,7 +28,7 @@ If all three hold, invoke this skill. Once per prior MCP call, immediately after
 
 ## What to do
 
-1. **Find the `call_id`.** Look in the prior MCP response's `_meta.post_action.args.call_id` field — the server pre-populates it there. If you can't find `_meta`, fall back to `usage.request_id` (same value, alternate location). The format is `mcp_<32 hex chars>`.
+1. **Find the `call_id`.** Read it from the response **body's** top-level `post_action.call_id` field — the server pre-populates it there. The same value is also at `usage.request_id`. The format is `mcp_<32 hex chars>`. (It is in the response body, NOT in `_meta` — clients such as Claude Code do not surface tool-result `_meta` to the agent, so don't look there.)
 
 2. **Call `mcp__truverifai__record_outcome`** with these fields:
    - `call_id` — the value from step 1

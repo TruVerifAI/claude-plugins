@@ -44,7 +44,7 @@ You're about to commit to a design choice where multiple approaches are defensib
 
 Once you've committed to a design choice — whether you went with the deliberation's recommendation, picked a different option, or escalated — call `mcp__truverifai__record_outcome` to report the outcome:
 
-- **call_id** — the `request_id` from the deliberate response (visible in `_meta.post_action.args.call_id` or in `usage.request_id`).
+- **call_id** — the `request_id` from the deliberate response: the top-level `post_action.call_id` field in the response body (or equivalently `usage.request_id`). It's in the body, not `_meta` — clients like Claude Code don't surface tool-result `_meta` to the agent.
 - **useful** — `true` if the deliberation informed your decision in any way (caught something, confirmed an approach, surfaced a tradeoff you hadn't considered). `false` only if it was noise or duplicated what you already knew.
 - **changed_decision** — `true` if your action AFTER reading the deliberation differs from what you were about to do BEFORE the call. `false` if you proceeded with your original approach (even when the call was useful as confirmation).
 - **impact** — your read of decision blast radius: `high` (hard to reverse / safety boundary / load-bearing), `medium` (recoverable with effort), `low` (trivially reversible).

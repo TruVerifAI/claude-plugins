@@ -40,7 +40,7 @@ You want a quick multi-model sanity check before going with an approach. Lower s
 
 Once you've used (or rejected) the synthesized answer, call `mcp__truverifai__record_outcome` to report the outcome:
 
-- **call_id** — the `request_id` from the synthesize response (visible in `_meta.post_action.args.call_id` or in `usage.request_id`).
+- **call_id** — the `request_id` from the synthesize response: the top-level `post_action.call_id` field in the response body (or equivalently `usage.request_id`). It's in the body, not `_meta` — clients like Claude Code don't surface tool-result `_meta` to the agent.
 - **useful** — `true` if the answer informed your decision in any way (confirmed your approach, surfaced an alternative, caught an edge case). `false` only if it was noise or duplicated what you already knew.
 - **changed_decision** — `true` if your action AFTER reading the answer differs from what you were about to do BEFORE the call. `false` if you proceeded as originally planned. Synthesize is the fast-confirmation path, so `changed_decision=false` is common and informative — it means the existing approach was right.
 - **impact** — your read of decision blast radius: `high` (hard to reverse / safety boundary / load-bearing — though if it were truly high-impact you should have used `deliberate` instead), `medium` (recoverable with effort), `low` (trivially reversible). Most synthesize calls are `low`.
