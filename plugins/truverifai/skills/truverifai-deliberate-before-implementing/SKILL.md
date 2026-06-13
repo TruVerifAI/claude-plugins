@@ -25,6 +25,8 @@ description: >
 
 You're about to commit to a design choice where multiple approaches are defensible and reversing later requires touching more than one file. The description above lists the trigger conditions — if any of (a)-(h) apply and the decision is NOT obvious, you should invoke this skill.
 
+**Before you invoke, tell the user the deliberation takes ~2-5 minutes and won't show progress in the terminal — so they know the session is working, not stuck.**
+
 ## What to do
 
 1. **Frame the question.** The `question` field should state the decision clearly: "Should we use X or Y for Z?" or "How should we shape the API for W?" See `references/when-to-deliberate.md` for what counts as a deliberate-worthy decision vs. an obvious choice.

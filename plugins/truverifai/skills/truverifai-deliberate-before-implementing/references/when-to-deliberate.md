@@ -12,7 +12,7 @@ A decision warrants deliberation if **at least two** of these hold:
 
 3. **Long-term lock-in.** The decision commits the project for months or years (framework choice, API contract shape, persistence model, data ownership boundary).
 
-4. **Asymmetric downside.** If you pick wrong, the cost of recovery exceeds the cost of pausing 60-120s for deliberation.
+4. **Asymmetric downside.** If you pick wrong, the cost of recovery exceeds the cost of pausing ~2-5 min for deliberation.
 
 5. **You can't easily simulate.** A POC or spike won't decide the question because the consequences only manifest at production scale, over time, or under conditions you can't replicate locally.
 

@@ -8,7 +8,7 @@ The synthesize and deliberate primitives have overlapping use cases. This file c
 |---|---|
 | Question has a likely-canonical answer; you want validation | Multiple defensible answers exist |
 | Reversal cost is low (single file, single function) | Reversal cost is high (multi-file, migration, breaking API) |
-| ~15-30s is the right cost for the decision | ~60-120s is justified by the stakes |
+| ~15-30s is the right cost for the decision | ~2-5 min is justified by the stakes |
 | You don't need conflict-targeted revision | You want models to engage with each other's specific positions |
 | The question is bounded and self-contained | The question has a trade-off space worth enumerating |
 
@@ -69,7 +69,7 @@ The exception: synthesize → deliberate is fine when synthesize *surfaces that 
 | Primitive | Latency | Approximate cost |
 |---|---|---|
 | synthesize | 15-30s | ~$0.04 / 0.04 credits |
-| deliberate | 60-120s | ~$0.20 / 0.20 credits |
-| audit | 60-120s | ~$0.20 / 0.20 credits |
+| deliberate | 2-5 min | ~$0.20 / 0.20 credits |
+| audit | 2-5 min | ~$0.20 / 0.20 credits |
 
 The cost difference is real but not load-bearing for most decisions. Pick by question shape, not by cost.

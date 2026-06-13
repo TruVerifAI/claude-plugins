@@ -27,7 +27,9 @@ description: >
 
 # When this skill activates
 
-You're about to commit, merge, or finalize a code change where the stakes of being wrong are high enough that a multi-model audit is worth the ~60-120 seconds. The description above lists the trigger conditions — if any of (a)-(d) apply and the change is NOT in the explicit skip list, you should invoke this skill.
+You're about to commit, merge, or finalize a code change where the stakes of being wrong are high enough that a multi-model audit is worth the ~2-5 minutes. The description above lists the trigger conditions — if any of (a)-(d) apply and the change is NOT in the explicit skip list, you should invoke this skill.
+
+**Before you invoke, tell the user the audit takes ~2-5 minutes and won't show progress in the terminal — so they know the session is working, not stuck.**
 
 ## What to do
 
