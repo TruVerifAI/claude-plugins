@@ -1,7 +1,7 @@
 {
   "name": "truverifai",
   "displayName": "TruVerifAI",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Multi-model second-opinion deliberation for high-stakes coding decisions. Four skills (audit / deliberate / synthesize / record-outcome) route to the TruVerifAI MCP server, where four frontier models reason independently and conflict-target each other's positions to produce decision-grade output. Outcome reporting closes the loop — the dashboard shows what % of MCP calls actually changed the agent's decision.",
   "author": {
     "name": "TruVerifAI",
