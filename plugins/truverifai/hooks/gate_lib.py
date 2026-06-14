@@ -68,7 +68,26 @@ def repo_fingerprint(cwd):
 
 
 def staged_diff(cwd):
-    return _git(["diff", "--staged"], cwd)
+    """Return the diff the imminent commit will record.
+
+    `git diff --staged` is correct ONLY when files are already staged by a prior
+    SEPARATE `git add`. But this is a PreToolUse hook — it fires BEFORE the Bash
+    command runs, so `git add X && git commit`, `git commit -a`, and
+    `git commit <path>` all leave nothing staged at hook time. The old code then
+    saw an empty diff and waved the commit through — the exact gap that let risky
+    commits slip past (the whole reason the audit gate "never triggered").
+
+    When nothing is staged, fall back to the full working-tree diff vs HEAD so the
+    about-to-be-committed change is still classified. Over-inclusion (flagging a
+    tracked change a path-scoped commit won't include) is the SAFE direction for a
+    risk gate; under-inclusion (the old behavior) is not. Caveat: brand-new
+    UNTRACKED files aren't in `git diff HEAD` — a follow-up could add
+    `git status --porcelain` parsing to cover those.
+    """
+    staged = _git(["diff", "--staged"], cwd)
+    if staged.strip():
+        return staged
+    return _git(["diff", "HEAD"], cwd)
 
 
 def synth_write_diff(path, added_text):
