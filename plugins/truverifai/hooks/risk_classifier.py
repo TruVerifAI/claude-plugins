@@ -74,6 +74,13 @@ _DEP_MANIFESTS = re.compile(
     r"|Cargo\.(toml|lock)|composer\.json)$",
     re.IGNORECASE)
 _MIGRATION_PATH = re.compile(r"(^|/)migrations?/", re.IGNORECASE)
+# Prose/doc files never gate. A design doc, README, or changelog that merely
+# *mentions* a risky area (the words "session", "authorize", "migration", …) is a
+# false positive — code lives in code files, not the narrative about them. Covers
+# the markdown/rst/asciidoc family only; NOT .txt (so requirements.txt still hits
+# _DEP_MANIFESTS above). A keyword classifier can't tell prose from code, so the
+# only safe move is to not classify prose at all.
+_DOC_PATHS = re.compile(r"\.(md|markdown|mdx|rst|adoc|asciidoc)$", re.IGNORECASE)
 
 
 class RiskyHunk:
@@ -156,6 +163,10 @@ def _iter_file_hunks(diff_text):
 
 def _classify_hunk(path, added_lines):
     """Return (category, confidence) or None if not risky."""
+    # Prose/docs never gate — keyword matches in narrative are false positives.
+    if path and _DOC_PATHS.search(path):
+        return None
+
     text = "\n".join(added_lines)
 
     # Path-based high-confidence: a dependency manifest change.
