@@ -6,8 +6,8 @@
     "url": "https://truverif.ai"
   },
   "metadata": {
-    "description": "Multi-model second-opinion deliberation for high-stakes coding decisions. Four skills route your agent to TruVerifAI's MCP server (audit / deliberate / synthesize / record-outcome); the plugin ships with adherence telemetry.",
-    "version": "0.1.6"
+    "description": "Multi-model second-opinion deliberation for high-stakes coding decisions. Four skills route your agent to TruVerifAI's MCP server (audit / deliberate / synthesize / record-outcome), plus proactive PreToolUse review gates that prompt an audit before risky commits and a deliberation before risky design changes; the plugin ships with adherence telemetry.",
+    "version": "0.1.7"
   },
   "plugins": [
     {
