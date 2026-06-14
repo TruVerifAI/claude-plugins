@@ -11,7 +11,7 @@ When you install this plugin, your Claude Code agent gets four skills that auto-
 - **`truverifai-synthesize-quick-check`** — Use for quick sanity checks (idiomatic patterns, bounded library choices, "is there a standard way to do X?" questions). Faster than the other two.
 - **`truverifai-record-outcome-after-acting`** (V1.1) — Fires AFTER acting on a response from any of the three above. Reports whether the deliberation was useful and whether it changed the agent's decision (free of credits). Powers the Impact card on the dashboard so you can see what % of MCP calls actually mattered.
 
-Each of the three primary skills calls the matching MCP tool with structured inputs (`proposed_action`, `relevant_code`, `architectural_context`, etc.) and returns a decision-grade response: agreement signal, dimensions of disagreement, severity tags, recommended action class. The follow-up skill calls `record_outcome` with the prior call's `request_id` plus the agent's self-reported outcome.
+Each of the three primary skills calls the matching MCP tool with structured inputs (`proposed_action`, `relevant_code`, `architectural_context`, etc.) and returns a decision-grade response: a **verdict** (audit: approve / approve_with_caveats / request_changes / reject), **recommendation** (deliberate: clear / qualified / split / insufficient_basis), or **answer_status** (synthesize: settled / qualified / contested / unresolved); a severity-tagged **`findings[]`** list (critical / major / minor / preference); a derived **`action`** (proceed / proceed_with_caveats / request_changes / escalate_to_human) with an **`action_reason`** when a finding tightened it; plus an *auxiliary* agreement signal and dimensions of disagreement. The action is driven by the verdict + findings — the agreement signal is telemetry only, it does not drive the action. The follow-up skill calls `record_outcome` with the prior call's `request_id` plus the agent's self-reported outcome.
 
 ## Install
 
@@ -64,6 +64,20 @@ To pull the latest release without doing a full uninstall + reinstall:
 ```
 /plugin update truverifai
 ```
+
+## Review gates (proactive invocation)
+
+Beyond the auto-activating skills, the plugin ships **PreToolUse review gates** that prompt the right call at the right moment:
+
+- **Audit gate** — before a risky `git commit`, prompts `audit_coding` on the about-to-be-committed change.
+- **Deliberate gate** — before a risky design **Write / Edit** (schema, migration, dependency, auth, etc.), prompts `deliberate_coding`.
+
+The gate classifies the change **locally** and sends TruVerifAI only a repo fingerprint + hunk content hashes — never source, paths, or diffs. It **fails open** on any error (missing token, no network, our server down) and never deadlocks.
+
+Two options, set in `/plugin` → **Installed** → **TruVerifAI** (type the value, then `/reload-plugins`):
+
+- **`enable_gates`** (`true` / `false`, default `true`) — turns both gates on or off.
+- **`deliberate_mode`** (`tiered` / `block` / `advisory`, default `tiered`) — `tiered` blocks only high-confidence / irreversible design forks and is advisory on the rest; `block` blocks every risky design write; `advisory` never blocks (surfaces a suggestion only). The audit (pre-commit) gate is unaffected.
 
 ## Adherence telemetry
 
