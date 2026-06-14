@@ -1,7 +1,7 @@
 {
   "name": "truverifai",
   "displayName": "TruVerifAI",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Multi-model second-opinion deliberation for high-stakes coding decisions. Four skills (audit / deliberate / synthesize / record-outcome) route to the TruVerifAI MCP server, where four frontier models reason independently and conflict-target each other's positions to produce decision-grade output. Outcome reporting closes the loop — the dashboard shows what % of MCP calls actually changed the agent's decision.",
   "author": {
     "name": "TruVerifAI",
@@ -35,19 +35,19 @@
     "enable_adherence_telemetry": {
       "type": "boolean",
       "title": "Enable adherence telemetry (timing only)",
-      "description": "When enabled, the plugin reports the TIMING of git commits the agent runs to TruVerifAI. NEVER reported: commit messages, file paths, diff content, branch names, repo identifiers, working directory, raw commands, or commit SHAs. Used to compute the adherence card on https://truverif.ai/settings/mcp showing 'agent committed N times this week; invoked TruVerifAI M times'. Set to false to opt out entirely. Default true. See the data-handling document at https://truverif.ai/data-handling for the full disclosure.",
+      "description": "When enabled, the plugin reports the TIMING of git commits the agent runs to TruVerifAI. NEVER reported: commit messages, file paths, diff content, branch names, repo identifiers, working directory, raw commands, or commit SHAs. Used to compute the adherence card on https://truverif.ai/settings/mcp showing 'agent committed N times this week; invoked TruVerifAI M times'. Set to false to opt out entirely. Default true. See the data-handling document at https://truverif.ai/data-handling for the full disclosure. To change it, type true or false.",
       "default": true
     },
     "enable_gates": {
       "type": "boolean",
       "title": "Enable the proactive review gates",
-      "description": "When enabled, a PreToolUse gate runs before a risky git commit (audit) or a risky design write (deliberate). It classifies the change LOCALLY and sends TruVerifAI only a repo fingerprint + hunk content hashes — never source, paths, or diffs. If the change isn't covered by a prior review it blocks and asks the agent to call audit_coding / deliberate_coding first. Fails open on any error and never deadlocks. Set to false to disable the gates entirely. Default true.",
+      "description": "When enabled, a PreToolUse gate runs before a risky git commit (audit) or a risky design write (deliberate). It classifies the change LOCALLY and sends TruVerifAI only a repo fingerprint + hunk content hashes — never source, paths, or diffs. If the change isn't covered by a prior review it blocks and asks the agent to call audit_coding / deliberate_coding first. Fails open on any error and never deadlocks. Set to false to disable the gates entirely. Default true. To change it, type true or false.",
       "default": true
     },
     "deliberate_mode": {
       "type": "string",
       "title": "Deliberate gate strictness",
-      "description": "'tiered' (default) blocks only high-confidence/irreversible design forks (schema, migrations, auth, dependencies) and is advisory on lower-confidence ones; 'block' blocks every risky design write; 'advisory' never blocks (surfaces a suggestion only). The audit gate (pre-commit) is unaffected.",
+      "description": "'tiered' (default) blocks only high-confidence/irreversible design forks (schema, migrations, auth, dependencies) and is advisory on lower-confidence ones; 'block' blocks every risky design write; 'advisory' never blocks (surfaces a suggestion only). The audit gate (pre-commit) is unaffected. To change it, type one of: tiered, block, or advisory.",
       "default": "tiered"
     }
   }
