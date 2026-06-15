@@ -2,7 +2,7 @@
   "name": "truverifai",
   "displayName": "TruVerifAI",
   "version": "0.1.14",
-  "description": "Multi-model second-opinion deliberation for high-stakes coding decisions. Four skills (audit / deliberate / synthesize / record-outcome) route to the TruVerifAI MCP server, where four frontier models reason independently and conflict-target each other's positions to produce decision-grade output. Outcome reporting closes the loop — the dashboard shows what % of MCP calls actually changed the agent's decision.",
+  "description": "Multi-model second-opinion deliberation for high-stakes coding decisions. Five skills (audit / deliberate / synthesize / record-outcome / skip-gate) route to the TruVerifAI MCP server, where four frontier models reason independently and conflict-target each other's positions to produce decision-grade output. Outcome reporting closes the loop — the dashboard shows what % of MCP calls actually changed the agent's decision.",
   "author": {
     "name": "TruVerifAI",
     "email": "support@truverif.ai",
@@ -55,6 +55,24 @@
       "title": "Borderline (low-confidence) tier",
       "description": "How to handle borderline changes — consequential but not high-confidence-risky (e.g. a new public API surface, a notable refactor). 'advisory' (default) surfaces a fast synthesize_coding suggestion without blocking; 'synthesize_gate' soft-gates the highest-signal borderline changes (releasable by running synthesize_coding OR calling record_gate_skip with a reason_code); 'off' ignores borderline entirely. Never hard-blocks like the audit gate. To change it, type one of: advisory, synthesize_gate, or off.",
       "default": "advisory"
+    },
+    "gate_threshold": {
+      "type": "string",
+      "title": "Gate trigger threshold (advanced)",
+      "description": "Raise this to make the gates fire less often in a noisy repo. Higher = fewer borderline triggers. It is FLOOR-BOUNDED: the value is clamped to a safe ceiling, so genuinely high-stakes changes (auth, secrets, migrations, removed permission/validation checks) ALWAYS fire and hardcoded secrets always fire — you cannot silently disable the gate this way (use enable_gates=false for that, which is visible). Leave blank for the calibrated default. To change it, type a whole number (e.g. 28).",
+      "default": ""
+    },
+    "borderline_sampling_rate": {
+      "type": "string",
+      "title": "Borderline soft-gate sampling rate (advanced)",
+      "description": "Only used when borderline_mode='synthesize_gate'. The fraction (0.0–1.0) of borderline-heavy changes that actually soft-gate; the rest get an advisory nudge. Keeps the soft-gate from over-firing on a high-volume band. Default 0.5. To change it, type a decimal between 0 and 1.",
+      "default": "0.5"
+    },
+    "borderline_session_budget": {
+      "type": "string",
+      "title": "Borderline soft-gate session budget (advanced)",
+      "description": "Only used when borderline_mode='synthesize_gate'. The maximum number of borderline soft-gates per session; after the cap, all borderline degrades to advisory. Prevents alarm fatigue. Default 3. Type 0 to disable the cap. To change it, type a whole number.",
+      "default": "3"
     }
   }
 }

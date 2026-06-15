@@ -17,12 +17,14 @@ Design (docs/MCP/adoption solve/proactive-invocation-v2-hybrid.md):
 import hashlib
 import json
 import os
+import random
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.request
 
-from risk_classifier import classify_diff, hunk_content_hash  # vendored, same dir
+from risk_classifier import classify_diff, hunk_content_hash, clamp_threshold  # vendored, same dir
 
 
 DEFAULT_BASE_URL = "https://api.truverif.ai"
@@ -46,7 +48,41 @@ def config():
         # 'advisory' (surface a suggestion only — the default until the F-001
         # output-quality pre-validation passes), or 'off' (ignore borderline).
         "borderline_mode": os.environ.get("CLAUDE_PLUGIN_OPTION_BORDERLINE_MODE", "advisory"),
+        # Floor-bounded trigger-threshold override (F-011, §4.3): a user may RAISE the
+        # threshold to cut borderline noise in a noisy repo. clamp_threshold() pins it to
+        # [borderline_low+1, ceiling] so the must-fire signals (auth/secrets/migration/
+        # removed-guard) always fire — the gate can't be silently disabled this way.
+        # Empty -> config default.
+        "trigger_threshold": os.environ.get("CLAUDE_PLUGIN_OPTION_GATE_THRESHOLD", ""),
+        # §6.5 borderline throttles (only active when borderline_mode='synthesize_gate'):
+        # fractional sampling of Heavy events + a per-session soft-gate budget cap. Keep
+        # the trigger rate flat on a high-volume band (design §6.5 "three throttles").
+        "borderline_sampling_rate": _parse_rate(
+            os.environ.get("CLAUDE_PLUGIN_OPTION_BORDERLINE_SAMPLING_RATE", ""), 0.5),
+        "borderline_session_budget": _parse_int(
+            os.environ.get("CLAUDE_PLUGIN_OPTION_BORDERLINE_SESSION_BUDGET", ""), 3),
     }
+
+
+def _parse_rate(val, default):
+    try:
+        r = float(val)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(1.0, r))
+
+
+def _parse_int(val, default):
+    try:
+        return max(0, int(val))
+    except (TypeError, ValueError):
+        return default
+
+
+def effective_threshold(cfg):
+    """The clamped (floor-bounded) trigger threshold to hand classify_diff, or None
+    for the config default (F-011)."""
+    return clamp_threshold(cfg.get("trigger_threshold", ""))
 
 
 # Structured skip reason codes (design §5.2). The agent releases a gate by acting
@@ -271,7 +307,7 @@ def deliberate_decision(classification, check_response, mode):
     return ("deny", "uncovered") if blocking else ("advise", "uncovered (low confidence)")
 
 
-def borderline_decision(classification, mode):
+def borderline_decision(classification, mode, sampled=True, area_consulted=False):
     """Decide the BORDERLINE (low-confidence) tier action for the synthesize gate
     (design §6.5). action ∈ {'allow', 'advise', 'deny'}.
 
@@ -280,6 +316,15 @@ def borderline_decision(classification, mode):
     - 'synthesize_gate' -> soft-gate Borderline-HEAVY (deny -> route to
                            synthesize_coding OR a logged skip); advise on
                            Borderline-LITE.
+
+    Throttles (design §6.5 — borderline is the high-volume band, so a Heavy spike only
+    *soft-gates* when all of these pass; otherwise it degrades to advisory):
+    - `area_consulted`  -> a consultation/PASS receipt already exists for this area this
+                           session (from check_deliberate_unlock) -> advisory.
+    - `sampled`         -> fractional sampling let this event through (else advisory; also
+                           the A/B signal for whether the gate adds value).
+    The per-session BUDGET cap is the third throttle; it's stateful, so the hook applies
+    it (borderline_budget_consume) AFTER a 'deny' verdict here.
 
     High-confidence changes are handled by the audit/deliberate gate, so this defers
     (allow) on them. Heavy vs Lite is the classifier's spike sub-tier, never primitive
@@ -294,13 +339,93 @@ def borderline_decision(classification, mode):
     if mode == "off" or tier is None:
         return ("allow", "borderline tier off")
     if mode == "synthesize_gate" and tier == "heavy":
+        if area_consulted:
+            return ("advise", "borderline-heavy (area already consulted this session)")
+        if not sampled:
+            return ("advise", "borderline-heavy (not sampled)")
         return ("deny", "borderline-heavy: synthesize or skip")
     return ("advise", "borderline (%s)" % tier)
+
+
+def borderline_sampled(rate):
+    """Fractional-sampling throttle (design §6.5). True ~`rate` of the time."""
+    if rate >= 1.0:
+        return True
+    if rate <= 0.0:
+        return False
+    return random.random() < rate
+
+
+def _borderline_state_dir():
+    """A best-effort writable dir for per-session borderline budget counters. Never
+    raises — falls back to the system temp dir; the caller fails open if even that
+    can't be written."""
+    base = os.path.join(os.path.expanduser("~"), ".truverifai", "gate_state")
+    try:
+        os.makedirs(base, exist_ok=True)
+        return base
+    except Exception:
+        return tempfile.gettempdir()
+
+
+def borderline_budget_consume(session_id, cap):
+    """Per-session synthesize soft-gate budget cap (design §6.5, third throttle).
+
+    Returns True and increments the session's counter if budget remains (< cap);
+    returns False once the session has hit the cap (all further borderline degrades to
+    advisory). cap <= 0 disables the cap (always True). Fails OPEN (returns True) if the
+    counter file can't be read/written — a throttle must never *create* a wall.
+
+    SOFT cap by design (audit F-001/F-002): this counts soft-*gates* (deny verdicts), not
+    cheap advisory nudges — advisories are intentionally uncapped. The read-incr-write is
+    not locked, so two truly-concurrent same-session hooks could share a slot; PreToolUse
+    hooks fire sequentially in practice, and the cap is a backstop (design §6.5), not a
+    hard guarantee, so an occasional off-by-one is acceptable and never blocks.
+    """
+    if not cap or cap <= 0:
+        return True
+    sid = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id or "nosession"))[:64]
+    path = os.path.join(_borderline_state_dir(), "borderline_budget_%s.json" % sid)
+    try:
+        count = 0
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as fh:
+                count = int(json.load(fh).get("count", 0))
+        if count >= cap:
+            return False
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"count": count + 1}, fh)
+        return True
+    except Exception:
+        return True  # fail open — never let the budget file brick the gate
 
 
 # ---------------------------------------------------------------------------
 # Hook input / output
 # ---------------------------------------------------------------------------
+
+def gate_signal_line(classification):
+    """The compact classifier-signal line for a deny message — the labels the agent
+    forwards to record_gate_skip so the skip-log carries what the classifier saw
+    (design §5.3). No source content; just version/score/categories."""
+    cats = ",".join(classification.get("risk_categories") or [])
+    return ('  gate_signal = classifier_version="%s" score=%s risk_categories="%s"'
+            % (classification.get("classifier_version") or "",
+               classification.get("score") if classification.get("score") is not None else 0,
+               cats))
+
+
+def skip_and_signal(classification, audit):
+    """The 'or log a skip' second branch + the gate_signal line for a deny message
+    (design §5.1 second branch + §5.3). `audit` selects the gate context the agent
+    passes (hunk_hashes for the commit gate, area for the write gate)."""
+    ctx = "hunk_hashes (derive from gate_diff)" if audit else "area"
+    return (
+        "Or, if this genuinely does NOT need review, call `record_gate_skip` (free) "
+        f"with a reason_code, gate_repo, and {ctx}; if you skip, forward this too:\n"
+        + gate_signal_line(classification)
+    )
+
 
 def read_hook_input():
     try:

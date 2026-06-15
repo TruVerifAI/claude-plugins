@@ -58,7 +58,8 @@ def main():
             "(pass gate_repo / gate_diff / gate_session_id) before writing it."
         )
 
-    classification = classify_diff(g.synth_write_diff(path, content))
+    classification = classify_diff(
+        g.synth_write_diff(path, content), trigger_threshold=g.effective_threshold(cfg))
     if not classification["risky"]:
         g.emit_allow()
 
@@ -79,7 +80,8 @@ def main():
             f'  gate_repo = "{repo}"\n'
             "  gate_diff = the change you're about to write\n"
             f'  gate_session_id = "{session_id or ""}"\n'
-            "Then retry the write. (`deliberate_coding` is in your MCP tools.)"
+            "Then retry the write. (`deliberate_coding` is in your MCP tools.)\n"
+            + g.skip_and_signal(classification, audit=False)
         )
     if action == "allow_warn":
         g.emit_allow(detail)  # recent_pass escape valve
@@ -88,15 +90,26 @@ def main():
     #    borderline_mode. Heavy spikes may soft-gate (synthesize OR a one-line skip);
     #    everything else is an advisory nudge. Never the heavy deliberate block.
     if classification["max_confidence"] == "low":
-        b_action, _ = g.borderline_decision(classification, cfg["borderline_mode"])
+        # §6.5 throttles: an area already consulted/passed this session, or an event the
+        # fractional sampler dropped, degrades a Heavy spike to advisory. The per-session
+        # budget cap is the third throttle, applied below only if we're about to deny.
+        area_consulted = bool(resp and (resp.get("unlocked") or resp.get("recent_pass")))
+        sampled = g.borderline_sampled(cfg["borderline_sampling_rate"])
+        b_action, _ = g.borderline_decision(
+            classification, cfg["borderline_mode"],
+            sampled=sampled, area_consulted=area_consulted)
+        if b_action == "deny" and not g.borderline_budget_consume(
+                session_id, cfg["borderline_session_budget"]):
+            b_action = "advise"  # session synthesize soft-gate budget exhausted
         if b_action == "deny":
             g.emit_deny(
                 f"TruVerifAI gate: this {cats} change is borderline-consequential — worth a "
                 "fast second opinion before building on it.\n"
                 "Call `synthesize_coding` with your question + relevant_code (a ~15-30s check), "
-                "OR record a one-line skip with a reason, AND pass:\n"
+                "OR record a one-line skip with a reason (`record_gate_skip`), AND pass:\n"
                 f'  gate_repo = "{repo}"\n'
                 f'  gate_session_id = "{session_id or ""}"\n'
+                + g.gate_signal_line(classification) + "\n"
                 "Then retry. (`synthesize_coding` is in your MCP tools.)"
             )
         if b_action == "advise":

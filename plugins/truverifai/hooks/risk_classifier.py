@@ -83,6 +83,13 @@ def _compile_config(cfg):
         "trigger": int(th["trigger"]),
         "borderline_low": int(th["borderline_low"]),
         "version": cfg.get("version", "2"),
+        "large_hunk_added_lines": int(cfg.get("large_hunk_added_lines", 0)),
+        "large_hunk_weight": int(cfg.get("large_hunk_weight", 0)),
+        # Floor-bounded threshold-override ceiling (F-011): the highest value a user may
+        # raise the trigger threshold to. Sits just below the must-fire trigger weights
+        # (auth/secrets/migration/removed-guard = 30) so those always fire; the gate can't
+        # be silently disabled via the threshold. gate_lib clamps the user value to this.
+        "trigger_threshold_ceiling": int(cfg.get("trigger_threshold_ceiling", int(th["trigger"]))),
     }
 
 
@@ -107,6 +114,27 @@ except Exception as _exc:  # noqa: BLE001 — deliberately broad; this is the fa
 # ---------------------------------------------------------------------------
 # Hunk hashing — IDENTICAL to v1 (receipts depend on byte-stability). Do not change.
 # ---------------------------------------------------------------------------
+
+def clamp_threshold(user_value):
+    """Floor-bound a user-supplied trigger threshold (F-011, §4.3).
+
+    Returns a threshold clamped to [borderline_low+1, trigger_threshold_ceiling]. The
+    ceiling sits just below the must-fire trigger weights so auth/secrets/migration/
+    removed-guard always fire and the gate can't be silently disabled by raising the
+    threshold. Returns None (→ config default) for a missing/unparseable value.
+    """
+    if user_value is None or user_value == "":
+        return None
+    try:
+        v = int(user_value)
+    except (TypeError, ValueError):
+        return None
+    lo = _CFG["borderline_low"] + 1
+    hi = _CFG["trigger_threshold_ceiling"]
+    if hi < lo:
+        hi = lo
+    return max(lo, min(v, hi))
+
 
 def hunk_content_hash(lines):
     """Stable, whitespace-tolerant hash of a hunk's content.
@@ -200,14 +228,21 @@ def _path_match(patterns, path):
     return any(p.search(norm) for p in patterns)
 
 
-def _classify_hunk(path, added, removed):
-    """Return a per-hunk verdict dict, or None if not risky."""
+def _classify_hunk(path, added, removed, trigger_threshold=None):
+    """Return a per-hunk verdict dict, or None if not risky.
+
+    `trigger_threshold` overrides _CFG["trigger"] for this call (the floor-bounded
+    user override, F-011 — clamped by the caller in gate_lib; the engine just honors
+    whatever effective threshold it's handed).
+    """
     # POLICY (audit F-003): doc/prose paths are categorically excluded BEFORE any signal
     # or trigger-floor logic — a keyword in a README/design-doc is a false positive, not
     # gated risk. The F-007 floor applies only to non-doc hunks; this is a deliberate
     # carveout, not a hole.
     if path and _DOC_PATHS.search(path):
         return None
+
+    threshold = _CFG["trigger"] if trigger_threshold is None else int(trigger_threshold)
 
     fired = []
     for s in _CFG["signals"]:
@@ -220,6 +255,14 @@ def _classify_hunk(path, added, removed):
             hit = _any_match(s["patterns"], added)
         if hit:
             fired.append(s)
+
+    fired_names = {s["name"] for s in fired}
+    # Double-count guard (design §4.1): a removed line that matches a real risk pattern is
+    # the Tier-3 trigger-class `removed_safety_control`; the Tier-4 borderline
+    # `removed_generic_conditional` must NOT also count for the same deletion — the
+    # trigger-class match wins. Drop the borderline signal when the trigger one fired.
+    if "removed_safety_control" in fired_names and "removed_generic_conditional" in fired_names:
+        fired = [s for s in fired if s["name"] != "removed_generic_conditional"]
 
     if not fired:
         return None
@@ -236,8 +279,17 @@ def _classify_hunk(path, added, removed):
     trigger_fired = [s for s in fired if s["cls"] == _TRIGGER_CLASS]
     borderline_fired = [s for s in fired if s["cls"] in _BORDERLINE_CLASSES]
 
+    # large_hunk (design Tier 4 §4.1, weight in config): a large added-line hunk that ALSO
+    # carries a risk signal is a borderline *significance* amplifier — "this consequential
+    # change has blast radius." Implemented as an amplifier (gated on an existing signal),
+    # not a standalone, so a big benign refactor doesn't fire (the design's high-fan-in
+    # proxy without a cross-file graph). Counts as significance for the §6.5 spike rule.
+    large_lines = _CFG.get("large_hunk_added_lines", 0)
+    large_weight = _CFG.get("large_hunk_weight", 0)
+    is_large_hunk = bool(fired) and large_lines > 0 and len(added) >= large_lines
+
     trigger_score = sum(s["weight"] for s in trigger_fired) + supp_weight
-    borderline_score = sum(s["weight"] for s in borderline_fired)
+    borderline_score = sum(s["weight"] for s in borderline_fired) + (large_weight if is_large_hunk else 0)
 
     if auto:
         # POLICY (audit F-001): an auto-trigger signal (e.g. a hardcoded secret) is ALWAYS
@@ -245,20 +297,24 @@ def _classify_hunk(path, added, removed):
         # leaked key. auto is compile-enforced to trigger-class only.
         confidence, cat = HIGH, auto[0]["category"]
         reason = "auto_trigger:" + auto[0]["name"]
-    elif trigger_score >= _CFG["trigger"]:
+        score = auto[0]["weight"]
+    elif trigger_score >= threshold:
         confidence = HIGH
         cat = max(trigger_fired, key=lambda s: s["weight"])["category"]
         reason = "trigger_score_%d" % trigger_score
+        score = trigger_score
     elif trigger_fired:
         # F-007 lower bound: a trigger-class signal present floors the band at BORDERLINE.
         # Suppressors demoted it below the threshold; they cannot silence it to PASS.
         confidence = LOW
         cat = max(trigger_fired, key=lambda s: s["weight"])["category"]
         reason = "trigger_near_miss_%d" % trigger_score
+        score = trigger_score
     elif (borderline_score + supp_weight) >= _CFG["borderline_low"]:
         confidence = LOW
-        cat = max(borderline_fired, key=lambda s: s["weight"])["category"]
+        cat = max(borderline_fired, key=lambda s: s["weight"])["category"] if borderline_fired else "significance"
         reason = "borderline_score_%d" % borderline_score
+        score = borderline_score + supp_weight
     else:
         return None
 
@@ -266,12 +322,16 @@ def _classify_hunk(path, added, removed):
     # threshold). Note the (intended) semantic — a near-miss *raises* the borderline tier
     # toward Heavy: a change adjacent to real risk deserves the closer look (audit F-F).
     near_miss = bool(trigger_fired and confidence == LOW)
-    has_sig = any(s["cls"] == "significance" for s in borderline_fired)
+    has_sig = is_large_hunk or any(s["cls"] == "significance" for s in borderline_fired)
     has_dom = any(s["cls"] == "domain" for s in borderline_fired)
+    signal_names = sorted({s["name"] for s in fired} | ({"large_hunk"} if is_large_hunk else set()))
     return {
         "category": cat,
         "confidence": confidence,
-        "signals": sorted({s["name"] for s in fired}),
+        "signals": signal_names,
+        "score": score,
+        "reason": reason,
+        "suppressed": sorted(s["name"] for s in supp),
         # Per-hunk spike (audit F-006/F-B): a genuine borderline spike is THIS (LOW) hunk
         # being a near-miss OR significance+domain co-occurring IN THE SAME HUNK. Gated to
         # LOW so a HIGH hunk that happens to carry significance+domain never elevates an
@@ -284,26 +344,36 @@ def _classify_hunk(path, added, removed):
     }
 
 
-def classify_diff(diff_text):
+def classify_diff(diff_text, trigger_threshold=None):
     """Classify a unified diff. Returns:
 
         {
           "risky": bool,
+          "score": int,                                  # max deciding score across hunks
           "max_confidence": "high" | "low" | None,
+          "trigger_reason": str | None,                  # reason of the deciding hunk
+          "risk_categories": [str, ...],                 # union across hunks
+          "suppressed_by": [str, ...],                   # union of suppressors applied
+          "classifier_version": str,
           "borderline_tier": "heavy" | "lite" | None,   # §6.5 synthesize gate
           "hunks": [ {path, content_hash, category, confidence, signals}, ... ],
         }
 
     Empty / trivial diffs return risky=False with no hunks. `max_confidence` and per-hunk
-    {path, content_hash, category, confidence} preserve the v1 contract.
+    {path, content_hash, category, confidence} preserve the v1 contract; the additive
+    fields (`score`, `trigger_reason`, `risk_categories`, `suppressed_by`,
+    `classifier_version`) feed telemetry + the skip-log training signal (design §4.4, §5.3).
+    `trigger_threshold` is the floor-bounded user override (F-011), None = config default.
     """
     hunks = []
+    verdicts = []
     any_spike = False
 
     for path, added, removed in _iter_file_hunks(diff_text or ""):
-        verdict = _classify_hunk(path, added, removed)
+        verdict = _classify_hunk(path, added, removed, trigger_threshold=trigger_threshold)
         if verdict is None:
             continue
+        verdicts.append(verdict)
         hunks.append({
             "path": path,
             "content_hash": hunk_content_hash(verdict["content_basis"]),
@@ -327,9 +397,21 @@ def classify_diff(diff_text):
     if any(h["confidence"] == LOW for h in hunks):
         borderline_tier = "heavy" if any_spike else "lite"
 
+    # The "deciding" hunk drives trigger_reason/score: prefer a HIGH hunk (the one that
+    # actually walls), else the highest-scoring borderline hunk.
+    deciding = None
+    if verdicts:
+        high_v = [v for v in verdicts if v["confidence"] == HIGH]
+        deciding = max(high_v or verdicts, key=lambda v: v["score"])
+
     return {
         "risky": bool(hunks),
+        "score": deciding["score"] if deciding else 0,
         "max_confidence": max_conf,
+        "trigger_reason": deciding["reason"] if deciding else None,
+        "risk_categories": sorted({h["category"] for h in hunks}),
+        "suppressed_by": sorted({s for v in verdicts for s in v["suppressed"]}),
+        "classifier_version": _CFG.get("version", "0"),
         "borderline_tier": borderline_tier,
         "hunks": hunks,
     }

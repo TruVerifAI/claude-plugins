@@ -3,6 +3,8 @@
   "version": "2.0.0",
   "thresholds": { "trigger": 25, "borderline_low": 5 },
   "large_hunk_added_lines": 50,
+  "large_hunk_weight": 10,
+  "trigger_threshold_ceiling": 29,
   "signals": [
     { "name": "hardcoded_secret", "class": "trigger", "category": "hardcoded_secret", "weight": 100, "auto_trigger": true, "match": "added",
       "patterns": [
@@ -45,7 +47,7 @@
         "(?i)\\bCREATE\\s+INDEX\\b|\\bFOREIGN\\s+KEY\\b",
         "(?i)\\b(create_table|drop_table|add_column|remove_column|add_index|change_column)\\b"
       ] },
-    { "name": "migration_path", "class": "trigger", "category": "migration_schema", "weight": 25, "match": "path",
+    { "name": "migration_path", "class": "trigger", "category": "migration_schema", "weight": 30, "match": "path",
       "patterns": [ "(^|/)(migrations?|alembic/versions|db/migrate|prisma/migrations)(/|$)", "(?i)(^|/)V\\d+__.*\\.sql$" ] },
     { "name": "dependency", "class": "trigger", "category": "dependency", "weight": 30, "match": "path",
       "patterns": [ "(^|/)(requirements[^/]*\\.txt|package\\.json|pnpm-lock\\.yaml|yarn\\.lock|go\\.mod|go\\.sum|Gemfile(\\.lock)?|pyproject\\.toml|poetry\\.lock|Cargo\\.(toml|lock)|composer\\.json)$" ] },
@@ -56,16 +58,18 @@
     { "name": "env_access", "class": "trigger", "category": "env_access", "weight": 20, "match": "added",
       "patterns": [ "os\\.environ(\\[|\\.get)", "process\\.env\\.", "System\\.getenv\\s*\\(", "\\bENV\\[", "\\bgetenv\\s*\\(" ] },
     { "name": "sql_injection_surface", "class": "trigger", "category": "sql_risk", "weight": 25, "match": "added",
-      "patterns": [ "(?i)(execute|query|raw)\\s*\\(\\s*[f\"'].*(SELECT|INSERT|UPDATE|DELETE).*\\+", "(?i)\\bTRUNCATE\\b" ] },
+      "patterns": [ "(?i)(execute|query|raw)\\s*\\(\\s*[f\"'].*(SELECT|INSERT|UPDATE|DELETE).*\\+", "(?i)\\bTRUNCATE\\b", "(?i)\\b(DELETE\\s+FROM|UPDATE)\\s+\\w+(?:(?!\\bWHERE\\b).)*;" ] },
     { "name": "iac_public_exposure", "class": "trigger", "category": "iac_exposure", "weight": 35, "match": "added",
       "patterns": [ "0\\.0\\.0\\.0/0", "(?i)\"?(Action|Principal)\"?\\s*[:=]\\s*\"\\*\"", "\"\\*:\\*\"", "(?i)acl\\s*=\\s*\"public-read", "(?i)privileged\\s*[:=]\\s*true", "(?i)runAsUser\\s*[:=]\\s*0\\b" ] },
-    { "name": "secret_material_path", "class": "trigger", "category": "secret_material", "weight": 25, "match": "path",
+    { "name": "secret_material_path", "class": "trigger", "category": "secret_material", "weight": 30, "match": "path",
       "patterns": [ "(?i)\\.env(\\.[\\w-]+)?$", "(?i)(^|/)\\.env(\\.|$)", "(?i)\\.(pem|key|p12|pfx|jks|keystore)$", "(?i)(^|/)(secrets?|credentials?|vault)(/|\\.|_)" ] },
     { "name": "removed_safety_control", "class": "trigger", "category": "removed_guard", "weight": 30, "match": "removed",
       "patterns": [
         "(?i)\\b(is_admin|require_admin|authenticate|authoriz|permission|check_password|verify_|has_perm|csrf|sanitiz|escape|validate|\\bassert\\b|bounds|clamp)\\b",
         "(?i)\\bif\\b.*\\b(auth|admin|permission|valid|allow|denied|forbidden)\\b"
       ] },
+    { "name": "removed_generic_conditional", "class": "significance", "category": "removed_conditional", "weight": 10, "match": "removed",
+      "patterns": [ "(?i)^\\s*(if|elif|else\\s+if|unless|when|switch|match)\\b", "(?i)^\\s*\\}?\\s*\\bcase\\b" ] },
     { "name": "ffi_unsafe", "class": "primitive", "category": "ffi_unsafe", "weight": 8, "match": "added",
       "patterns": [ "\\bunsafe\\s*\\{", "\\bptr::", "\\b(memcpy|malloc|free|memmove|alloca)\\s*\\(", "(?i)\\bvolatile\\b", "(?i)(import|require).*ctypes", "import\\s+\"C\"", "\\bJNIEXPORT\\b" ] },
     { "name": "concurrency", "class": "primitive", "category": "concurrency", "weight": 8, "match": "added",
@@ -91,7 +95,11 @@
     { "name": "ml_data_domain", "class": "domain", "category": "ml_data", "weight": 12, "match": "added",
       "patterns": [ "\\b(torch\\.load|joblib\\.load|pickle\\.load)\\b", "\\btrain_test_split\\b", "\\b(random_state|np\\.random\\.seed|set_seed|manual_seed)\\b" ] },
     { "name": "ml_data_path", "class": "domain", "category": "ml_data", "weight": 8, "match": "path",
-      "patterns": [ "(?i)\\.(ipynb|csv|parquet)$", "(?i)(^|/)(data|datasets|models)/" ] }
+      "patterns": [ "(?i)\\.(ipynb|csv|parquet)$", "(?i)(^|/)(data|datasets|models)/" ] },
+    { "name": "embedded_domain", "class": "domain", "category": "embedded", "weight": 10, "match": "added",
+      "patterns": [ "\\*\\s*\\(\\s*volatile[^)]*\\)\\s*=", "(?i)\\b(IRQHandler|__interrupt|ISR_HANDLER)\\b", "(?i)\\b(vTaskDelay|xTaskCreate|portYIELD|taskENTER_CRITICAL)\\b", "\\b(NVIC_|GPIO_|HAL_)[A-Za-z0-9_]+\\s*\\(" ] },
+    { "name": "embedded_path", "class": "domain", "category": "embedded", "weight": 8, "match": "path",
+      "patterns": [ "(?i)(^|/)firmware/", "(?i)\\.(ld|dts|dtsi)$" ] }
   ],
   "suppressors": [
     { "name": "test_path", "weight": -20, "match": "path",

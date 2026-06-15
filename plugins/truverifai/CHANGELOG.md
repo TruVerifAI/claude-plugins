@@ -25,6 +25,18 @@ opinion instead of the heavier deliberate block. Never hard-blocks.
 **Gate hardening.** Untracked-file coverage at commit time; gate self-mutation
 detection (a write to the gate's own config/hooks is always flagged).
 
+**Wider risk coverage + tunable gates.** Added embedded/firmware signals
+(register writes, ISR/HAL/RTOS, `.ld`/`.dts`), bulk `DELETE`/`UPDATE`-without-WHERE,
+removed-conditional and large-change significance. New **advanced** config knobs:
+`gate_threshold` (raise to fire less in a noisy repo — *floor-bounded*, so
+auth/secrets/migrations/removed-checks and hardcoded secrets always fire and the
+gate can't be silently disabled this way), plus `borderline_sampling_rate` and
+`borderline_session_budget` to throttle the `synthesize_gate` soft-gate on
+high-volume codebases. These throttles only *relax* the soft-gate (sampled,
+session-capped, and fail-open to advisory) — they never add hard blocks. The skip
+log now records the classifier signal (no source) so skips can improve the
+classifier over time.
+
 ## 0.1.13
 
 Finding B — `action` derived from the per-primitive verdict / recommendation /

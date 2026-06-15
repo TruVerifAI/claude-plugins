@@ -52,7 +52,7 @@ def main():
             "then retry the commit."
         )
 
-    classification = classify_diff(diff)
+    classification = classify_diff(diff, trigger_threshold=g.effective_threshold(cfg))
     if not classification["risky"]:
         g.emit_allow()  # trivial change
 
@@ -70,7 +70,8 @@ def main():
             f'  gate_repo = "{repo}"\n'
             "  gate_diff = the staged diff (run: git diff --staged)\n"
             "so TruVerifAI records coverage, then retry the commit. "
-            "(`audit_coding` is in your MCP tools.)"
+            "(`audit_coding` is in your MCP tools.)\n"
+            + g.skip_and_signal(classification, audit=True)
         )
 
     g.emit_allow(detail if action == "allow_warn" else None)
