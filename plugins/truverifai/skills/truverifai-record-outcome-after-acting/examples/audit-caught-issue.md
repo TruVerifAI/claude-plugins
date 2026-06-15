@@ -2,7 +2,7 @@
 
 ## Setup
 
-You just ran `mcp__truverifai__audit_coding` on a Stripe webhook handler change. The audit returned `action=request_changes` with a critical-severity finding: the signature-verification step was using a constant-time-compare wrapper but the input was being decoded as a string instead of bytes, so the comparison was vulnerable to a timing attack.
+You just ran `mcp__truverifai__audit_coding` on a Stripe webhook handler change. The audit returned `verdict=request_changes` (with `action=request_changes` derived from it) and a critical-severity finding: the signature-verification step was using a constant-time-compare wrapper but the input was being decoded as a string instead of bytes, so the comparison was vulnerable to a timing attack.
 
 You revised the change to fix the encoding issue.
 

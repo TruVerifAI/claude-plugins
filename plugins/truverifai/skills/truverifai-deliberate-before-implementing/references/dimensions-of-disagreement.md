@@ -2,6 +2,8 @@
 
 The deliberate response carries a `dimensions_of_disagreement` array. Each entry surfaces a specific axis where the four models diverged, with the dissenting model named explicitly and the disagreement summarized.
 
+**`dimensions_of_disagreement` is NOT `findings`.** They answer different questions and don't conflate. `findings[]` lists the risks of the *recommended path* (each tagged severity `critical` / `major` / `minor` / `preference`) and is what `action` is derived from. `dimensions_of_disagreement[]` lists where the four models *diverged* among themselves. A path can be unanimously recommended (empty `dimensions_of_disagreement`) and still carry serious `findings`; conversely the models can disagree on a dimension that doesn't surface as a risk of the path you land on.
+
 ## The response shape
 
 ```json
@@ -18,7 +20,7 @@ The deliberate response carries a `dimensions_of_disagreement` array. Each entry
 
 The array may have 0, 1, or multiple entries:
 
-- **Empty array** → all four models agreed. `agreement_score` will be high (>0.9 typically). Confidence in the conclusion is high.
+- **Empty array** → all four models agreed on the dimensions. `agreement_score` will be high (>0.9 typically) as auxiliary confirmation. Confidence in the conclusion is high.
 - **1 entry, severity=low** → one model dissented on a minor point. Worth reading but not load-bearing.
 - **1+ entries, severity=medium** → real trade-off the models disagreed on. Read and weigh.
 - **Any entry, severity=high** → meaningful disagreement on a load-bearing dimension. This is the strongest "decision is not closed" signal; treat the question as still open and bring the user in.
@@ -31,18 +33,18 @@ For each entry, ask:
 2. **What's the dissent about?** Is it about a foundational assumption (high severity) or a stylistic preference (low severity)?
 3. **Is the consensus_stance the right reference point?** Sometimes the three-vs-one split is actually a "the three are wrong; the one is right" situation. Read the dissent's reasoning, not just the count.
 
-## The agreement_score signal
+## The agreement_score signal (auxiliary)
 
-`agreement_score` is a scalar 0-1 that summarizes how aligned the models are.
+`agreement_score` is a scalar 0-1 that summarizes how aligned the models are. It is **auxiliary telemetry** — a panel-convergence reading, not the thing you act on. It does not drive `action`, and it does not override `recommendation`. Use it only as a confidence backdrop when interpreting the disagreement dimensions; the operative decision comes from `action` (and the `recommendation` + `findings` it's derived from).
 
-| Score | Interpretation | Default response |
-|---|---|---|
-| ≥0.9 | High alignment. Conclusion is robust. | Adopt the conclusion. |
-| 0.7-0.9 | Moderate alignment with some disagreement. | Read dimensions_of_disagreement; if dissents are low-severity, adopt; if medium-severity, weigh. |
-| 0.4-0.7 | Real disagreement. Decision is genuinely contested. | Bring the user in. Surface the disagreement dimensions. |
-| <0.4 | Models couldn't converge. | Treat as decided NOT YET. Either gather more context or punt to the user. |
+| Score | What it tells you (context only) |
+|---|---|
+| ≥0.9 | High panel alignment. The conclusion sits on broad convergence. |
+| 0.7-0.9 | Moderate alignment with some disagreement. Read dimensions_of_disagreement to see where. |
+| 0.4-0.7 | Real divergence. The panel was genuinely split. |
+| <0.4 | Models couldn't converge. |
 
-Note: `action` enum already encodes this threshold logic. If `action` is `escalate_to_human`, that's the signal — you don't need to compute the threshold yourself. The thresholds above are for when you want to interpret beyond the binary.
+These rows describe convergence; they do not tell you what to do. **Follow `action`.** If `action` is `escalate_to_human`, that's the signal to bring the user in — you don't compute a threshold from `agreement_score` yourself. A low score with `action = proceed_with_caveats` still means proceed with the lean; the contest is surfaced in `findings` and the dimensions.
 
 ## When a single dissent is signal vs. noise
 
@@ -62,7 +64,7 @@ Note: `action` enum already encodes this threshold logic. If `action` is `escala
 
 When `action` is `escalate_to_human` OR when you want the user's input on a `proceed_with_caveats` decision, surface the disagreement like this:
 
-> "The deliberation came back with `agreement_score = 0.72`. Three models recommended REST; Gemini argued for GraphQL on the basis that [specific dissent reasoning]. Their proposed decision: REST with versioned paths. Do you want me to proceed with REST, or revisit the GraphQL option?"
+> "The deliberation came back `split` (action: proceed_with_caveats). Three models recommended REST; Gemini argued for GraphQL on the basis that [specific dissent reasoning]. Their proposed decision: REST with versioned paths. Do you want me to proceed with REST, or revisit the GraphQL option?" (Panel convergence was middling — `agreement_score = 0.72` — which is why the split surfaced.)
 
 Don't:
 

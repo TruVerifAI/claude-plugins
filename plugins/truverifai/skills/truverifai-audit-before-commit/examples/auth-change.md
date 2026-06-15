@@ -114,9 +114,18 @@ The response would surface findings like these (illustrative):
 
 ```json
 {
-  "agreement_score": 0.84,
-  "action": "request_changes",
+  "verdict": "request_changes",
+  "findings": [
+    { "severity": "critical", "summary": "TOCTOU race between the token lookup and commit allows a concurrent refresh to double-issue tokens — an auth bypass under retry load." },
+    { "severity": "critical", "summary": "No tests cover the new revoke + mint rotation path." },
+    { "severity": "minor", "summary": "Failed commit after revoke leaves the user logged out with no new token." },
+    { "severity": "minor", "summary": "Backward-compatibility for pre-rollout tokens is unverified." },
+    { "severity": "preference", "summary": "Add explicit column-length validation at the DB layer." }
+  ],
+  "action": "escalate_to_human",
   "action_basis": "derived",
+  "action_reason": "Verdict was request_changes, but a critical finding (the TOCTOU auth-bypass race) raised the action to escalate_to_human.",
+  "agreement_score": 0.84,
   "dimensions_of_disagreement": [
     {
       "model": "gpt-5.4",
@@ -129,12 +138,13 @@ The response would surface findings like these (illustrative):
 
 ## How to act on this
 
-Action is `request_changes` with `action_basis=derived` → real findings, address before committing.
+Follow `action`, not the verdict. The verdict here is `request_changes`, but `action` is `escalate_to_human` — read `action_reason`: a `critical` finding (the TOCTOU auth-bypass race) tightened the action above the verdict's base mapping. `agreement_score` (0.84) is auxiliary convergence context; it didn't drive this. `escalate_to_human` means don't proceed without the user's input.
 
-1. Address findings 1 + 2 (the criticals): add `SELECT ... FOR UPDATE` + concurrent-call test.
-2. Address finding 3 (the minor): add explicit rollback handling.
-3. Re-audit the revised change. The TOCTOU fix is itself a non-trivial change; verify it.
-4. Capture finding 4 as a follow-up task — the backward-compat question deserves explicit verification but may not block this commit if you've already confirmed externally.
-5. Ignore finding 5 (preference) unless you have a separate reason to add column-length validation.
+1. Surface the audit findings + the disagreement to the user; don't unilaterally dismiss the TOCTOU. Once you have the user's go-ahead to address-and-proceed:
+2. Address findings 1 + 2 (the criticals): add `SELECT ... FOR UPDATE` + concurrent-call test.
+3. Address finding 3 (the minor): add explicit rollback handling.
+4. Re-audit the revised change. The TOCTOU fix is itself a non-trivial change; verify it.
+5. Capture finding 4 as a follow-up task — the backward-compat question deserves explicit verification but may not block this commit if you've already confirmed externally.
+6. Ignore finding 5 (preference) unless you have a separate reason to add column-length validation.
 
 Commit only after the revised audit returns `proceed` or `proceed_with_caveats`.

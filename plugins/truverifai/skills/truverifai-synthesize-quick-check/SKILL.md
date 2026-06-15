@@ -28,7 +28,7 @@ Lower stakes than the deliberate or audit skills — the answer is for a decisio
 
 3. **Call `mcp__truverifai__synthesize_coding`** with `question` and optional `context`. Faster than the other two primitives (~15-30 seconds).
 
-4. **Read the response.** The `answer` field gives you the synthesized answer; the `agreement_score` (0-1) tells you how aligned the models were. If `agreement_score < 0.7`, consider escalating to `truverifai-deliberate-before-implementing` for a more thorough look — see `references/quick-vs-deliberate.md` for the decision boundary.
+4. **Read the response.** Read `answer_status` first — it's the synthesized verdict (`settled` / `qualified` / `contested` / `unresolved`). The `answer` field carries the synthesized answer itself; `findings[]` lists the caveats and gaps, each tagged `critical` / `major` / `minor` / `preference`. `action` is also emitted but is **advisory** — synthesize never gates anything. `agreement_score` (0-1) is auxiliary convergence context: it does NOT drive the verdict, but it's a useful secondary hint for whether to escalate. The real escalate signal is an `answer_status` of `contested` or `unresolved`; an `agreement_score < 0.7` is a corroborating cue. When either fires, consider escalating to `truverifai-deliberate-before-implementing` for a more thorough look — see `references/quick-vs-deliberate.md` for the decision boundary.
 
 5. **Apply the answer.** For low-stakes decisions this is usually the end of the loop. If the synthesize result raises questions you didn't expect, escalate to deliberate.
 

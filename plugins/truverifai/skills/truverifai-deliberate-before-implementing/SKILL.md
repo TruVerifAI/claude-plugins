@@ -37,9 +37,11 @@ Skip it for: choices with one sensible answer, refactors where any reasonable ap
    - `options_considered` — approaches you've thought about, with their trade-offs. See `references/options-considered-field.md` for how to populate this to maximize signal — half-articulated options waste the deliberation
    - `constraints` — performance requirements, scalability concerns, team-skills considerations, regulatory considerations
 
-3. **Read the response.** The `agreement_score` (0-1) tells you how aligned the models are. `dimensions_of_disagreement` surfaces the specific axes where they diverged — see `references/dimensions-of-disagreement.md` for how to interpret. The `action` enum tells you what to do next.
+3. **Read the response.** The primary signal is `recommendation` — one of `clear` / `qualified` / `split` / `insufficient_basis`. It's the panel's verdict on the recommended path. Alongside it, `findings[]` lists the risks of that recommended path, each tagged `severity` (`critical` / `major` / `minor` / `preference`). `dimensions_of_disagreement` is a separate array surfacing the axes where the four models diverged — see `references/dimensions-of-disagreement.md` for how to interpret. `agreement_score` (0-1) is auxiliary telemetry — panel-convergence signal only; it does NOT drive what you do next.
 
-4. **Use the synthesized conclusion to make your decision.** If `agreement_score < 0.7` AND severity tags on the dimensions are critical, treat the decision as still open and either gather more context or escalate to the user.
+   The single operative instruction is **`action`** (`proceed` / `proceed_with_caveats` / `request_changes` / `escalate_to_human`). It is DERIVED from `recommendation` + `findings`, not from `agreement_score` (`split` → `proceed_with_caveats`; `insufficient_basis` → `escalate_to_human`). When a finding tightens `action` past the recommendation's base mapping, the response carries `action_reason` explaining the cause.
+
+4. **Use the response to make your decision.** Follow `action`. The assessment (`recommendation`) and `findings` explain it. If `action` looks stricter than the recommendation, that's intentional — `action` already folded in the findings; read `action_reason` for the cause. Never act on the recommendation over `action`. `agreement_score` is auxiliary context only — it does not drive `action`. If `action` is `escalate_to_human`, treat the decision as still open and either gather more context or bring the user in.
 
 ## After acting on the response
 

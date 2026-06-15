@@ -90,9 +90,16 @@ mcp__truverifai__audit_coding(
 
 ```json
 {
-  "agreement_score": 0.91,
+  "verdict": "approve_with_caveats",
+  "findings": [
+    { "severity": "minor", "summary": "False-default rationale undocumented; a future reviewer won't know why opt-in defaults to no-consent." },
+    { "severity": "minor", "summary": "No application-level fallback if the migration hasn't run before the new code serves." },
+    { "severity": "preference", "summary": "Migration filename uses an integer prefix; repo convention is timestamps." }
+  ],
   "action": "proceed_with_caveats",
   "action_basis": "derived",
+  "action_reason": "",
+  "agreement_score": 0.91,
   "dimensions_of_disagreement": []
 }
 ```
@@ -107,4 +114,4 @@ Action is `proceed_with_caveats` → minor issues to address, then ship.
 4. Align the filename to the timestamp convention if your linter cares (finding 5).
 5. After addressing, commit.
 
-The high `agreement_score` (0.91) + `proceed_with_caveats` action means the audit is confident the change is fundamentally sound — the findings are scoping/safety nits, not correctness bugs. This is what a good audit response looks like for routine schema work.
+The `approve_with_caveats` verdict, with only `minor` and `preference` findings, means the audit judges the change fundamentally sound — the findings are scoping/safety nits, not correctness bugs. Because no finding is `critical` or `major`, none tightened the action (`action_reason` is empty) and it derives straight to `proceed_with_caveats`. The high `agreement_score` (0.91) is auxiliary telemetry here — it tells you the panel converged, but the verdict and findings are what you act on. This is what a good audit response looks like for routine schema work.

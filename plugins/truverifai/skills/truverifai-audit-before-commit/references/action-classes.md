@@ -33,10 +33,10 @@ The audit found issues that should be addressed before the change ships. Not a h
 
 ### `escalate_to_human`
 
-The audit found one of:
+The audit reached this because the verdict mapped to it (a `reject`-class verdict) OR a `critical` finding fired and raised the action here. It is NOT reached from a low `agreement_score`. Typical triggers:
 
-- Critical-severity concerns the agent should not unilaterally dismiss.
-- Low confidence in its own analysis (e.g., `agreement_score < 0.7` plus high-severity dissent across models).
+- A `reject` verdict — the audit judges the change unshippable as written.
+- A `critical` finding the agent should not unilaterally dismiss (raises `action` here even when the verdict itself was milder; `action_reason` records the cause).
 - A situation where the trade-offs are policy decisions, not technical decisions.
 
 **How to respond:**
@@ -54,7 +54,7 @@ The audit found one of:
 
 ### `derived`
 
-`action` was computed from the structured assessment (agreement score + severity tags + thresholds). This is the normal path — the action is a real signal, treat it accordingly.
+`action` was derived from the **verdict + findings (severity)** — the verdict sets the base mapping, and a finding can tighten the action beyond it (in which case `action_reason` explains the divergence). `agreement_score` does NOT contribute to this computation; it's auxiliary convergence telemetry only. This is the normal path — the action is a real signal, treat it accordingly.
 
 ### `parse_failure`
 
@@ -75,7 +75,7 @@ The profile's `action_class` config is malformed (defense-in-depth — schema va
 | `proceed` | `derived` | All clear | Commit |
 | `proceed_with_caveats` | `derived` | Minor issues | Address quickly, commit |
 | `request_changes` | `derived` | Real concerns | Address, then commit |
-| `escalate_to_human` | `derived` | Critical dissent | Ask user before committing |
+| `escalate_to_human` | `derived` | `reject` verdict or a `critical` finding | Ask user before committing |
 | any | `parse_failure` | Output malformed | Read text, ask user |
 | any | `config_error` | Server config broken | Read text, ask user |
 

@@ -75,9 +75,14 @@ mcp__truverifai__deliberate_coding(
 ```json
 {
   "conclusion": "Recommend Option C (shadcn/ui). Pros: Pre-styled accelerates the 3-week MVP timeline. Tailwind-compatible — no style-system conflict with the public site. Copy-paste-into-repo pattern means no lock-in. Cons: We own the component code long-term — accept this as the trade-off for flexibility and Tailwind alignment. Option B is rejected on the Tailwind incompatibility. Option A is the strong second choice if you're willing to accept the slower velocity. Option D is rejected on the maintenance trajectory.",
-  "agreement_score": 0.79,
+  "recommendation": "split",
+  "findings": [
+    { "severity": "major", "summary": "Owning the copied component code is a long-term maintenance burden (a11y fixes, version drift) the team will tend to underestimate." }
+  ],
   "action": "proceed_with_caveats",
   "action_basis": "derived",
+  "action_reason": "",
+  "agreement_score": 0.79,
   "dimensions_of_disagreement": [
     {
       "model": "gemini-3-flash",
@@ -92,13 +97,13 @@ mcp__truverifai__deliberate_coding(
 
 ## How to act on this
 
-`agreement_score = 0.79`, `action = proceed_with_caveats` → real disagreement on maintenance burden vs velocity trade-off. Three models agree on shadcn; one (Gemini) made a substantive case for Option A.
+`recommendation = split`, `action = proceed_with_caveats` → proceed with the lean (shadcn), but the contest is real and surfaced. A `major` finding (maintenance burden) sits against a real velocity win. Three models agree on shadcn; one (Gemini) made a substantive case for Option A. `agreement_score = 0.79` is auxiliary — it confirms the panel was only moderately converged, consistent with the `split`.
 
-1. **This is a borderline case for user escalation.** The agreement score is below 0.8 and the dissent is medium-severity on a real trade-off (maintenance cost). Consider surfacing to the user:
+1. **This is a borderline case for user escalation.** The recommendation is `split` and the standout finding is `major` on a real trade-off (maintenance cost). Consider surfacing to the user:
    > "The deliberation recommends shadcn/ui (3 models) for velocity. Gemini argued for raw Tailwind + Radix on maintenance grounds — shadcn's 'we own the component code' pattern creates real long-term burden. The trade-off is real. Want me to go with shadcn for MVP speed, or invest in the slower-but-more-controlled raw Radix approach?"
 2. **If the user defers to your judgment, go with shadcn for the MVP.** The velocity win is real. Document that we'll re-evaluate the maintenance burden after the MVP ships — if shadcn's update cadence is painful, migrate specific components to raw Radix incrementally.
 3. **Lock the design system early.** Pick spacing, color, and typography tokens before you copy in shadcn components. That way the components inherit your tokens consistently.
 4. **Set up a process for shadcn updates.** Track which components you've copied; have a regular cadence (monthly?) for checking if newer shadcn versions fix bugs you should pull in.
 5. **Capture the trade-off in an ADR.** "We chose shadcn/ui for velocity. Acknowledged maintenance burden; will revisit at MVP+3-months."
 
-The lesson here: when `agreement_score` is 0.7-0.8 with a medium-severity dissent on a real trade-off, that's the boundary case where surfacing to the user is worth the friction. Don't auto-adopt the consensus when the deliberation is signaling "this is a judgment call."
+The lesson here: when the `recommendation` is `split` with a `major` finding on a real trade-off, that's the boundary case where surfacing to the user is worth the friction. Don't auto-adopt the lean when the deliberation is signaling "this is a judgment call." (The auxiliary `agreement_score` in the 0.7-0.8 band is consistent with that read, but it's the `recommendation` + `findings` — not the score — that make the call.)

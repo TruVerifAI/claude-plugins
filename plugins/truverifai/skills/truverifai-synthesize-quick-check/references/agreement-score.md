@@ -1,5 +1,7 @@
 # Interpreting `agreement_score` for synthesize responses
 
+**First, the framing:** `answer_status` (`settled` / `qualified` / `contested` / `unresolved`) is now the primary signal in a synthesize response — it's the synthesized verdict. `agreement_score` is **auxiliary** convergence telemetry. It does NOT drive the verdict or the `action`, and it is not something you "act on" as a decision. It remains genuinely useful as a *hint* for one specific call: whether to escalate to deliberate. Low alignment on a question you expected to be canonical is informative. So this file is still live — just read the thresholds below as an escalation heuristic layered on top of `answer_status`, not as the verdict itself.
+
 The synthesize response carries `agreement_score` (0-1) summarizing how aligned the four panel models were on the answer. Unlike deliberate, synthesize does NOT do conflict-targeted revision — it just synthesizes the four parallel answers and reports alignment.
 
 ## Threshold guide
@@ -9,8 +11,10 @@ The synthesize response carries `agreement_score` (0-1) summarizing how aligned 
 | ≥0.9 | All four models converged. The answer is robust. | Use the answer. |
 | 0.8-0.9 | Strong consensus with minor variation. | Use the answer; note any caveats in the response text. |
 | 0.7-0.8 | Mostly aligned but with real divergence. | Use cautiously; verify against another source if the stakes are non-trivial. |
-| 0.5-0.7 | Models genuinely disagreed. | **Escalate to `truverifai-deliberate-before-implementing`.** The question is harder than synthesize can resolve. |
-| <0.5 | Wide disagreement; synthesize couldn't converge. | Treat as undecided. Escalate to deliberate OR rethink the question — sometimes wide disagreement signals you asked something ambiguous. |
+| 0.5-0.7 | Models genuinely disagreed (often paired with `answer_status` of `contested`). | **Escalate to `truverifai-deliberate-before-implementing`.** The question is harder than synthesize can resolve. |
+| <0.5 | Wide disagreement; synthesize couldn't converge (often paired with `answer_status` of `unresolved`). | Treat as undecided. Escalate to deliberate OR rethink the question — sometimes wide disagreement signals you asked something ambiguous. |
+
+Read the score alongside `answer_status`: a `contested` or `unresolved` status is the primary signal that the question isn't settled; the score above is the corroborating convergence hint.
 
 ## What "synthesize agreement" actually measures
 
@@ -25,7 +29,7 @@ Trust the score as an alignment signal, not as a similarity signal.
 
 ## When low agreement is informative
 
-A `agreement_score < 0.7` on a question you expected to be canonical is itself a useful signal:
+A `contested` or `unresolved` `answer_status` — or, as the auxiliary hint, an `agreement_score < 0.7` — on a question you expected to be canonical is itself a useful signal:
 
 - "Idiomatic way to format dates in Go" with score 0.5 means there are competing conventions in different communities. Worth knowing.
 - "Standard HTTP retry pattern" with score 0.4 means the field is fragmented. Pick based on YOUR constraints, not a generic recommendation.

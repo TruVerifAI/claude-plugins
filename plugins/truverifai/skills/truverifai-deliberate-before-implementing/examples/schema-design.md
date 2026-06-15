@@ -78,9 +78,14 @@ mcp__truverifai__deliberate_coding(
 ```json
 {
   "conclusion": "Recommend Option A (normalized + multi-column B-tree) for V1, with a documented migration path to Option B (monthly partitioning) at the 10M-row threshold. Option C is rejected as too rigid for the analytics query patterns. Option D is deferred until volume justifies the warehouse complexity.",
-  "agreement_score": 0.82,
+  "recommendation": "qualified",
+  "findings": [
+    { "severity": "major", "summary": "Single-table Option A will hit a painful ALTER TABLE / vacuum threshold (~10M rows) without a partitioning migration committed; the path must be documented, not assumed." }
+  ],
   "action": "proceed_with_caveats",
   "action_basis": "derived",
+  "action_reason": "",
+  "agreement_score": 0.82,
   "dimensions_of_disagreement": [
     {
       "model": "grok-4-1-fast",
@@ -95,11 +100,11 @@ mcp__truverifai__deliberate_coding(
 
 ## How to act on this
 
-`agreement_score = 0.82`, `action = proceed_with_caveats` → real disagreement on one dimension, three-against-one in favor of Option A.
+`recommendation = qualified`, `action = proceed_with_caveats` → adopt Option A with the migration-path caveat the `major` finding calls out. Real disagreement on one dimension, three-against-one in favor of Option A. `agreement_score = 0.82` is auxiliary, confirming the panel mostly converged.
 
 1. **Adopt the consensus recommendation: Option A.** Schema is normalized columns + (user_id, created_at DESC) index.
 2. **Capture the partition threshold as a follow-up.** Add a comment in the migration or an ADR: "Migrate to monthly partitioning when row count exceeds 10M, or when ALTER TABLE on events takes longer than 30 seconds, whichever comes first." This addresses Grok's concern asynchronously.
 3. **Surface the disagreement to the user if you're committing the schema right now.** "Three models recommended starting simple; one (Grok) recommended partitioning from day one to avoid migration cost later. I'm going with simple-first per the majority. Worth flagging in case you'd rather pay the partitioning cost up front."
 4. **Verify the pg_partman constraint** before locking the migration path — if Replit's managed Postgres doesn't have it, the migration path is more painful and the case for starting with partitioning gets stronger.
 
-This is a representative deliberate response: high enough agreement to converge on an answer, real enough disagreement on one dimension to capture as a documented trade-off, and a clear next step.
+This is a representative deliberate response: a `qualified` recommendation the panel converged on, a `major` finding to capture as a documented trade-off, and a clear `action` next step.

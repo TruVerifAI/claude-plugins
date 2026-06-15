@@ -30,6 +30,9 @@ mcp__truverifai__synthesize_coding(
 ```json
 {
   "answer": "The standard Flask pattern is to access `request.get_data(as_text=False, cache=True)` BEFORE any JSON access. The `cache=True` ensures the body bytes remain available if downstream code wants to parse them again. The full pattern: in your webhook handler, first call `payload = request.get_data(as_text=False, cache=True)` to get the raw bytes, then pass that to `stripe.Webhook.construct_event(payload, request.headers.get('Stripe-Signature'), STRIPE_WEBHOOK_SECRET)`. The construct_event method handles the HMAC verification + the timing-safe comparison + the timestamp tolerance check. Do NOT access request.json or request.get_json() before this — Flask will buffer the parsed JSON and `get_data` won't return the original bytes consistently. Reference: Stripe's official Python docs use this exact pattern.",
+  "answer_status": "settled",
+  "findings": [],
+  "action": "proceed",
   "agreement_score": 0.94,
   "models_participating": ["gpt-5.4", "claude-sonnet-4-6", "gemini-3-flash", "grok-4-1-fast"]
 }
@@ -37,7 +40,7 @@ mcp__truverifai__synthesize_coding(
 
 ## How to act on this
 
-`agreement_score = 0.94` → essentially unanimous. Use the pattern directly.
+`answer_status = settled` with an empty `findings` list → the verdict is clean; use the pattern directly. The `agreement_score = 0.94` is auxiliary corroboration (essentially unanimous), and `action = proceed` is the advisory read.
 
 1. In your Flask webhook handler, call `request.get_data(as_text=False, cache=True)` as the FIRST line.
 2. Pass the raw bytes to `stripe.Webhook.construct_event`.
@@ -62,7 +65,7 @@ def webhook():
 ## What this example demonstrates
 
 - The question is bounded: there IS a canonical answer; you just want to know it.
-- High agreement_score (0.94) is expected for established patterns.
+- A `settled` `answer_status` (with a high agreement_score of 0.94 as auxiliary corroboration) is expected for established patterns.
 - The answer is directly implementable — synthesize is for "give me the pattern" not "evaluate my design."
 - The response includes the WHY ("Flask buffers the parsed JSON, get_data won't return original bytes consistently"), which lets the agent reason about edge cases without re-asking.
 

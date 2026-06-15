@@ -42,14 +42,14 @@ These have multiple defensible answers; the cost of choosing wrong is significan
 
 ## When synthesize escalates to deliberate
 
-You called `synthesize_coding` and got `agreement_score < 0.7`. That's the signal: the question is harder than you thought.
+You called `synthesize_coding` and got an `answer_status` of `contested` or `unresolved`. That's the primary signal: the question is harder than you thought. A low `agreement_score` (< 0.7) is a secondary, corroborating hint pointing the same way — but the `answer_status` is the verdict to act on.
 
 What this means in practice:
 
 1. Read the synthesize answer. The disagreement may be on a dimension you didn't realize mattered. Sometimes this reveals you were asking the wrong question.
 2. Structure the question for deliberate. The synthesize question was probably bounded ("idiomatic pattern for X?"); the deliberate question needs to enumerate the options space ("X with approach A vs B vs C, trade-offs are...").
 3. Call `truverifai-deliberate-before-implementing` with the structured `options_considered` field populated.
-4. Don't just re-run synthesize hoping for higher agreement on retry. The agreement score reflects the actual model disagreement; running again won't change it.
+4. Don't just re-run synthesize hoping for a cleaner `answer_status` on retry. The status (and the agreement score behind it) reflects the actual model disagreement; running again won't change it.
 
 ## When deliberate de-escalates to synthesize
 
@@ -62,7 +62,7 @@ Rare but real. You started preparing a deliberate call and realized the question
 
 Don't synthesize first, then deliberate, then audit. That's three calls for one decision. Pick the right primitive once.
 
-The exception: synthesize → deliberate is fine when synthesize *surfaces that the question is harder than you thought* (low agreement_score). Don't pre-emptively call synthesize as a "warm-up" — call the right primitive directly.
+The exception: synthesize → deliberate is fine when synthesize *surfaces that the question is harder than you thought* (an `answer_status` of `contested`/`unresolved`, with a low agreement_score as the corroborating hint). Don't pre-emptively call synthesize as a "warm-up" — call the right primitive directly.
 
 ## Cost / latency reminder
 

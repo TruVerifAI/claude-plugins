@@ -72,9 +72,14 @@ mcp__truverifai__deliberate_coding(
 ```json
 {
   "conclusion": "Recommend Option A (REST with versioned paths). The team's lack of GraphQL experience + the 6-week timeline + the partners' diverse stacks all point toward REST for V1. Document a path to add a GraphQL layer in V1.1 if partners ask for it. Option D (status quo) is rejected because committed partners need a stable contract.",
-  "agreement_score": 0.88,
+  "recommendation": "qualified",
+  "findings": [
+    { "severity": "minor", "summary": "Over-fetch / multi-round-trip cost on multi-resource partner queries; revisit if a GraphQL-style analytics need emerges." }
+  ],
   "action": "proceed_with_caveats",
   "action_basis": "derived",
+  "action_reason": "",
+  "agreement_score": 0.88,
   "dimensions_of_disagreement": [
     {
       "model": "claude-sonnet-4-6",
@@ -89,7 +94,7 @@ mcp__truverifai__deliberate_coding(
 
 ## How to act on this
 
-`agreement_score = 0.88`, `action = proceed_with_caveats` → high alignment, one low-severity dissent.
+`recommendation = qualified`, `action = proceed_with_caveats` → adopt the recommended path with its caveats. One low-severity dissent on the dimensions; `agreement_score = 0.88` is auxiliary, confirming the panel converged.
 
 1. **Adopt the consensus: REST with versioned paths.** Use `/api/v1/...` as the path prefix; design endpoints for each partner use case (batch query submit, conversation history, usage stats, webhook management).
 2. **Address the dissent in your design doc.** Note that GraphQL was considered and deferred to V1.1; commit to revisit if at least 2 partners ask for it.

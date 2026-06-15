@@ -113,9 +113,19 @@ mcp__truverifai__audit_coding(
 
 ```json
 {
-  "agreement_score": 0.79,
-  "action": "request_changes",
+  "verdict": "request_changes",
+  "findings": [
+    { "severity": "critical", "summary": "Two unwrapped commits can leave tier=free while has_premium_features stays true — inconsistent state." },
+    { "severity": "critical", "summary": "No idempotency handling; Stripe retries re-fire the handler and re-email the user." },
+    { "severity": "minor", "summary": "Missing-user case silently no-ops; a payment-flow webhook should log a warning." },
+    { "severity": "minor", "summary": "Email raised before return can 500 to Stripe and trigger a retry + double email." },
+    { "severity": "minor", "summary": "Test coverage only exercises the happy path." },
+    { "severity": "preference", "summary": "An event-type dispatch dict scales better than the if-chain." }
+  ],
+  "action": "escalate_to_human",
   "action_basis": "derived",
+  "action_reason": "Verdict was request_changes, but a critical finding (the unwrapped multi-commit inconsistent-state risk on a billing flow) raised the action to escalate_to_human.",
+  "agreement_score": 0.79,
   "dimensions_of_disagreement": [
     {
       "model": "claude-sonnet-4-6",
@@ -128,9 +138,9 @@ mcp__truverifai__audit_coding(
 
 ## How to act on this
 
-Action is `request_changes` with real concerns. Don't approve the PR yet.
+Follow `action`, not the verdict. The verdict is `request_changes`, but `action` is `escalate_to_human` — `action_reason` says a `critical` finding (the unwrapped multi-commit inconsistent-state risk on a billing flow) tightened it. `agreement_score` (0.79) is auxiliary; it didn't drive this. Don't approve the PR, and loop the user in before deciding how to push back.
 
-1. Surface the audit findings to the PR author as a review comment. The audit is doing the work you'd do in a manual review, with multiple models' perspectives.
+1. Surface the audit findings to the user and to the PR author as a review comment. The audit is doing the work you'd do in a manual review, with multiple models' perspectives.
 2. The critical findings (1 + 2) genuinely block — wrap in a transaction, add idempotency. Comment on the PR asking for these.
 3. The minor findings (3 + 4 + 5) are quality improvements you can ask for or merge as follow-ups depending on team norms.
 4. The dimensions_of_disagreement entry is useful — one model thought idempotency should be event-id-level. That's a real design choice the author should weigh in on.

@@ -1,6 +1,6 @@
 # Severity tags
 
-The audit response carries findings tagged with one of three severity levels. The tag tells you how to respond to each finding.
+The audit response carries findings tagged with one of four severity levels. The tag tells you how to respond to each finding.
 
 ## `critical`
 
@@ -17,6 +17,22 @@ Critical findings are correctness, security, or data-integrity issues that will 
 1. Address the finding before committing. Do not commit a change with an unaddressed critical finding.
 2. If you disagree with the finding, escalate to the user — don't unilaterally dismiss it. Explain why you disagree; let the user make the call.
 3. If you address it, re-audit the revised change. Don't assume the fix is correct without verification.
+
+## `major`
+
+> A real problem that must be fixed before shipping.
+
+Major findings sit between `critical` and `minor`: a genuine defect that must be fixed before the change ships, but not a ship-stopping correctness or security hole like a critical. A major finding raises the `action` to `request_changes`. Examples:
+
+- "The rotation path doesn't handle the case where the user has two active sessions — one session will be silently logged out on the next refresh. Functionally broken for multi-device users, but not an auth bypass."
+- "The migration backfills the new column in a single UPDATE over 850k rows, which will hold a lock long enough to stall login traffic during the deploy window."
+- "The error response returns the raw exception string to the client, exposing internal table names — needs sanitizing before release."
+
+**How to respond:**
+
+1. Address the finding before the change ships — major findings are not optional follow-ups.
+2. If you can't address it in this change, the change isn't ready; don't ship around it.
+3. If you disagree, document why and surface it to the user rather than silently dropping it.
 
 ## `minor`
 

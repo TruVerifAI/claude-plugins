@@ -37,7 +37,9 @@ Skip it for: formatting or comment-only edits, doc/README updates, single-line o
    - `architectural_context` — related systems, design decisions, ADRs. If unsure what's relevant, name the high-level system the change belongs to ("auth layer", "payment flow", "persistence layer")
    - `constraints` — performance bounds, security policies, deployment windows, regulatory considerations
 
-3. **Read the response.** The `severity` tags (critical / minor / preference) tell you how serious each finding is — see `references/severity-tags.md` for interpretation. The `action` field carries one of four enum values; see `references/action-classes.md` for what to do with each.
+3. **Read the response.** The primary signal is `verdict` — one of `approve / approve_with_caveats / request_changes / reject` — the audit's per-change assessment. Every response also carries `findings[]`, each tagged with a `severity` (critical / major / minor / preference); see `references/severity-tags.md` for interpretation. The `action` field carries one of four enum values and is the single instruction you obey — it's DERIVED from the verdict + findings, not from `agreement_score`. When a finding tightens `action` beyond the verdict's base mapping, `action_reason` explains why. See `references/action-classes.md` for what to do with each.
+
+   > Follow `action`. The assessment (`verdict`) and `findings` explain it. If `action` looks stricter than the verdict, that's intentional — `action` already folded in the findings; read `action_reason` for the cause. Never act on the verdict over `action`. `agreement_score` is auxiliary context only — it does not drive `action`.
 
 4. **Revise the change** in response to the findings. If `action` is `escalate_to_human`, do NOT proceed without the user's input.
 

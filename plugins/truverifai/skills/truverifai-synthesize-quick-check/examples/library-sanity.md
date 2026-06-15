@@ -31,6 +31,12 @@ mcp__truverifai__synthesize_coding(
 ```json
 {
   "answer": "date-fns is the most common choice in tree-shaking-sensitive Next.js projects in 2026. Bundle impact for your use case (relative formatting + a few absolute formats) is minimal because date-fns is built for tree-shaking — you import only the functions you use (e.g., `import { formatDistance, format } from 'date-fns'`). dayjs is the smaller alternative (~7kb gzipped baseline) and is reasonable if you want a single small dependency for everything, but its plugin model is less ergonomic for the locale + timezone work you might add later. luxon is the most powerful but ships ~30kb gzipped which is overkill for your stated scope. Recommended: date-fns with the specific imports `formatDistance, format` for now; revisit if you find yourself adding more locale/timezone work.",
+  "answer_status": "qualified",
+  "findings": [
+    { "severity": "preference", "summary": "date-fns vs dayjs is partly taste — dayjs wins on baseline size if you want one tiny dependency for everything." },
+    { "severity": "minor", "summary": "Recommendation is scoped to the stated use case; revisit if locale/timezone needs grow." }
+  ],
+  "action": "proceed_with_caveats",
   "agreement_score": 0.86,
   "models_participating": ["gpt-5.4", "claude-sonnet-4-6", "gemini-3-flash", "grok-4-1-fast"]
 }
@@ -38,7 +44,7 @@ mcp__truverifai__synthesize_coding(
 
 ## How to act on this
 
-`agreement_score = 0.86` → strong but not unanimous consensus. Use the answer with the caveats in the response text.
+`answer_status = qualified` → there's a clear recommendation, but the `findings` carry real caveats (the choice is partly taste; it's scoped to the current use case). Use the answer, but honor those caveats. The advisory `action = proceed_with_caveats` matches, and `agreement_score = 0.86` is auxiliary corroboration — strong but not unanimous, as expected when multiple reasonable options exist.
 
 1. Install date-fns. Use targeted imports (`import { formatDistance } from 'date-fns'`) to keep bundle impact minimal.
 2. Implement the date formatting in your component.
@@ -48,7 +54,7 @@ mcp__truverifai__synthesize_coding(
 
 - "Bounded" qualifier in the question helps the synthesize call answer the right question (community standard for a one-feature library).
 - Context surfaced bundle-size constraint, which directly shaped the recommendation.
-- agreement_score in the 0.8-0.9 range is normal for library-choice questions where multiple reasonable options exist; the response text typically captures the nuance.
+- A `qualified` `answer_status` (with an agreement_score in the 0.8-0.9 range as auxiliary corroboration) is normal for library-choice questions where multiple reasonable options exist; the `findings` and response text capture the nuance.
 - The answer includes a specific recommendation (date-fns with targeted imports) + a future-revisit trigger — actionable now, with a clear signal for when to reconsider.
 
 ## Variant — when this would NOT be synthesize

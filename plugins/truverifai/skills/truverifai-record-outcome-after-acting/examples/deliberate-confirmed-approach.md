@@ -4,7 +4,7 @@
 
 You were choosing between two designs for a new caching layer — application-side LRU vs. a shared Redis instance. You'd already decided on application-side LRU based on the small dataset size and low write rate. Before committing, you ran `mcp__truverifai__deliberate_coding` to check.
 
-The deliberation returned `agreement_score=0.81, action=proceed`, agreeing that application-side LRU is the right call for this scale.
+The deliberation returned `recommendation=clear, action=proceed` (agreement_score 0.81, auxiliary), agreeing that application-side LRU is the right call for this scale.
 
 ## record_outcome call
 
