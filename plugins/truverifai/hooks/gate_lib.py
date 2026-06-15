@@ -17,6 +17,7 @@ Design (docs/MCP/adoption solve/proactive-invocation-v2-hybrid.md):
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.request
@@ -40,7 +41,29 @@ def config():
         # advisory low — the default), 'block' (block all risky), or 'advisory'
         # (never block deliberate).
         "deliberate_mode": os.environ.get("CLAUDE_PLUGIN_OPTION_DELIBERATE_MODE", "tiered"),
+        # Borderline (low-confidence) tier routing to synthesize (design §6.5):
+        # 'synthesize_gate' (soft-gate Borderline-Heavy -> synthesize_coding),
+        # 'advisory' (surface a suggestion only — the default until the F-001
+        # output-quality pre-validation passes), or 'off' (ignore borderline).
+        "borderline_mode": os.environ.get("CLAUDE_PLUGIN_OPTION_BORDERLINE_MODE", "advisory"),
     }
+
+
+# Structured skip reason codes (design §5.2). The agent releases a gate by acting
+# OR by recording a skip with one of these + free-form text (the free-form is the
+# training signal for the §3.4 classifier-improvement model).
+SKIP_REASON_CODES = (
+    "false_positive_not_risky",
+    "trivial_change",
+    "already_reviewed_this_session",
+    "reviewed_outside_truverifai",
+    "generated_or_vendored_code",
+    "test_or_docs_only",
+    "time_critical_hotfix",
+    "disagree_with_classification",
+    "tool_unavailable",
+    "other",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -80,14 +103,75 @@ def staged_diff(cwd):
     When nothing is staged, fall back to the full working-tree diff vs HEAD so the
     about-to-be-committed change is still classified. Over-inclusion (flagging a
     tracked change a path-scoped commit won't include) is the SAFE direction for a
-    risk gate; under-inclusion (the old behavior) is not. Caveat: brand-new
-    UNTRACKED files aren't in `git diff HEAD` — a follow-up could add
-    `git status --porcelain` parsing to cover those.
+    risk gate; under-inclusion (the old behavior) is not.
+
+    Brand-new UNTRACKED files don't appear in `git diff HEAD`, so we also synthesize
+    add-diffs for them via `git status --porcelain` (design §6.1 loophole closure) —
+    a wholly-new risky file (e.g. a fresh `auth.py`) is now classified at commit time.
     """
     staged = _git(["diff", "--staged"], cwd)
-    if staged.strip():
-        return staged
-    return _git(["diff", "HEAD"], cwd)
+    base = staged if staged.strip() else _git(["diff", "HEAD"], cwd)
+    return base + _untracked_diff(cwd)
+
+
+# Max bytes we'll read from an untracked file to synthesize a diff. Large/binary
+# files are skipped — the gate is for source-shaped changes, and we never want a
+# blocking hook to choke on a multi-MB artifact.
+_UNTRACKED_MAX_BYTES = 200_000
+
+
+def _untracked_diff(cwd):
+    """Synthesize add-diffs for untracked files so brand-new risky files are seen."""
+    porcelain = _git(["status", "--porcelain", "--untracked-files=all"], cwd)
+    if not porcelain.strip():
+        return ""
+    out = []
+    for line in porcelain.splitlines():
+        if not line.startswith("?? "):
+            continue
+        rel = line[3:].strip().strip('"')
+        if not rel or rel.endswith("/"):
+            continue
+        try:
+            full = os.path.join(cwd or ".", rel)
+            if os.path.getsize(full) > _UNTRACKED_MAX_BYTES:
+                continue
+            with open(full, "r", encoding="utf-8", errors="strict") as fh:
+                content = fh.read()
+        except Exception:
+            continue  # binary / unreadable / vanished — skip (fail open)
+        out.append(synth_write_diff(rel, content))
+    return "".join(out)
+
+
+# Writes that target the gate's OWN config / hooks / plugin dir can disable the gate
+# from inside (raise the threshold, empty the signal sets, unhook it). Treat them as
+# always-risky regardless of content (design §6.1, audit F-005 — gate self-mutation).
+_GATE_SELF_PATHS = re.compile(
+    r"(^|/)(risk_signals\.json|risk_classifier\.py|gate_lib\.py|hooks\.json"
+    r"|\.claude-plugin/|\.git/hooks/)",
+    re.IGNORECASE,
+)
+
+
+def is_gate_self_mutation(path):
+    """True if `path` would modify the gate's own config/hooks (a bypass vector)."""
+    if not path:
+        return False
+    return bool(_GATE_SELF_PATHS.search(path.replace("\\", "/")))
+
+
+def diff_touches_gate_self(diff_text):
+    """True if any file in the diff modifies the gate's own config/hooks."""
+    for line in (diff_text or "").splitlines():
+        if line.startswith("+++ b/"):
+            if is_gate_self_mutation(line[6:].strip()):
+                return True
+        elif line.startswith("diff --git "):
+            parts = line.split(" b/", 1)
+            if len(parts) > 1 and is_gate_self_mutation(parts[1].strip()):
+                return True
+    return False
 
 
 def synth_write_diff(path, added_text):
@@ -185,6 +269,33 @@ def deliberate_decision(classification, check_response, mode):
     else:  # 'tiered' (default): only high-confidence forks block
         blocking = (conf == "high")
     return ("deny", "uncovered") if blocking else ("advise", "uncovered (low confidence)")
+
+
+def borderline_decision(classification, mode):
+    """Decide the BORDERLINE (low-confidence) tier action for the synthesize gate
+    (design §6.5). action ∈ {'allow', 'advise', 'deny'}.
+
+    - 'off'             -> never act on borderline.
+    - 'advisory'        -> surface a suggestion (advise) for any borderline change.
+    - 'synthesize_gate' -> soft-gate Borderline-HEAVY (deny -> route to
+                           synthesize_coding OR a logged skip); advise on
+                           Borderline-LITE.
+
+    High-confidence changes are handled by the audit/deliberate gate, so this defers
+    (allow) on them. Heavy vs Lite is the classifier's spike sub-tier, never primitive
+    density (design §4.2/§6.5). Activating 'synthesize_gate' is gated on the F-001
+    output-quality pre-validation (design §6.5); default config is 'advisory'.
+    """
+    if not classification.get("risky"):
+        return ("allow", "no borderline risk")
+    if classification.get("max_confidence") == "high":
+        return ("allow", "handled by audit/deliberate gate")
+    tier = classification.get("borderline_tier")
+    if mode == "off" or tier is None:
+        return ("allow", "borderline tier off")
+    if mode == "synthesize_gate" and tier == "heavy":
+        return ("deny", "borderline-heavy: synthesize or skip")
+    return ("advise", "borderline (%s)" % tier)
 
 
 # ---------------------------------------------------------------------------

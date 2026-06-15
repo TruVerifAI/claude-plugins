@@ -81,7 +81,7 @@ Optional — remove the marketplace registration too:
 
 | Plugin | Description |
 |---|---|
-| [`truverifai`](./plugins/truverifai) | Multi-model second-opinion deliberation for high-stakes coding decisions. Four skills — three primary (audit / deliberate / synthesize) that route your agent to TruVerifAI's MCP server, plus a follow-up skill (record-outcome) that fires after acting on a response. Four frontier models reason independently and conflict-target each other's positions to produce decision-grade output; outcome reporting closes the loop with measurable per-call impact data on the dashboard. |
+| [`truverifai`](./plugins/truverifai) | Multi-model second-opinion deliberation for high-stakes coding decisions. Five skills — three primary (audit / deliberate / synthesize) that route your agent to TruVerifAI's MCP server, a follow-up (record-outcome) that fires after acting, and a gate-release skill (skip-gate-when-not-needed) — plus **proactive PreToolUse review gates** that prompt an audit before risky commits and a deliberation/synthesize before risky design changes (cross-domain risk classifier; releasable by a review or a logged `record_gate_skip`). Four frontier models reason independently and conflict-target each other's positions to produce decision-grade output; outcome reporting closes the loop with measurable per-call impact data on the dashboard. |
 
 ## Setup guide
 

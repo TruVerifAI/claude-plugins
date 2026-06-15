@@ -8,8 +8,9 @@ description: >
   proactively, before you settle on a database schema or table, add a
   migration, choose a library or framework for something long-lived,
   shape an API endpoint or contract (field names, versioning, REST vs
-  GraphQL), set a module/service boundary, or pick a caching or
-  concurrency strategy: any choice with more than one defensible answer
+  GraphQL), set a module/service boundary, choose an infrastructure-as-code
+  or deployment pattern, or pick a caching or concurrency strategy: any
+  choice with more than one defensible answer
   where reversing it later touches multiple files. Routes the question
   to `mcp__truverifai__deliberate_coding` for an independent four-model
   deliberation.

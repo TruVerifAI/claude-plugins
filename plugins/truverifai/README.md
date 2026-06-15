@@ -4,14 +4,17 @@ Multi-model second-opinion deliberation for high-stakes coding decisions. Routes
 
 ## What this plugin does
 
-When you install this plugin, your Claude Code agent gets four skills that auto-activate at decision moments — three that fire BEFORE a decision and one that fires AFTER:
+When you install this plugin, your Claude Code agent gets five skills that auto-activate at decision moments — three that fire BEFORE a decision, one AFTER, and one when a review gate fires:
 
-- **`truverifai-audit-before-commit`** — Use before committing a code change that's hard to undo, touches a security/safety boundary (auth, crypto, input validation, payment, PII, persistence), or replaces load-bearing logic. Four frontier models stress-test it for blind spots.
-- **`truverifai-deliberate-before-implementing`** — Use when about to commit to a design choice with multiple defensible answers (schema design, API shape, library/framework selection, caching strategy, concurrency model). Four models reason independently, then route conflicts back to each model for revision.
+- **`truverifai-audit-before-commit`** — Use before committing a code change that's hard to undo, touches a security/safety boundary (auth, crypto, input validation, payment, PII, persistence, infra-as-code), or replaces load-bearing logic. Four frontier models stress-test it for blind spots.
+- **`truverifai-deliberate-before-implementing`** — Use when about to commit to a design choice with multiple defensible answers (schema design, API shape, library/framework selection, infra-as-code pattern, caching strategy, concurrency model). Four models reason independently, then route conflicts back to each model for revision.
 - **`truverifai-synthesize-quick-check`** — Use for quick sanity checks (idiomatic patterns, bounded library choices, "is there a standard way to do X?" questions). Faster than the other two.
 - **`truverifai-record-outcome-after-acting`** (V1.1) — Fires AFTER acting on a response from any of the three above. Reports whether the deliberation was useful and whether it changed the agent's decision (free of credits). Powers the Impact card on the dashboard so you can see what % of MCP calls actually mattered.
+- **`truverifai-skip-gate-when-not-needed`** — Fires when a proactive review gate has blocked a commit/write and the agent judges the review genuinely unnecessary (false positive, already reviewed, generated/test/docs, true hotfix). Calls `record_gate_skip` to log a skip-with-reason and release the gate (free of credits). Biased toward running the review — skipping is the exception.
 
 Each of the three primary skills calls the matching MCP tool with structured inputs (`proposed_action`, `relevant_code`, `architectural_context`, etc.) and returns a decision-grade response: a **verdict** (audit: approve / approve_with_caveats / request_changes / reject), **recommendation** (deliberate: clear / qualified / split / insufficient_basis), or **answer_status** (synthesize: settled / qualified / contested / unresolved); a severity-tagged **`findings[]`** list (critical / major / minor / preference); a derived **`action`** (proceed / proceed_with_caveats / request_changes / escalate_to_human) with an **`action_reason`** when a finding tightened it; plus an *auxiliary* agreement signal and dimensions of disagreement. The action is driven by the verdict + findings — the agreement signal is telemetry only, it does not drive the action. The follow-up skill calls `record_outcome` with the prior call's `request_id` plus the agent's self-reported outcome.
+
+Two additional MCP tools (no skill — the agent calls them directly, both **free, no credits**): **`record_outcome`** (reports whether a prior call changed the agent's decision — powers the Impact card) and **`record_gate_skip`** (releases a proactive review gate by logging a skip-with-reason instead of running the review — see Review gates below).
 
 ## Install
 
@@ -70,14 +73,15 @@ To pull the latest release without doing a full uninstall + reinstall:
 Beyond the auto-activating skills, the plugin ships **PreToolUse review gates** that prompt the right call at the right moment:
 
 - **Audit gate** — before a risky `git commit`, prompts `audit_coding` on the about-to-be-committed change.
-- **Deliberate gate** — before a risky design **Write / Edit** (schema, migration, dependency, auth, etc.), prompts `deliberate_coding`.
+- **Deliberate gate** — before a risky design **Write / Edit** (schema, migration, dependency, auth, IaC exposure, etc.), prompts `deliberate_coding`.
 
-The gate classifies the change **locally** and sends TruVerifAI only a repo fingerprint + hunk content hashes — never source, paths, or diffs. It **fails open** on any error (missing token, no network, our server down) and never deadlocks.
+A local classifier scores the change across many domains — web (auth, billing, secrets), data migrations, infra-as-code, plus universal risk shapes and **risky deletions** (e.g. a removed permission or validation check) — and routes by confidence: high-confidence risks prompt a review; lower-confidence "borderline" changes get a fast `synthesize_coding` nudge (see `borderline_mode`). Either way the agent can release by running the suggested tool **or** calling the `record_gate_skip` MCP tool to log a skip-with-reason (free; the reason improves the classifier). The gate sends TruVerifAI only a repo fingerprint + hunk content hashes — never source, paths, or diffs — and **fails open** on any error (missing token, no network, our server down); it never deadlocks.
 
-Two options, set in `/plugin` → **Installed** → **TruVerifAI** (type the value, then `/reload-plugins`):
+Options, set in `/plugin` → **Installed** → **TruVerifAI** (type the value, then `/reload-plugins`):
 
-- **`enable_gates`** (`true` / `false`, default `true`) — turns both gates on or off.
+- **`enable_gates`** (`true` / `false`, default `true`) — turns the gates on or off.
 - **`deliberate_mode`** (`tiered` / `block` / `advisory`, default `tiered`) — `tiered` blocks only high-confidence / irreversible design forks and is advisory on the rest; `block` blocks every risky design write; `advisory` never blocks (surfaces a suggestion only). The audit (pre-commit) gate is unaffected.
+- **`borderline_mode`** (`advisory` / `synthesize_gate` / `off`, default `advisory`) — how borderline (low-confidence) changes are handled: `advisory` surfaces a fast `synthesize_coding` suggestion; `synthesize_gate` soft-gates the highest-signal borderline changes (releasable by a quick `synthesize_coding` or a one-line skip); `off` ignores them. Never hard-blocks.
 
 ## Adherence telemetry
 

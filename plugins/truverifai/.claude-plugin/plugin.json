@@ -1,7 +1,7 @@
 {
   "name": "truverifai",
   "displayName": "TruVerifAI",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "Multi-model second-opinion deliberation for high-stakes coding decisions. Four skills (audit / deliberate / synthesize / record-outcome) route to the TruVerifAI MCP server, where four frontier models reason independently and conflict-target each other's positions to produce decision-grade output. Outcome reporting closes the loop — the dashboard shows what % of MCP calls actually changed the agent's decision.",
   "author": {
     "name": "TruVerifAI",
@@ -41,14 +41,20 @@
     "enable_gates": {
       "type": "boolean",
       "title": "Enable the proactive review gates",
-      "description": "When enabled, a PreToolUse gate runs before a risky git commit (audit) or a risky design write (deliberate). It classifies the change LOCALLY and sends TruVerifAI only a repo fingerprint + hunk content hashes — never source, paths, or diffs. If the change isn't covered by a prior review it blocks and asks the agent to call audit_coding / deliberate_coding first. Fails open on any error and never deadlocks. Set to false to disable the gates entirely. Default true. To change it, type true or false.",
+      "description": "When enabled, a PreToolUse gate runs before a risky git commit (audit) or a risky design write (deliberate). A local classifier scores the change across many domains (auth, billing, migrations, secrets, infra-as-code, and more — including risky DELETIONS like a removed permission check) and sends TruVerifAI only a repo fingerprint + hunk content hashes — never source, paths, or diffs. If the change isn't already covered the gate asks the agent to call audit_coding / deliberate_coding first, OR to record a one-line skip-with-reason. Fails open on any error and never deadlocks. Set to false to disable the gates entirely. Default true. To change it, type true or false.",
       "default": true
     },
     "deliberate_mode": {
       "type": "string",
       "title": "Deliberate gate strictness",
-      "description": "'tiered' (default) blocks only high-confidence/irreversible design forks (schema, migrations, auth, dependencies) and is advisory on lower-confidence ones; 'block' blocks every risky design write; 'advisory' never blocks (surfaces a suggestion only). The audit gate (pre-commit) is unaffected. To change it, type one of: tiered, block, or advisory.",
+      "description": "'tiered' (default) blocks only high-confidence/irreversible design forks (schema, migrations, auth, dependencies, IaC exposure) and routes lower-confidence borderline changes via borderline_mode (below); 'block' blocks every risky design write; 'advisory' never blocks (surfaces a suggestion only). A blocked write releases by running deliberate_coding OR calling record_gate_skip. The audit gate (pre-commit) is unaffected. To change it, type one of: tiered, block, or advisory.",
       "default": "tiered"
+    },
+    "borderline_mode": {
+      "type": "string",
+      "title": "Borderline (low-confidence) tier",
+      "description": "How to handle borderline changes — consequential but not high-confidence-risky (e.g. a new public API surface, a notable refactor). 'advisory' (default) surfaces a fast synthesize_coding suggestion without blocking; 'synthesize_gate' soft-gates the highest-signal borderline changes (releasable by running synthesize_coding OR calling record_gate_skip with a reason_code); 'off' ignores borderline entirely. Never hard-blocks like the audit gate. To change it, type one of: advisory, synthesize_gate, or off.",
+      "default": "advisory"
     }
   }
 }

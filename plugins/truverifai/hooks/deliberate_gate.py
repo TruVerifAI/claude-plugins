@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """PreToolUse gate — TruVerifAI deliberate-before-implementing (Layer 1).
 
-Fires before a Write / Edit / MultiEdit. Classifies the content being written;
-if it encodes a risky design fork (schema / migration / dependency / auth) in an
-area not yet deliberated, it gates (TIERED by default: high-confidence forks
-BLOCK and route to `deliberate_coding`; low-confidence ones are ADVISORY). The
-mode is configurable (`tiered` | `block` | `advisory`) — the §11.1 demotion flag.
+Fires before a Write / Edit / MultiEdit and routes by confidence:
+- HIGH-confidence design fork (schema / migration / dependency / auth / IaC) -> the
+  deliberate gate (TIERED default: block + route to `deliberate_coding`; mode
+  `tiered` | `block` | `advisory`, the §11.1 demotion flag).
+- LOW-confidence borderline change -> the synthesize tier (§6.5), governed by
+  `borderline_mode` (`advisory` default | `synthesize_gate` | `off`): a Heavy spike may
+  soft-gate to `synthesize_coding` (or a one-line skip); else an advisory nudge.
 
 Fails OPEN on anything; the `recent_pass` escape valve prevents area-misalignment
 deadlock. A Write already contains finished code, so this is pre-PERSISTENCE
@@ -47,6 +49,15 @@ def main():
     if not content.strip():
         g.emit_allow()
 
+    # Gate self-mutation (§6.1, audit F-005): writing the gate's own config/hooks can
+    # disable it from inside — always flag, regardless of content.
+    if g.is_gate_self_mutation(path):
+        g.emit_deny(
+            "TruVerifAI gate: this write modifies the gate's own config/hooks, which "
+            "can disable the gate from inside. Review the change with `deliberate_coding` "
+            "(pass gate_repo / gate_diff / gate_session_id) before writing it."
+        )
+
     classification = classify_diff(g.synth_write_diff(path, content))
     if not classification["risky"]:
         g.emit_allow()
@@ -57,8 +68,9 @@ def main():
     session_id = inp.get("session_id")
     resp = g.check_deliberate_unlock(cfg, repo, area, session_id)
     action, detail = g.deliberate_decision(classification, resp, cfg["deliberate_mode"])
-
     cats = ", ".join(sorted({h["category"] for h in classification["hunks"]}))
+
+    # 1. High-confidence design fork -> the deliberate gate (block in tiered/block mode).
     if action == "deny":
         g.emit_deny(
             f"TruVerifAI gate: this change encodes a design decision ({cats}) worth a "
@@ -69,12 +81,38 @@ def main():
             f'  gate_session_id = "{session_id or ""}"\n'
             "Then retry the write. (`deliberate_coding` is in your MCP tools.)"
         )
+    if action == "allow_warn":
+        g.emit_allow(detail)  # recent_pass escape valve
+
+    # 2. Low-confidence (borderline) change -> the synthesize tier (§6.5), governed by
+    #    borderline_mode. Heavy spikes may soft-gate (synthesize OR a one-line skip);
+    #    everything else is an advisory nudge. Never the heavy deliberate block.
+    if classification["max_confidence"] == "low":
+        b_action, _ = g.borderline_decision(classification, cfg["borderline_mode"])
+        if b_action == "deny":
+            g.emit_deny(
+                f"TruVerifAI gate: this {cats} change is borderline-consequential — worth a "
+                "fast second opinion before building on it.\n"
+                "Call `synthesize_coding` with your question + relevant_code (a ~15-30s check), "
+                "OR record a one-line skip with a reason, AND pass:\n"
+                f'  gate_repo = "{repo}"\n'
+                f'  gate_session_id = "{session_id or ""}"\n'
+                "Then retry. (`synthesize_coding` is in your MCP tools.)"
+            )
+        if b_action == "advise":
+            g.emit_allow(
+                f"consider `synthesize_coding` for this {cats} change "
+                "(fast second opinion; advisory — not blocking)."
+            )
+        g.emit_allow()
+
+    # 3. High-confidence but non-blocking (deliberate_mode=advisory) -> deliberate nudge.
     if action == "advise":
         g.emit_allow(
             f"consider `deliberate_coding` for this {cats} change (advisory — not blocking)."
         )
 
-    g.emit_allow(detail if action == "allow_warn" else None)
+    g.emit_allow()
 
 
 if __name__ == "__main__":

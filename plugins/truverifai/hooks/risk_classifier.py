@@ -1,228 +1,343 @@
-"""Deterministic risk classifier for the proactive-invocation gates.
+"""Two-channel deterministic risk classifier for the proactive-invocation gates.
 
-VENDORED COPY of mcp_server/risk_classifier.py — the plugin ships standalone to
-end users and cannot import the backend, so the hook bundles this. Keep in sync
-with the canonical backend module on changes. Pure stdlib by design.
+v2 of the classifier (design: docs/MCP/Classifier/risk-trigger-classifier-design.md).
+Replaces the v1 keyword/path matcher. Same public contract — `classify_diff()` and
+`hunk_content_hash()` are byte-stable so existing receipts keep coverage — with a
+superset output (adds `borderline_tier` + per-hunk `signals`).
 
-One classifier, consumed at three points (proactive-invocation-v2-hybrid §6):
-the in-loop `audit` commit-gate, the `audit` merge-coverage check, and the
-`deliberate` Write-gate. It answers: *which hunks of this change are risky, and
-how confident are we?* — keying on diff **content**, not file paths (C8), because
-the same file holds both a trivial comment edit and a structural change.
+Key ideas (see the design doc):
+- **Declarative config.** All signals/weights/thresholds live in `risk_signals.json`
+  (co-located). The engine just compiles + scores. This is the single source of truth;
+  `plugin/hooks/risk_classifier.py` + `risk_signals.json` are byte-identical vendored
+  copies (scripts/sync_risk_classifier.py; enforced by tests/test_classifier_sync.py).
+- **Two channels.** Each signal is `trigger`-class (high-confidence, specific risk) or a
+  borderline class (`primitive` / `significance` / `domain`). The *trigger* decision reads
+  ONLY the trigger-class sub-score, so borderline-class weight can never promote to a hard
+  trigger (the §4.2 cap, by construction). Suppressors apply to the trigger sub-score
+  (demote trigger->borderline) but never silence a flagged trigger-class risk (F-007 floor).
+- **Removed lines too.** A removed safety control (auth/validation/bounds) scores even when
+  the added side is clean — closes the added-lines-only recall blind spot.
+- **Borderline sub-tier.** `borderline_tier` ∈ {heavy, lite, None} drives the §6.5
+  synthesize soft-gate: Heavy = a genuine *spike* (a borderline signal near a trigger-class
+  signal, or significance + domain co-occurrence), never primitive density.
 
-Confidence drives the `deliberate` demotion flag (§11.1): **block** on
-`high`-confidence / irreversible forks (schema, migrations, auth, crypto, deps),
-**advisory** on `low`-confidence ones.
-
-Pure and dependency-free (stdlib only) so it can run server-side (import) AND be
-vendored into the client-side plugin hook and run as a CLI:
-
-    git diff --staged | python -m mcp_server.risk_classifier
-
-prints a JSON result to stdout. <50ms, no model, no network.
+Pure stdlib, no model, no network. Runs server-side (import) AND vendored in the client
+hook AND as a CLI:  `git diff --staged | python -m mcp_server.risk_classifier`
 """
 
 import hashlib
 import json
+import os
 import re
 import sys
+import warnings
 
 
-# Confidence tiers. `high` → block by default; `low` → advisory.
 HIGH = "high"
 LOW = "low"
 
+_TRIGGER_CLASS = "trigger"
+_BORDERLINE_CLASSES = ("primitive", "significance", "domain")
 
-# Content signals on ADDED lines. Order matters only for category labelling;
-# any high-confidence hit makes the hunk high-confidence.
-_HIGH_SIGNALS = [
-    ("migration_schema", re.compile(
-        r"\b(create|alter|drop)\s+table\b"
-        r"|\badd\s+column\b|\bdrop\s+column\b"
-        r"|\bdb\.Column\b|\bmapped_column\b"
-        r"|\bop\.(create_table|drop_table|add_column|drop_column|alter_column)\b"
-        r"|\bCREATE\s+INDEX\b|\bFOREIGN\s+KEY\b",
-        re.IGNORECASE)),
-    ("auth_security", re.compile(
-        r"\b(password|passwd|secret|api[_-]?key|bearer|jwt|oauth|session(_id)?"
-        r"|login|logout|permission|privilege|\brole\b|require_admin|is_admin"
-        r"|authenticate|authoriz|access[_-]?token|refresh[_-]?token)\b"
-        r"|@require_admin",
-        re.IGNORECASE)),
-    ("crypto", re.compile(
-        r"\b(encrypt|decrypt|hmac|cipher|fernet|bcrypt|argon2|pbkdf2|scrypt"
-        r"|hashlib|secrets\.token|os\.urandom|private[_-]?key)\b",
-        re.IGNORECASE)),
-]
+_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "risk_signals.json")
 
-_LOW_SIGNALS = [
-    ("api_route", re.compile(
-        r"@\w*\.?(app|bp|router|blueprint)\.(route|get|post|put|delete|patch)"
-        r"|@app\.route|\.add_url_rule\(|\bBlueprint\(",
-        re.IGNORECASE)),
-    ("concurrency", re.compile(
-        r"\b(threading\.|ThreadPoolExecutor|asyncio\.|multiprocessing\."
-        r"|Lock\(|Semaphore\(|\basync\s+def\b)\b",
-        re.IGNORECASE)),
-]
-
-# Path signals (secondary). A dependency-manifest edit is high-confidence
-# regardless of content; migration dirs reinforce the content signal.
-_DEP_MANIFESTS = re.compile(
-    r"(^|/)(requirements[^/]*\.txt|package\.json|pnpm-lock\.yaml|yarn\.lock"
-    r"|go\.mod|go\.sum|Gemfile(\.lock)?|pyproject\.toml|poetry\.lock"
-    r"|Cargo\.(toml|lock)|composer\.json)$",
-    re.IGNORECASE)
-_MIGRATION_PATH = re.compile(r"(^|/)migrations?/", re.IGNORECASE)
-# Prose/doc files never gate. A design doc, README, or changelog that merely
-# *mentions* a risky area (the words "session", "authorize", "migration", …) is a
-# false positive — code lives in code files, not the narrative about them. Covers
-# the markdown/rst/asciidoc family only; NOT .txt (so requirements.txt still hits
-# _DEP_MANIFESTS above). A keyword classifier can't tell prose from code, so the
-# only safe move is to not classify prose at all.
+# Prose/doc files never gate. A design doc / README / changelog that merely *mentions* a
+# risky area (the words "session", "authorize", "migration", ...) is a false positive —
+# code lives in code files, not the narrative about them. A keyword classifier can't tell
+# prose from code, so the only safe move is to not classify prose at all.
 _DOC_PATHS = re.compile(r"\.(md|markdown|mdx|rst|adoc|asciidoc)$", re.IGNORECASE)
 
 
-class RiskyHunk:
-    """One risky hunk: which file, a stable content hash (for coverage), the
-    category that fired, and the confidence tier."""
+def _compile_config(cfg):
+    signals = []
+    for s in cfg["signals"]:
+        # auto_trigger is honored ONLY on trigger-class signals (audit F-001): a
+        # borderline-class signal can never reach the high band, by construction. If a
+        # non-trigger signal is misconfigured with auto_trigger:true we strip it AND warn
+        # (audit F-E) so the operator gets feedback instead of a silent demotion.
+        auto = bool(s.get("auto_trigger", False))
+        if auto and s["class"] != _TRIGGER_CLASS:
+            warnings.warn("risk_classifier: auto_trigger ignored on non-trigger signal %r "
+                          "(class=%r)" % (s.get("name"), s.get("class")))
+            auto = False
+        signals.append({
+            "name": s["name"],
+            "cls": s["class"],
+            "category": s["category"],
+            "weight": int(s["weight"]),
+            "auto": auto,
+            "match": s.get("match", "added"),
+            "patterns": [re.compile(p) for p in s["patterns"]],
+        })
+    suppressors = []
+    for s in cfg["suppressors"]:
+        suppressors.append({
+            "name": s["name"],
+            "weight": int(s["weight"]),
+            "patterns": [re.compile(p) for p in s["patterns"]],
+        })
+    th = cfg["thresholds"]
+    return {
+        "signals": signals,
+        "suppressors": suppressors,
+        "trigger": int(th["trigger"]),
+        "borderline_low": int(th["borderline_low"]),
+        "version": cfg.get("version", "2"),
+    }
 
-    __slots__ = ("path", "content_hash", "category", "confidence")
 
-    def __init__(self, path, content_hash, category, confidence):
-        self.path = path
-        self.content_hash = content_hash
-        self.category = category
-        self.confidence = confidence
-
-    def to_dict(self):
-        return {
-            "path": self.path,
-            "content_hash": self.content_hash,
-            "category": self.category,
-            "confidence": self.confidence,
-        }
+def _load(path=_CONFIG_PATH):
+    with open(path, "r", encoding="utf-8") as fh:
+        return _compile_config(json.load(fh))
 
 
-def hunk_content_hash(added_lines):
-    """Stable, whitespace-tolerant hash of a hunk's added content.
+# Fail-open config (audit F-004): a malformed / missing risk_signals.json must NEVER
+# brick the blocking PreToolUse hook. On any load error we degrade to an empty signal
+# set — classify_diff then returns not-risky for everything, so the gate fails open
+# (consistent with gate_lib's whole posture). Loud warning so it's not silent.
+_EMPTY_CFG = {"signals": [], "suppressors": [], "trigger": 25, "borderline_low": 5, "version": "0-failopen"}
 
-    Normalizes so cosmetic churn (trailing whitespace, blank lines) does not
-    invalidate coverage: strip each line's trailing whitespace, drop
-    blank-only lines, join with '\\n', sha256, first 16 hex chars. Shared by
-    the classifier and the coverage check so both sides agree.
+try:
+    _CFG = _load()
+except Exception as _exc:  # noqa: BLE001 — deliberately broad; this is the fail-open guard
+    warnings.warn("risk_classifier: config load failed (%s); failing open (no signals)" % _exc)
+    _CFG = dict(_EMPTY_CFG)
+
+
+# ---------------------------------------------------------------------------
+# Hunk hashing — IDENTICAL to v1 (receipts depend on byte-stability). Do not change.
+# ---------------------------------------------------------------------------
+
+def hunk_content_hash(lines):
+    """Stable, whitespace-tolerant hash of a hunk's content.
+
+    Strip each line's trailing whitespace, drop blank-only lines, join with '\\n',
+    sha256, first 16 hex chars. Shared by the classifier and the coverage check so both
+    sides agree. (v1-compatible: callers pass the *added* lines; classify_diff falls back
+    to the *removed* lines for pure-deletion hunks so they get a distinct hash.)
     """
-    norm = [ln.rstrip() for ln in added_lines]
+    norm = [ln.rstrip() for ln in lines]
     norm = [ln for ln in norm if ln.strip() != ""]
     blob = "\n".join(norm)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
-def _iter_file_hunks(diff_text):
-    """Yield (path, [added_line, ...]) for each hunk in a unified diff.
+# ---------------------------------------------------------------------------
+# Diff parsing — yields (path, added_lines, removed_lines) per hunk.
+# Hunk boundaries match v1 (one run under each @@), so added-hunk hashes are unchanged.
+# ---------------------------------------------------------------------------
 
-    Tolerant of `git diff` output. A 'hunk' is the run of lines under one
-    `@@ ... @@` header within a file; added lines are those starting with a
-    single '+' (excluding the '+++' file header). For a brand-new file the
-    whole body is one added hunk.
-    """
+def _iter_file_hunks(diff_text):
     path = None
+    old_path = None
     added = []
+    removed = []
     in_hunk = False
     results = []
+
+    def flush():
+        if path and (added or removed):
+            results.append((path, list(added), list(removed)))
+
     for line in diff_text.splitlines():
-        if line.startswith("diff --git") or line.startswith("+++ "):
-            # New file boundary — flush the previous hunk.
-            if path and added:
-                results.append((path, added))
-                added = []
-            if line.startswith("+++ "):
-                # +++ b/path/to/file  (or '+++ /dev/null')
-                p = line[4:].strip()
-                if p.startswith("b/"):
-                    p = p[2:]
-                path = None if p == "/dev/null" else p
+        if line.startswith("diff --git"):
+            flush()
+            added, removed = [], []
+            path = None
+            old_path = None
             in_hunk = False
             continue
-        if line.startswith("--- "):
+        # File headers `--- `/`+++ ` only appear BEFORE the first @@ of a file, so we
+        # match them only when not in a hunk. This is what lets an in-hunk content line
+        # that itself starts with `---`/`+++` (a PEM `-----BEGIN ...`, a YAML `---`) be
+        # collected as real content instead of mistaken for a header — and a removed
+        # whole-file deletion still binds to the a-side path (audit F-003).
+        if not in_hunk and line.startswith("--- "):
+            p = line[4:].strip()
+            if p.startswith("a/"):
+                p = p[2:]
+            old_path = None if p == "/dev/null" else p
+            continue
+        if not in_hunk and line.startswith("+++ "):
+            # The flush here is redundant after a `diff --git` (which already flushed),
+            # but load-bearing for plain `diff -u` input that has no `diff --git`
+            # separators — it's the only inter-file boundary in that format.
+            flush()
+            added, removed = [], []
+            p = line[4:].strip()
+            if p.startswith("b/"):
+                p = p[2:]
+            new_path = None if p == "/dev/null" else p
+            path = new_path or old_path     # deleted file -> fall back to the a-side path
             continue
         if line.startswith("@@"):
-            if path and added:
-                results.append((path, added))
-                added = []
+            flush()
+            added, removed = [], []
             in_hunk = True
             continue
         if not in_hunk:
             continue
-        if line.startswith("+") and not line.startswith("+++"):
+        if line.startswith("+"):
             added.append(line[1:])
-    if path and added:
-        results.append((path, added))
+        elif line.startswith("-"):
+            removed.append(line[1:])
+    flush()
     return results
 
 
-def _classify_hunk(path, added_lines):
-    """Return (category, confidence) or None if not risky."""
-    # Prose/docs never gate — keyword matches in narrative are false positives.
+def _any_match(patterns, lines):
+    for pat in patterns:
+        for ln in lines:
+            if pat.search(ln):
+                return True
+    return False
+
+
+def _path_match(patterns, path):
+    if not path:
+        return False
+    norm = path.replace("\\", "/")
+    return any(p.search(norm) for p in patterns)
+
+
+def _classify_hunk(path, added, removed):
+    """Return a per-hunk verdict dict, or None if not risky."""
+    # POLICY (audit F-003): doc/prose paths are categorically excluded BEFORE any signal
+    # or trigger-floor logic — a keyword in a README/design-doc is a false positive, not
+    # gated risk. The F-007 floor applies only to non-doc hunks; this is a deliberate
+    # carveout, not a hole.
     if path and _DOC_PATHS.search(path):
         return None
 
-    text = "\n".join(added_lines)
+    fired = []
+    for s in _CFG["signals"]:
+        m = s["match"]
+        if m == "path":
+            hit = _path_match(s["patterns"], path)
+        elif m == "removed":
+            hit = _any_match(s["patterns"], removed)
+        else:  # "added"
+            hit = _any_match(s["patterns"], added)
+        if hit:
+            fired.append(s)
 
-    # Path-based high-confidence: a dependency manifest change.
-    if path and _DEP_MANIFESTS.search(path):
-        return ("dependency", HIGH)
+    if not fired:
+        return None
 
-    in_migration_dir = bool(path and _MIGRATION_PATH.search(path))
+    # POLICY (audit F-002): suppressors are path-based exclusions with a DUAL effect, both
+    # intentional — (a) added to trigger_score they demote HIGH->LOW (the F-007 floor still
+    # keeps a trigger-class signal at >= LOW); (b) added to borderline_score they can silence
+    # a borderline-ONLY hunk to PASS (e.g. idiomatic concurrency in tests/). They never
+    # silence a trigger-class signal.
+    supp = [s for s in _CFG["suppressors"] if _path_match(s["patterns"], path)]
+    supp_weight = sum(s["weight"] for s in supp)  # negative
 
-    for category, pat in _HIGH_SIGNALS:
-        if pat.search(text):
-            return (category, HIGH)
-    if in_migration_dir and added_lines:
-        # Edits inside a migrations dir that didn't hit a content signal are
-        # still structural enough to warrant high confidence.
-        return ("migration_schema", HIGH)
-    for category, pat in _LOW_SIGNALS:
-        if pat.search(text):
-            return (category, LOW)
-    return None
+    auto = [s for s in fired if s["auto"]]
+    trigger_fired = [s for s in fired if s["cls"] == _TRIGGER_CLASS]
+    borderline_fired = [s for s in fired if s["cls"] in _BORDERLINE_CLASSES]
+
+    trigger_score = sum(s["weight"] for s in trigger_fired) + supp_weight
+    borderline_score = sum(s["weight"] for s in borderline_fired)
+
+    if auto:
+        # POLICY (audit F-001): an auto-trigger signal (e.g. a hardcoded secret) is ALWAYS
+        # HIGH, bypassing suppressors by design — a leaked key in a test fixture is still a
+        # leaked key. auto is compile-enforced to trigger-class only.
+        confidence, cat = HIGH, auto[0]["category"]
+        reason = "auto_trigger:" + auto[0]["name"]
+    elif trigger_score >= _CFG["trigger"]:
+        confidence = HIGH
+        cat = max(trigger_fired, key=lambda s: s["weight"])["category"]
+        reason = "trigger_score_%d" % trigger_score
+    elif trigger_fired:
+        # F-007 lower bound: a trigger-class signal present floors the band at BORDERLINE.
+        # Suppressors demoted it below the threshold; they cannot silence it to PASS.
+        confidence = LOW
+        cat = max(trigger_fired, key=lambda s: s["weight"])["category"]
+        reason = "trigger_near_miss_%d" % trigger_score
+    elif (borderline_score + supp_weight) >= _CFG["borderline_low"]:
+        confidence = LOW
+        cat = max(borderline_fired, key=lambda s: s["weight"])["category"]
+        reason = "borderline_score_%d" % borderline_score
+    else:
+        return None
+
+    # near_miss: a trigger-class signal fired but landed at LOW (suppressed below the
+    # threshold). Note the (intended) semantic — a near-miss *raises* the borderline tier
+    # toward Heavy: a change adjacent to real risk deserves the closer look (audit F-F).
+    near_miss = bool(trigger_fired and confidence == LOW)
+    has_sig = any(s["cls"] == "significance" for s in borderline_fired)
+    has_dom = any(s["cls"] == "domain" for s in borderline_fired)
+    return {
+        "category": cat,
+        "confidence": confidence,
+        "signals": sorted({s["name"] for s in fired}),
+        # Per-hunk spike (audit F-006/F-B): a genuine borderline spike is THIS (LOW) hunk
+        # being a near-miss OR significance+domain co-occurring IN THE SAME HUNK. Gated to
+        # LOW so a HIGH hunk that happens to carry significance+domain never elevates an
+        # unrelated borderline hunk's tier.
+        "spike": confidence == LOW and (near_miss or (has_sig and has_dom)),
+        # v1-compatible hash basis: hash the ADDED lines (v1 hashed added-only, so every
+        # added-bearing hunk keeps its v1 hash). Pure-deletion hunks (new in v2) fall back
+        # to the removed lines so they get a distinct, stable hash.
+        "content_basis": added if added else removed,
+    }
 
 
 def classify_diff(diff_text):
-    """Classify a unified diff. Returns a dict:
+    """Classify a unified diff. Returns:
 
         {
           "risky": bool,
           "max_confidence": "high" | "low" | None,
-          "hunks": [ RiskyHunk.to_dict(), ... ],
+          "borderline_tier": "heavy" | "lite" | None,   # §6.5 synthesize gate
+          "hunks": [ {path, content_hash, category, confidence, signals}, ... ],
         }
 
-    Empty / trivial diffs return risky=False with no hunks.
+    Empty / trivial diffs return risky=False with no hunks. `max_confidence` and per-hunk
+    {path, content_hash, category, confidence} preserve the v1 contract.
     """
-    risky = []
-    for path, added in _iter_file_hunks(diff_text or ""):
-        verdict = _classify_hunk(path, added)
+    hunks = []
+    any_spike = False
+
+    for path, added, removed in _iter_file_hunks(diff_text or ""):
+        verdict = _classify_hunk(path, added, removed)
         if verdict is None:
             continue
-        category, confidence = verdict
-        risky.append(RiskyHunk(path, hunk_content_hash(added), category, confidence))
+        hunks.append({
+            "path": path,
+            "content_hash": hunk_content_hash(verdict["content_basis"]),
+            "category": verdict["category"],
+            "confidence": verdict["confidence"],
+            "signals": verdict["signals"],
+        })
+        if verdict["spike"]:
+            any_spike = True
 
     max_conf = None
-    if any(h.confidence == HIGH for h in risky):
+    if any(h["confidence"] == HIGH for h in hunks):
         max_conf = HIGH
-    elif risky:
+    elif hunks:
         max_conf = LOW
 
+    # Borderline sub-tier (§6.5): only when there's a borderline (low) hunk. Heavy = a
+    # genuine per-hunk spike (a near-miss, or significance+domain in one hunk); else Lite.
+    # NEVER primitive density.
+    borderline_tier = None
+    if any(h["confidence"] == LOW for h in hunks):
+        borderline_tier = "heavy" if any_spike else "lite"
+
     return {
-        "risky": bool(risky),
+        "risky": bool(hunks),
         "max_confidence": max_conf,
-        "hunks": [h.to_dict() for h in risky],
+        "borderline_tier": borderline_tier,
+        "hunks": hunks,
     }
 
 
 def _main(argv):
     diff_text = sys.stdin.read()
-    print(json.dumps(classify_diff(diff_text)))
+    print(json.dumps(classify_diff(diff_text), indent=2))
     return 0
 
 

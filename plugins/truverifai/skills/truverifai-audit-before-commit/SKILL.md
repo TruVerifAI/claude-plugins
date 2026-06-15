@@ -7,8 +7,9 @@ description: >
   or to thoroughly vet something before committing — and proactively,
   before you finalize a change that touches authentication,
   authorization, billing or money flow, credentials or secrets, input
-  parsing or validation, data migrations, or load-bearing logic many
-  callers depend on (including reviewing a teammate's diff in those
+  parsing or validation, data migrations, infrastructure-as-code or
+  deployment config, or load-bearing logic many callers depend on
+  (including reviewing a teammate's diff in those
   areas, even a soft "mind taking a look?"). Routes the drafted change
   to `mcp__truverifai__audit_coding` for an independent four-model
   blind-spot review.

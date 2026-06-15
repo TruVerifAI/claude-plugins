@@ -38,6 +38,20 @@ def main():
     if not diff.strip():
         g.emit_allow()  # nothing staged
 
+    # Gate self-mutation (§6.1, audit F-005): a commit that modifies the gate's own
+    # config/hooks can disable it from inside — always require a review, regardless of
+    # what the content classifier says.
+    if g.diff_touches_gate_self(diff):
+        g.emit_deny(
+            "TruVerifAI gate: this commit modifies the gate's own config/hooks "
+            "(risk_signals.json / risk_classifier.py / gate_lib.py / hooks.json / "
+            ".claude-plugin) — that can disable the gate from inside.\n"
+            "Call `audit_coding` with your proposed_action + relevant_code, AND pass:\n"
+            f'  gate_repo = "{g.repo_fingerprint(cwd)}"\n'
+            "  gate_diff = the staged diff (run: git diff --staged)\n"
+            "then retry the commit."
+        )
+
     classification = classify_diff(diff)
     if not classification["risky"]:
         g.emit_allow()  # trivial change
