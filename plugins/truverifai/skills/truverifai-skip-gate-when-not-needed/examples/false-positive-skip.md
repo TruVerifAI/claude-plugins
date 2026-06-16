@@ -5,9 +5,9 @@
 You add a docstring to a test helper. The deliberate gate blocks the Write:
 
 ```
-TruVerifAI gate: this <api_route> change is borderline-consequential — worth a
+TruVerifAI flagged a borderline-consequential <api_route> change — worth a
 fast second opinion before building on it.
-Call `synthesize_coding` ... OR record a one-line skip with a reason, AND pass:
+Run `synthesize_coding` ... OR record a one-line skip with a reason, AND pass:
   gate_repo = "repo_268c1440e37b3de823d2ace6"
   gate_session_id = "cf7f53..."
 ```

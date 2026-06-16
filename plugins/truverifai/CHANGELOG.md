@@ -3,6 +3,16 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/truverifai/.claude-plugin/plugin.json`.
 
+## 0.1.17
+
+**Friendlier review-gate messages.** When a gate pauses a commit or write
+for review, the message now leads with the value ("TruVerifAI flagged a
+high-risk change for a quick review …") instead of reading like a plugin
+error. The actionable steps (which tool to run, or how to log a skip) are
+unchanged, and a short positive note now accompanies the block. (Claude Code
+still renders a blocked tool with its own "Error"/red styling — that's the
+client's, not the plugin's — but the message text itself is now constructive.)
+
 ## 0.1.16
 
 **Adherence telemetry config removed.** The commit-based "adherence card" was

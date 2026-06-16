@@ -512,16 +512,33 @@ def read_hook_input():
         return {}
 
 
-def emit_deny(reason):
+# User-facing one-liner shown alongside the deny via the top-level
+# `systemMessage` field (rendered to the user, separate from the model-facing
+# `permissionDecisionReason`). Framed positively so a gate reads as TruVerifAI
+# doing its job, not erroring. NOTE: the "Error:" label on the blocked tool
+# itself is Claude Code's own rendering of a PreToolUse deny and can't be
+# changed from a hook; this softens the surrounding message, not that prefix.
+_DENY_SYSTEM_MESSAGE = (
+    "TruVerifAI flagged a high-risk change for a quick review — run the "
+    "suggested check (or log a one-line skip) and it proceeds."
+)
+
+
+def emit_deny(reason, system_message=_DENY_SYSTEM_MESSAGE):
     """Emit a PreToolUse deny so Claude Code blocks the tool and shows the model
-    the reason. The model still holds full context and can act on it."""
-    print(json.dumps({
+    the reason. The model still holds full context and can act on it. A short,
+    positive `systemMessage` accompanies the block for the user; the detailed
+    `reason` goes to the model."""
+    out = {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": reason,
         }
-    }))
+    }
+    if system_message:
+        out["systemMessage"] = system_message
+    print(json.dumps(out))
     sys.exit(0)
 
 

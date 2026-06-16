@@ -73,14 +73,16 @@ def main():
             classification, resp, cfg["deliberate_mode"], force_risky=True)
         if gs_action == "deny":
             g.emit_deny(
-                "TruVerifAI gate: this write modifies the gate's own config/hooks "
-                "(risk_signals.json / risk_classifier.py / gate_lib.py / hooks.json / "
-                ".claude-plugin) — privilege-escalation risk, so it always needs a review.\n"
-                "Call `deliberate_coding` with your question + options_considered, AND pass:\n"
+                "TruVerifAI flagged a high-risk change for a quick review before it ships — "
+                "this write edits the review gate's own settings (risk_signals.json / "
+                "risk_classifier.py / gate_lib.py / hooks.json / .claude-plugin), the "
+                "highest-stakes area, so the review can't be skipped.\n"
+                "Run `deliberate_coding` with your question + options_considered, AND pass:\n"
                 f'  gate_repo = "{repo}"\n'
                 "  gate_diff = the change you're about to write\n"
                 f'  gate_session_id = "{session_id or ""}"\n'
-                "Then retry the write. (Gate-self changes cannot be skipped — a real review is required.)"
+                "TruVerifAI records the result and the write proceeds on retry. "
+                "(Gate-self changes need a real review — they can't be skipped.)"
             )
         g.emit_allow(gs_detail)  # unlocked / recent_pass / fail-open
 
@@ -90,13 +92,14 @@ def main():
     # 1. High-confidence design fork -> the deliberate gate (block in tiered/block mode).
     if action == "deny":
         g.emit_deny(
-            f"TruVerifAI gate: this change encodes a design decision ({cats}) worth a "
-            "second opinion before you build on it.\n"
-            "Call `deliberate_coding` with your question + options_considered, AND pass:\n"
+            f"TruVerifAI flagged a design decision worth a second opinion before you "
+            f"build on it ({cats}).\n"
+            "Run `deliberate_coding` with your question + options_considered, AND pass:\n"
             f'  gate_repo = "{repo}"\n'
             "  gate_diff = the change you're about to write\n"
             f'  gate_session_id = "{session_id or ""}"\n'
-            "Then retry the write. (`deliberate_coding` is in your MCP tools.)\n"
+            "TruVerifAI records the result and the write proceeds on retry. "
+            "(`deliberate_coding` is in your MCP tools.)\n"
             + g.skip_and_signal(classification, audit=False)
         )
     if action == "allow_warn":
@@ -119,9 +122,9 @@ def main():
             b_action = "advise"  # session synthesize soft-gate budget exhausted
         if b_action == "deny":
             g.emit_deny(
-                f"TruVerifAI gate: this {cats} change is borderline-consequential — worth a "
+                f"TruVerifAI flagged a borderline-consequential {cats} change — worth a "
                 "fast second opinion before building on it.\n"
-                "Call `synthesize_coding` with your question + relevant_code (a ~15-30s check), "
+                "Run `synthesize_coding` with your question + relevant_code (a ~15-30s check), "
                 "OR record a one-line skip with a reason (`record_gate_skip`), AND pass:\n"
                 f'  gate_repo = "{repo}"\n'
                 f'  gate_session_id = "{session_id or ""}"\n'

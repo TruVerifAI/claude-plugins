@@ -55,24 +55,25 @@ def main():
 
     if action == "deny" and gate_self:
         g.emit_deny(
-            "TruVerifAI gate: this commit modifies the gate's own config/hooks "
-            "(risk_signals.json / risk_classifier.py / gate_lib.py / hooks.json / "
-            ".claude-plugin) — privilege-escalation risk, so it always needs a review.\n"
-            "Call `audit_coding` with your proposed_action + relevant_code, AND pass:\n"
+            "TruVerifAI flagged a high-risk change for a quick review before it ships — "
+            "this commit edits the review gate's own settings (risk_signals.json / "
+            "risk_classifier.py / gate_lib.py / hooks.json / .claude-plugin), the "
+            "highest-stakes area, so the review can't be skipped.\n"
+            "Run `audit_coding` with your proposed_action + relevant_code, AND pass:\n"
             f'  gate_repo = "{repo}"\n'
             "  gate_diff = the staged diff (run: git diff --staged)\n"
-            "so TruVerifAI records coverage, then retry the commit. "
-            "(Gate-self changes cannot be skipped — a real audit is required.)"
+            "TruVerifAI records the result and the commit proceeds on retry. "
+            "(Gate-self changes need a real audit — they can't be skipped.)"
         )
     if action == "deny":
         cats = ", ".join(sorted({h["category"] for h in classification["hunks"]})) or "high-stakes code"
         g.emit_deny(
-            f"TruVerifAI gate: this commit touches {cats} that "
-            "should be audited first.\n"
-            "Call `audit_coding` with your proposed_action + relevant_code, AND pass:\n"
+            f"TruVerifAI flagged a potential high-risk change for a quick review before "
+            f"it ships — this commit touches {cats}.\n"
+            "Run `audit_coding` with your proposed_action + relevant_code, AND pass:\n"
             f'  gate_repo = "{repo}"\n'
             "  gate_diff = the staged diff (run: git diff --staged)\n"
-            "so TruVerifAI records coverage, then retry the commit. "
+            "TruVerifAI records the result and the commit proceeds on retry. "
             "(`audit_coding` is in your MCP tools.)\n"
             + g.skip_and_signal(classification, audit=True)
         )
