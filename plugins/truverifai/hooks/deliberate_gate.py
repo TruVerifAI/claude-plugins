@@ -49,18 +49,15 @@ def main():
     if not content.strip():
         g.emit_allow()
 
-    # Gate self-mutation (§6.1, audit F-005): writing the gate's own config/hooks can
-    # disable it from inside — always flag, regardless of content.
-    if g.is_gate_self_mutation(path):
-        g.emit_deny(
-            "TruVerifAI gate: this write modifies the gate's own config/hooks, which "
-            "can disable the gate from inside. Review the change with `deliberate_coding` "
-            "(pass gate_repo / gate_diff / gate_session_id) before writing it."
-        )
-
     classification = classify_diff(
         g.synth_write_diff(path, content), trigger_threshold=g.effective_threshold(cfg))
-    if not classification["risky"]:
+    # Gate self-mutation (§6.1, audit F-005): writing the gate's own config/hooks is
+    # privilege escalation — ALWAYS require a review (force_risky) even if the content
+    # classifier finds nothing, but route it through the SAME release path (unlock /
+    # recent_pass / fail-open) so the gate's own files stay maintainable via a review —
+    # not the old unconditional deny.
+    gate_self = g.is_gate_self_mutation(path)
+    if not classification["risky"] and not gate_self:
         g.emit_allow()
 
     cwd = inp.get("cwd") or os.getcwd()
@@ -68,6 +65,25 @@ def main():
     area = os.path.dirname(path) or "repo-root"
     session_id = inp.get("session_id")
     resp = g.check_deliberate_unlock(cfg, repo, area, session_id)
+
+    # Gate-self: always block until reviewed (every mode), releasable via unlock /
+    # recent_pass / fail-open. No skip branch — a real deliberation is required.
+    if gate_self:
+        gs_action, gs_detail = g.deliberate_decision(
+            classification, resp, cfg["deliberate_mode"], force_risky=True)
+        if gs_action == "deny":
+            g.emit_deny(
+                "TruVerifAI gate: this write modifies the gate's own config/hooks "
+                "(risk_signals.json / risk_classifier.py / gate_lib.py / hooks.json / "
+                ".claude-plugin) — privilege-escalation risk, so it always needs a review.\n"
+                "Call `deliberate_coding` with your question + options_considered, AND pass:\n"
+                f'  gate_repo = "{repo}"\n'
+                "  gate_diff = the change you're about to write\n"
+                f'  gate_session_id = "{session_id or ""}"\n'
+                "Then retry the write. (Gate-self changes cannot be skipped — a real review is required.)"
+            )
+        g.emit_allow(gs_detail)  # unlocked / recent_pass / fail-open
+
     action, detail = g.deliberate_decision(classification, resp, cfg["deliberate_mode"])
     cats = ", ".join(sorted({h["category"] for h in classification["hunks"]}))
 

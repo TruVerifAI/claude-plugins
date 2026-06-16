@@ -19,6 +19,7 @@ import json
 import os
 import random
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -126,7 +127,7 @@ def repo_fingerprint(cwd):
     return "repo_" + hashlib.sha256(basis.encode("utf-8", "replace")).hexdigest()[:24]
 
 
-def staged_diff(cwd):
+def staged_diff(cwd, command=""):
     """Return the diff the imminent commit will record.
 
     `git diff --staged` is correct ONLY when files are already staged by a prior
@@ -141,13 +142,18 @@ def staged_diff(cwd):
     tracked change a path-scoped commit won't include) is the SAFE direction for a
     risk gate; under-inclusion (the old behavior) is not.
 
-    Brand-new UNTRACKED files don't appear in `git diff HEAD`, so we also synthesize
-    add-diffs for them via `git status --porcelain` (design §6.1 loophole closure) —
-    a wholly-new risky file (e.g. a fresh `auth.py`) is now classified at commit time.
+    Brand-new UNTRACKED files don't appear in `git diff HEAD`, so we ALSO synthesize
+    add-diffs for the untracked files THIS commit will stage (design §6.1 loophole
+    closure) — but ONLY those. `command` is the Bash command being gated; the
+    untracked sweep is scoped to what a `git add` in that same command stages
+    (`git add X && git commit` -> just X; `git add .`/`-A` -> all). A bare
+    `git commit` / `git commit -a` stages no untracked files, so we sweep NONE —
+    otherwise pre-existing untracked working-tree cruft (eval fixtures, screenshots)
+    gates an unrelated scoped commit (the over-inclusion bug).
     """
     staged = _git(["diff", "--staged"], cwd)
     base = staged if staged.strip() else _git(["diff", "HEAD"], cwd)
-    return base + _untracked_diff(cwd)
+    return base + _untracked_diff(cwd, command)
 
 
 # Max bytes we'll read from an untracked file to synthesize a diff. Large/binary
@@ -155,9 +161,63 @@ def staged_diff(cwd):
 # blocking hook to choke on a multi-MB artifact.
 _UNTRACKED_MAX_BYTES = 200_000
 
+# Sentinel: a `git add .` / `-A` / `--all` stages every untracked file.
+_ADD_ALL = "ALL"
 
-def _untracked_diff(cwd):
-    """Synthesize add-diffs for untracked files so brand-new risky files are seen."""
+
+def parse_git_add_targets(command):
+    """What untracked paths will a `git add` in `command` stage?
+
+    Returns None when the command has no `git add` (bare `git commit` /
+    `git commit -a` — stages nothing untracked, so the caller sweeps no untracked
+    files). Returns _ADD_ALL for `git add .` / `-A` / `--all`. Otherwise a list of
+    the explicit path tokens. Conservative on parse errors: a present-but-
+    unparseable `git add` returns _ADD_ALL (recall-safe — never silently miss a
+    file the commit is adding).
+    """
+    if not command:
+        return None
+    saw_add = False
+    targets = []
+    for seg in re.split(r"&&|\|\||;|\n", command):
+        m = re.search(r"\bgit\s+add\b(.*)", seg)
+        if not m:
+            continue
+        saw_add = True
+        try:
+            toks = shlex.split(m.group(1).strip(), posix=True)
+        except ValueError:
+            return _ADD_ALL  # unparseable -> sweep all (recall-safe)
+        for t in toks:
+            if t in (".", "-A", "--all", ":/", "*"):
+                return _ADD_ALL
+            if t.startswith("-"):
+                continue  # other flags: -u (tracked only), -p, -f, -v, ...
+            targets.append(t)
+    if not saw_add:
+        return None
+    return targets
+
+
+def _add_covers(spec, rel):
+    """True if an untracked `rel` path is staged by the parsed add `spec`."""
+    if spec == _ADD_ALL:
+        return True
+    rel_n = rel.replace("\\", "/")
+    for p in spec or []:
+        p_n = p.replace("\\", "/").rstrip("/")
+        if rel_n == p_n or rel_n.startswith(p_n + "/"):
+            return True
+    return False
+
+
+def _untracked_diff(cwd, command=""):
+    """Synthesize add-diffs for the untracked files THIS commit stages (scoped to
+    the command's `git add`; see staged_diff). Brand-new risky files added by the
+    commit are still classified; unrelated working-tree cruft is not."""
+    spec = parse_git_add_targets(command)
+    if spec is None:
+        return ""  # no `git add` in this command -> no untracked files staged
     porcelain = _git(["status", "--porcelain", "--untracked-files=all"], cwd)
     if not porcelain.strip():
         return ""
@@ -167,6 +227,8 @@ def _untracked_diff(cwd):
             continue
         rel = line[3:].strip().strip('"')
         if not rel or rel.endswith("/"):
+            continue
+        if not _add_covers(spec, rel):
             continue
         try:
             full = os.path.join(cwd or ".", rel)
@@ -260,7 +322,7 @@ def check_deliberate_unlock(cfg, repo, area, session_id):
 # Pure decision logic (unit-tested in tests/test_gate_logic.py)
 # ---------------------------------------------------------------------------
 
-def audit_decision(classification, check_response):
+def audit_decision(classification, check_response, force_risky=False):
     """Return (action, detail). action ∈ {'allow', 'allow_warn', 'deny'}.
 
     - not risky → allow.
@@ -269,12 +331,21 @@ def audit_decision(classification, check_response):
     - recent_pass (escape valve) → allow_warn (a recent audit passed; hashes
       didn't align, but we don't deadlock).
     - else → deny (route the agent to audit_coding).
+
+    `force_risky` (gate self-mutation, §6.1, audit F-005): treat the change as
+    risky even if the classifier found nothing, so a commit touching the gate's
+    own config/hooks ALWAYS requires a review — but is RELEASABLE (covered /
+    recent_pass / fail-open), not the old unconditional deny (which made the gate's
+    own files un-maintainable through the gate).
     """
-    if not classification.get("risky"):
+    if not classification.get("risky") and not force_risky:
         return ("allow", "no risky hunks")
     if check_response is None:
         return ("allow", "coverage check unavailable; failing open")
-    if check_response.get("covered"):
+    # `covered` is only meaningful when there are hunks to cover. A gate-self
+    # change may classify to zero risky hunks, and "all of [] covered" is vacuously
+    # true — don't let that wave it through; require recent_pass (a real review).
+    if classification.get("hunks") and check_response.get("covered"):
         return ("allow", "covered by a prior audit")
     if check_response.get("recent_pass"):
         return ("allow_warn", "a recent audit passed but coverage could not be "
@@ -282,13 +353,18 @@ def audit_decision(classification, check_response):
     return ("deny", "uncovered")
 
 
-def deliberate_decision(classification, check_response, mode):
+def deliberate_decision(classification, check_response, mode, force_risky=False):
     """Return (action, detail). action ∈ {'allow', 'allow_warn', 'advise', 'deny'}.
 
     Per-confidence tiering (mode='tiered'): high-confidence forks block, low ones
     are advisory. mode='block' blocks all risky; mode='advisory' never blocks.
+
+    `force_risky` (gate self-mutation): the change touches the gate's own
+    config/hooks — ALWAYS block until reviewed, regardless of mode/confidence
+    (privilege-escalation risk), but RELEASABLE via unlock / recent_pass /
+    fail-open (not the old unconditional deny).
     """
-    if not classification.get("risky"):
+    if not classification.get("risky") and not force_risky:
         return ("allow", "no risky design change")
     if check_response is None:
         return ("allow", "unlock check unavailable; failing open")
@@ -298,7 +374,9 @@ def deliberate_decision(classification, check_response, mode):
         return ("allow_warn", "a recent deliberation passed; area unverified — allowing")
 
     conf = classification.get("max_confidence")
-    if mode == "advisory":
+    if force_risky:
+        blocking = True  # gate-self blocks in every mode until reviewed
+    elif mode == "advisory":
         blocking = False
     elif mode == "block":
         blocking = True

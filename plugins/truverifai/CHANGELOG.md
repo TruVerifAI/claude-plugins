@@ -3,6 +3,20 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/truverifai/.claude-plugin/plugin.json`.
 
+## 0.1.15
+
+**Two review-gate fixes (hooks only).**
+- **Scoped untracked-file checking.** The audit commit-gate used to classify *every*
+  untracked file in your working tree, so a bare `git commit` (or `git commit -a`)
+  could be blocked by unrelated files it wasn't even committing. It now only looks at
+  the untracked files the commit's own `git add` actually stages — bare commit → none,
+  `git add path` → that path, `git add .` → all.
+- **Gate-config changes are reviewable, not a dead end.** A commit/write touching the
+  gate's own config or hooks used to be blocked unconditionally with no way to proceed.
+  It now still always requires a review (privilege-escalation safety), but releases
+  normally once you run the suggested audit/deliberate — it cannot be released by a
+  skip.
+
 ## 0.1.14
 
 **Two-channel risk classifier for the review gates.** The PreToolUse gates'
