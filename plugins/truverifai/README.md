@@ -83,16 +83,6 @@ Options, set in `/plugin` → **Installed** → **TruVerifAI** (type the value, 
 - **`deliberate_mode`** (`tiered` / `block` / `advisory`, default `tiered`) — `tiered` blocks only high-confidence / irreversible design forks and is advisory on the rest; `block` blocks every risky design write; `advisory` never blocks (surfaces a suggestion only). The audit (pre-commit) gate is unaffected.
 - **`borderline_mode`** (`advisory` / `synthesize_gate` / `off`, default `advisory`) — how borderline (low-confidence) changes are handled: `advisory` surfaces a fast `synthesize_coding` suggestion; `synthesize_gate` soft-gates the highest-signal borderline changes (releasable by a quick `synthesize_coding` or a one-line skip); `off` ignores them. Never hard-blocks.
 
-## Adherence telemetry
-
-The plugin includes a `PostToolUse` hook that detects when your agent runs `git commit` and reports the timing (not content) to truverif.ai. This populates the adherence card on https://truverif.ai/settings/mcp showing:
-
-> "Your agent committed code N times this week and invoked TruVerifAI on M of those sessions."
-
-What's reported: timing of git-commit invocations the agent runs through Claude Code. What's NOT reported: commit messages, file paths, diffs, branch names, repository identifiers. The data handling document at https://truverif.ai/data-handling has the full disclosure.
-
-Commits made directly from your terminal (not via Claude Code) are not visible to the plugin and won't register. Other agents (Cursor, Codex CLI, Gemini CLI) are not in V1 scope — those integrations come later.
-
 ## Pricing
 
 Tool invocations are billed against your TruVerifAI account. Pricing at https://truverif.ai/pricing. Approximate per-call cost: synthesize ~$0.04, deliberate ~$0.20, audit ~$0.20. Latencies: synthesize 15-30s, deliberate/audit 60-120s.
@@ -122,9 +112,6 @@ We've added the `anthropic/expandByDefault: true` `_meta` annotation to all tool
 
 Cursor (as of 2026-05) doesn't auto-activate skills. The skills install correctly under `~/.cursor/skills/` but you have to invoke them manually (`/truverifai-audit-before-commit`). The references and examples files give Cursor the context it needs once invoked. Auto-discovery may land in a future Cursor release.
 
-### Adherence telemetry is Claude Code only (V1)
-
-The PostToolUse hook that detects git commits ships with the Claude Code plugin. V1.1 will add equivalent integrations for Codex CLI, Gemini CLI, and Cursor. Until then, the adherence card on `truverif.ai/settings/mcp` reflects only commits made through Claude Code.
 
 ## Support
 

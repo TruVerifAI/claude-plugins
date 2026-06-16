@@ -42,9 +42,12 @@ input=$(cat 2>/dev/null) || exit 0
 # always preferable to a broken hook.
 command -v jq >/dev/null 2>&1 || exit 0
 
-# Check the user-config toggle. Telemetry is opt-in-by-default but the
-# user can disable it via /plugin config truverifai.
-enabled="${CLAUDE_PLUGIN_OPTION_ENABLE_ADHERENCE_TELEMETRY:-true}"
+# Check the user-config toggle. The user-facing enable_adherence_telemetry
+# option was removed in 0.1.16 (the adherence card it fed was retired —
+# see mcp-roadmap.md item #4), so the env var is normally unset and this
+# hook no-ops by default. The commit-detected ingestion stream is kept
+# forward-compatible: telemetry only fires if the var is explicitly set.
+enabled="${CLAUDE_PLUGIN_OPTION_ENABLE_ADHERENCE_TELEMETRY:-false}"
 [ "$enabled" = "true" ] || exit 0
 
 # Filter: only Bash tool invocations.

@@ -26,21 +26,9 @@ Confirm the four skills are present: `truverifai-audit-before-commit`, `truverif
 - `synthesize` — Quick sanity checks. ~15-30s.
 - `record-outcome` (V1.1) — AFTER acting on any of the three above; reports whether the deliberation mattered. Free of credits.
 
-## Step 4 — Adherence telemetry status
-
-Check the value of `${user_config.enable_adherence_telemetry}`.
-
-If `true` (the default for V1): tell the user explicitly that telemetry is on, what it does and doesn't report, and how to opt out. Don't be vague — this is a privacy-relevant default that the install flow did NOT explicitly prompt for, so the user should know:
-
-> "Adherence telemetry is ON. This means: each time your agent runs `git commit` from inside Claude Code, the plugin reports the TIMING of that commit to TruVerifAI. The number you'll see on the adherence card at https://truverif.ai/settings/mcp is 'agent committed N times this week; invoked TruVerifAI M times' — the gap is what tells you whether your agent is actually reaching for the tool. NEVER reported: commit messages, file paths, diffs, branch names, repository identifiers, working directory, raw commands, or commit SHAs. Full disclosure: https://truverif.ai/data-handling. To opt out, run `/plugin`, click Installed → TruVerifAI, toggle 'Enable adherence telemetry' off, click Save configuration, then run `/reload-plugins`."
-
-If `false`: tell the user telemetry is off:
-
-> "Adherence telemetry is OFF. The adherence card on /settings/mcp won't populate for this Claude Code install. If you want to enable it, run `/plugin`, click Installed → TruVerifAI, toggle 'Enable adherence telemetry' on, Save, then `/reload-plugins`."
-
-## Step 5 — Final summary
+## Step 4 — Final summary
 
 Report a one-paragraph summary:
-> "TruVerifAI plugin is installed and connected. Four skills are active (three primary plus the V1.1 record-outcome follow-up); adherence telemetry is [on/off]. Your agent will reach for TruVerifAI automatically when it encounters decision moments matching the skill triggers, and will report outcomes back to your dashboard after acting on responses. Run `/truverifai-setup` again any time to re-verify."
+> "TruVerifAI plugin is installed and connected. Four skills are active (three primary plus the V1.1 record-outcome follow-up). Your agent will reach for TruVerifAI automatically when it encounters decision moments matching the skill triggers, and will report outcomes back to your dashboard after acting on responses. Run `/truverifai-setup` again any time to re-verify."
 
 Then end the command. Do not start a conversation thread beyond the setup report unless the user asks a follow-up.

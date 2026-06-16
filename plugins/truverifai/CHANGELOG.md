@@ -3,6 +3,16 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/truverifai/.claude-plugin/plugin.json`.
 
+## 0.1.16
+
+**Adherence telemetry config removed.** The commit-based "adherence card" was
+retired (superseded by the gate-based review/skip metrics and the outcome Impact
+card), so the `enable_adherence_telemetry` plugin option is removed — it only added
+confusion with no user-visible payoff. The `commit-detected` PostToolUse hook now
+defaults to **off**: it no-ops unless that timing-telemetry env var is explicitly
+set. Only timing was ever reported (never commit content), and nothing else changes
+about how the gates or skills work.
+
 ## 0.1.15
 
 **Two review-gate fixes (hooks only).**
