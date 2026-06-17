@@ -12,7 +12,6 @@ hash-misalignment deadlock.
 """
 
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -30,7 +29,10 @@ def main():
         g.emit_allow()
 
     command = (inp.get("tool_input") or {}).get("command", "") or ""
-    if not re.search(r"(^|\s)git\s+(commit|merge)\b", command):
+    # Robust to git global options (`git -C repo commit`, `git --no-pager commit`,
+    # `git -c k=v commit`) — a naive `git\s+commit` regex would miss those and let the
+    # commit bypass the gate entirely (audit F-001, 2026-06-17).
+    if not g.command_invokes_git(command, ("commit", "merge")):
         g.emit_allow()  # not a commit/merge
 
     cwd = inp.get("cwd") or os.getcwd()
@@ -39,32 +41,42 @@ def main():
         g.emit_allow()  # nothing staged
 
     classification = classify_diff(diff, trigger_threshold=g.effective_threshold(cfg))
-    # Gate self-mutation (§6.1, audit F-005): a commit that modifies the gate's own
-    # config/hooks can disable it from inside — privilege escalation. ALWAYS require a
-    # review (force_risky) even if the content classifier finds nothing, but route it
-    # through the SAME release path (covered / recent_pass / fail-open) so the gate's
-    # own files remain maintainable via an audit — not the old unconditional deny.
     gate_self = g.diff_touches_gate_self(diff)
     if not classification["risky"] and not gate_self:
         g.emit_allow()  # trivial, non-gate-self change
 
     repo = g.repo_fingerprint(cwd)
+
+    # Gate self-mutation (§6.1, audit F-005): a commit that modifies the gate's own
+    # config/hooks can disable it from inside — privilege escalation. It releases ONLY
+    # on a real audit PASS of THIS exact change (no recent_pass, no skip; Option 4,
+    # 2026-06-17). ALL gate-self changes bind to the synthesized self-coverage hash —
+    # empty-hunk AND risky-hunk (re-audit F-001): the `gself:` namespace is what the
+    # SKIP / recent_pass exclusions key off, so a risky gate-self change must NOT fall back
+    # to bare-hex hunk hashes (those would be SKIP-releasable). audit_decision_gate_self
+    # ignores recent_pass; the server writes the matching gself hash on a PASS.
+    if gate_self:
+        resp = g.check_audit_coverage(cfg, repo, [g.gate_self_coverage_hash(diff)])
+        action, detail = g.audit_decision_gate_self(resp)
+        if action == "deny":
+            g.emit_deny(
+                "TruVerifAI flagged a high-risk change for a quick review before it ships — "
+                "this commit edits the review gate's own settings (risk_signals.json / "
+                "risk_classifier.py / gate_lib.py / hooks.json / .claude-plugin), the "
+                "highest-stakes area, so the review can't be skipped.\n"
+                "Run `audit_coding` with your proposed_action + relevant_code, AND pass:\n"
+                f'  gate_repo = "{repo}"\n'
+                "  gate_diff = the staged diff (run: git diff --staged)\n"
+                "TruVerifAI records the result and the commit proceeds on retry. "
+                "(Gate-self changes need a real audit of THIS change — they can't be "
+                "skipped, and an unrelated recent audit won't release them.)"
+            )
+        g.emit_allow(detail if action == "allow_warn" else None)
+
+    # Non-gate-self risky change: unchanged — covered / recent_pass escape valve / fail-open.
     hashes = [h["content_hash"] for h in classification["hunks"]]
     resp = g.check_audit_coverage(cfg, repo, hashes)
-    action, detail = g.audit_decision(classification, resp, force_risky=gate_self)
-
-    if action == "deny" and gate_self:
-        g.emit_deny(
-            "TruVerifAI flagged a high-risk change for a quick review before it ships — "
-            "this commit edits the review gate's own settings (risk_signals.json / "
-            "risk_classifier.py / gate_lib.py / hooks.json / .claude-plugin), the "
-            "highest-stakes area, so the review can't be skipped.\n"
-            "Run `audit_coding` with your proposed_action + relevant_code, AND pass:\n"
-            f'  gate_repo = "{repo}"\n'
-            "  gate_diff = the staged diff (run: git diff --staged)\n"
-            "TruVerifAI records the result and the commit proceeds on retry. "
-            "(Gate-self changes need a real audit — they can't be skipped.)"
-        )
+    action, detail = g.audit_decision(classification, resp, force_risky=False)
     if action == "deny":
         cats = ", ".join(sorted({h["category"] for h in classification["hunks"]})) or "high-stakes code"
         g.emit_deny(

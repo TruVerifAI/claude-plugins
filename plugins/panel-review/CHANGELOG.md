@@ -3,6 +3,25 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/panel-review/.claude-plugin/plugin.json`.
 
+## 0.2.1
+
+**Review-gate correctness fixes** — closes cases where the proactive gates could
+release a risky change *without* a real review.
+
+- **Gate-self changes** (edits to the gate's own config/hooks) now require a real
+  audit of *that exact change* to proceed. They can no longer slip through on an
+  unrelated recent review or a logged skip.
+- **Escape valve tightened:** a logged skip of one change no longer briefly
+  downgrades every *other* risky commit/write to advisory.
+- **Broader commit coverage:** `git commit -a` and `git commit <pathspec>`, and
+  commits run with git global options (`git -C <path> commit`, `git --no-pager
+  commit`, `git -c k=v commit`, …), are now correctly reviewed — some of these
+  previously bypassed the gate entirely.
+- Works with the updated TruVerifAI backend; the gate fails *open* (never blocks)
+  if it reaches an older backend, so there's no disruption during rollout.
+
+No changes to tools, skills, configuration options, or your API key.
+
 ## 0.2.0
 
 **Plugin renamed to `panel-review` ("AI Panel Review").** The installable plugin

@@ -25,7 +25,17 @@ import sys
 import tempfile
 import urllib.request
 
-from risk_classifier import classify_diff, hunk_content_hash, clamp_threshold  # vendored, same dir
+from risk_classifier import (  # vendored, same dir
+    classify_diff,
+    hunk_content_hash,
+    clamp_threshold,
+    # Gate-self detection + the synthesized self-coverage hash live in the vendored
+    # classifier so the client gate and the SERVER receipt writer agree byte-for-byte.
+    is_gate_self_mutation,
+    diff_touches_gate_self,
+    gate_self_coverage_hash,
+    GATE_SELF_HASH_PREFIX,
+)
 
 
 DEFAULT_BASE_URL = "https://api.truverif.ai"
@@ -150,9 +160,19 @@ def staged_diff(cwd, command=""):
     `git commit` / `git commit -a` stages no untracked files, so we sweep NONE —
     otherwise pre-existing untracked working-tree cruft (eval fixtures, screenshots)
     gates an unrelated scoped commit (the over-inclusion bug).
+
+    A `git commit -a` / `git commit <pathspec>` records WORKING-TREE content that is
+    NOT in the index (it stages inline, after the hook fires). If something else was
+    already staged, `git diff --staged` would be non-empty yet MISS those worktree
+    changes -> under-coverage. So when the commit targets the worktree
+    (`commit_targets_worktree`), classify `git diff HEAD` (HEAD..worktree, a superset
+    of both the index and the inline-staged content) rather than the index alone.
     """
-    staged = _git(["diff", "--staged"], cwd)
-    base = staged if staged.strip() else _git(["diff", "HEAD"], cwd)
+    if commit_targets_worktree(command):
+        base = _git(["diff", "HEAD"], cwd)
+    else:
+        staged = _git(["diff", "--staged"], cwd)
+        base = staged if staged.strip() else _git(["diff", "HEAD"], cwd)
     return base + _untracked_diff(cwd, command)
 
 
@@ -165,38 +185,148 @@ _UNTRACKED_MAX_BYTES = 200_000
 _ADD_ALL = "ALL"
 
 
+# ---------------------------------------------------------------------------
+# Git command parsing — robust to GLOBAL options before the subcommand.
+# `git -C <path> commit`, `git --no-pager commit`, `git -c k=v commit`,
+# `sudo git commit`, ... all invoke commit, but a naive `git\s+commit` regex
+# misses them. If the gate's command filter / add-scope / worktree check were
+# fooled by a global option, the commit would BYPASS THE GATE ENTIRELY (audit
+# F-001, 2026-06-17). All three share this parser so none of them is fooled.
+# ---------------------------------------------------------------------------
+
+# git GLOBAL options (BEFORE the subcommand) that consume the NEXT token as a value
+# (space-separated form). The `=`-joined form (`--git-dir=.git`, `-C=foo`) is a single
+# token that starts with `-`, so it's handled by the generic flag branch (i += 1) — do
+# NOT special-case it here, or the embedded value would wrongly skip the following token.
+_GIT_GLOBAL_VALUE_OPTS = frozenset({
+    "-c", "-C", "--git-dir", "--work-tree", "--namespace", "--super-prefix",
+    "--config-env", "--exec-path",
+})
+
+# `git commit` options that CONSUME the next token as their value, so that token is not
+# a pathspec. (`=`-joined forms like `--message=x` and short-bundled `-mx` are single
+# tokens that start with `-`, so they're handled as flags without special-casing.)
+_COMMIT_VALUE_OPTS = frozenset({
+    "-m", "--message", "-F", "--file", "-C", "--reuse-message", "-c", "--reedit-message",
+    "--author", "--date", "-t", "--template", "--fixup", "--squash", "--trailer",
+})
+
+# Identity sentinel (compared with `is`, NOT ==): a segment that mentions git + a target
+# subcommand but can't be shlex-parsed, so callers take their safe/over-inclusive branch.
+_GIT_PARSE_ERROR = object()
+
+
+def _is_git_token(tok):
+    """True if `tok` is the git executable — `git`, an absolute path like `/usr/bin/git`,
+    or a Windows `...\\git.exe`. Structural (basename) so we don't lean on the parse-error
+    sentinel for a fully-qualified git path (audit F-001)."""
+    base = tok.replace("\\", "/").rsplit("/", 1)[-1]
+    return base in ("git", "git.exe")
+
+
+def _segment_git_subcommand_args(seg, subcommands):
+    """For ONE shell segment, return (subcommand, args_after_it) if it invokes
+    `git <sub>` for some sub in `subcommands` — skipping leading wrapper tokens
+    (sudo / env) and git GLOBAL options (incl. value-taking `-C <path>` / `-c k=v`).
+    Return (None, None) otherwise. Raises ValueError if the segment can't be parsed."""
+    toks = shlex.split(seg.strip(), posix=True)  # may raise ValueError
+    gi = next((idx for idx, t in enumerate(toks) if _is_git_token(t)), None)
+    if gi is None:
+        return (None, None)
+    i = gi + 1
+    while i < len(toks):
+        t = toks[i]
+        if t in subcommands:
+            return (t, toks[i + 1:])
+        if t in _GIT_GLOBAL_VALUE_OPTS:
+            i += 2  # global option + its value token
+            continue
+        if t.startswith("-"):
+            i += 1  # other global flag (--no-pager, --paginate, --bare, ...)
+            continue
+        return (None, None)  # a different git subcommand (git log / status / ...)
+    return (None, None)
+
+
+def _iter_git_subcommands(command, subcommands):
+    """Yield (subcommand, args_after) for each shell segment of `command` that invokes
+    `git <sub>` for sub in `subcommands`. A segment that mentions git + a target
+    subcommand but is unparseable yields (_GIT_PARSE_ERROR, None) so callers fail safe."""
+    # NOTE: this split is not quote-aware (a `;`/`&&` inside a quoted commit message splits
+    # the segment), but that only makes the segment unparseable -> the sentinel below fires
+    # the gate (safe over-inclusion), same as the prior regex approach.
+    for seg in re.split(r"&&|\|\||;|\n", command or ""):
+        try:
+            sub, args = _segment_git_subcommand_args(seg, subcommands)
+        except ValueError:
+            # unparseable segment: fire safe iff it plausibly invokes `git <sub>`. Word-
+            # boundary `git` (not a bare substring, so `/home/digit/...` doesn't match).
+            if re.search(r"\bgit\b", seg) and any(s in seg for s in subcommands):
+                yield (_GIT_PARSE_ERROR, None)
+            continue
+        if sub is not None:
+            yield (sub, args)
+
+
+def command_invokes_git(command, subcommands):
+    """True if `command` invokes `git <sub>` for any sub in `subcommands` — robust to git
+    GLOBAL options (so `git -C repo commit` is NOT mistaken for a non-commit). Used by the
+    audit gate's command filter; a parse error counts as a match (the gate then fires and
+    classifies the real diff — the safe direction)."""
+    for _ in _iter_git_subcommands(command, subcommands):
+        return True
+    return False
+
+
 def parse_git_add_targets(command):
     """What untracked paths will a `git add` in `command` stage?
 
-    Returns None when the command has no `git add` (bare `git commit` /
-    `git commit -a` — stages nothing untracked, so the caller sweeps no untracked
-    files). Returns _ADD_ALL for `git add .` / `-A` / `--all`. Otherwise a list of
-    the explicit path tokens. Conservative on parse errors: a present-but-
-    unparseable `git add` returns _ADD_ALL (recall-safe — never silently miss a
-    file the commit is adding).
+    None when there is no `git add` (bare `git commit` / `-a` stage nothing untracked).
+    _ADD_ALL for `git add .` / `-A` / `--all`. Else the explicit path tokens. Robust to
+    git global options. Conservative: an unparseable `git add` -> _ADD_ALL (recall-safe).
     """
-    if not command:
-        return None
     saw_add = False
     targets = []
-    for seg in re.split(r"&&|\|\||;|\n", command):
-        m = re.search(r"\bgit\s+add\b(.*)", seg)
-        if not m:
-            continue
-        saw_add = True
-        try:
-            toks = shlex.split(m.group(1).strip(), posix=True)
-        except ValueError:
+    for sub, args in _iter_git_subcommands(command, ("add",)):
+        if sub is _GIT_PARSE_ERROR:
             return _ADD_ALL  # unparseable -> sweep all (recall-safe)
-        for t in toks:
+        saw_add = True
+        for t in args:
             if t in (".", "-A", "--all", ":/", "*"):
                 return _ADD_ALL
             if t.startswith("-"):
                 continue  # other flags: -u (tracked only), -p, -f, -v, ...
             targets.append(t)
-    if not saw_add:
-        return None
-    return targets
+    return targets if saw_add else None
+
+
+def commit_targets_worktree(command):
+    """True if a `git commit` in `command` records WORKING-TREE content not in the index —
+    `git commit -a/--all` (incl. short bundles like `-am`) or `git commit <pathspec>`. For
+    those the staged diff under-covers (see staged_diff). A bare `git commit` /
+    `git commit -m ...` records only the index. Robust to git global options. Bias-to-True
+    (unparseable / ambiguous -> True; over-inclusion is the SAFE direction for a risk gate).
+    """
+    for sub, args in _iter_git_subcommands(command, ("commit",)):
+        if sub is _GIT_PARSE_ERROR:
+            return True
+        i = 0
+        while i < len(args):
+            t = args[i]
+            if t == "--":
+                return i + 1 < len(args)  # paths after `--`
+            if t in ("-a", "--all"):
+                return True
+            if re.fullmatch(r"-[A-Za-z]*a[A-Za-z]*", t):  # short bundle with 'a' (-am, -av)
+                return True
+            if t in _COMMIT_VALUE_OPTS:
+                i += 2  # skip the option AND its value token
+                continue
+            if t.startswith("-"):
+                i += 1  # other no-value flag (-v, --amend, --no-verify, -q, -S, ...)
+                continue
+            return True  # a bare (non-flag) token = a pathspec -> records worktree content
+    return False  # bare `git commit` (index-only) or no commit segment
 
 
 def _add_covers(spec, rel):
@@ -242,34 +372,12 @@ def _untracked_diff(cwd, command=""):
     return "".join(out)
 
 
-# Writes that target the gate's OWN config / hooks / plugin dir can disable the gate
-# from inside (raise the threshold, empty the signal sets, unhook it). Treat them as
-# always-risky regardless of content (design §6.1, audit F-005 — gate self-mutation).
-_GATE_SELF_PATHS = re.compile(
-    r"(^|/)(risk_signals\.json|risk_classifier\.py|gate_lib\.py|hooks\.json"
-    r"|\.claude-plugin/|\.git/hooks/)",
-    re.IGNORECASE,
-)
-
-
-def is_gate_self_mutation(path):
-    """True if `path` would modify the gate's own config/hooks (a bypass vector)."""
-    if not path:
-        return False
-    return bool(_GATE_SELF_PATHS.search(path.replace("\\", "/")))
-
-
-def diff_touches_gate_self(diff_text):
-    """True if any file in the diff modifies the gate's own config/hooks."""
-    for line in (diff_text or "").splitlines():
-        if line.startswith("+++ b/"):
-            if is_gate_self_mutation(line[6:].strip()):
-                return True
-        elif line.startswith("diff --git "):
-            parts = line.split(" b/", 1)
-            if len(parts) > 1 and is_gate_self_mutation(parts[1].strip()):
-                return True
-    return False
+# Gate self-mutation detection (`is_gate_self_mutation` / `diff_touches_gate_self`)
+# and the synthesized self-coverage hash (`gate_self_coverage_hash`) now live in the
+# vendored `risk_classifier` module (imported above), so the SERVER receipt writer
+# computes the SAME hash for the SAME gate-self diff. Writes targeting the gate's own
+# config/hooks can disable it from inside (raise the threshold, empty the signal sets,
+# unhook it) — always-risky regardless of content (design §6.1, audit F-005).
 
 
 def synth_write_diff(path, added_text):
@@ -350,6 +458,42 @@ def audit_decision(classification, check_response, force_risky=False):
     if check_response.get("recent_pass"):
         return ("allow_warn", "a recent audit passed but coverage could not be "
                               "confirmed (hash misalignment) — allowing")
+    return ("deny", "uncovered")
+
+
+def audit_decision_gate_self(check_response):
+    """Decision for a GATE-SELF change (a write/commit touching the gate's own
+    config/hooks). Return (action, detail). action ∈ {'allow', 'allow_warn', 'deny'}.
+
+    Gate-self changes are the highest-stakes — weakening these files disables the
+    gate from inside (privilege escalation). Unlike `audit_decision`, this path
+    releases ONLY on `covered`: a real audit/deliberate PASS of THIS exact change
+    (its `gate_self_coverage_hash`, written into the receipt by the server). It
+    deliberately does NOT honor `recent_pass` or a logged SKIP — a repo-wide recent
+    audit of unrelated code, or a one-line skip, must not release a gate-self change
+    (Option 4, 2026-06-17 deliberation; closes the gate-self bypass).
+
+    Still FAILS OPEN on infrastructure error (None response) — our own server being
+    unreachable must never permanently trap the agent (no-deadlock constraint). The
+    real "out" is `audit_coding`/`deliberate_coding` on the change itself → the
+    server writes its coverage hash → the retry sees `covered` → released.
+    """
+    if check_response is None:
+        return ("allow_warn", "coverage check unavailable (infra error); failing open — "
+                              "review this gate-self change manually")
+    if check_response.get("covered"):
+        return ("allow", "gate-self change covered by a real audit PASS of this change")
+    # Version-skew safety (audit F-001): an OLD server (pre-Option-4) neither reports
+    # `gate_self_coverage` support nor writes the gself coverage hash, so `covered` can
+    # never become true against it. Hard-denying would DEADLOCK a gate-self change under
+    # healthy infra during a server-before-client rollout. Fail OPEN instead (the scoped
+    # gate-self protection just isn't active until the server ships) — never trap the agent.
+    # Key on the capability flag's ABSENCE, not its falsiness (F-NEW-001): a healthy server
+    # always sends True, so a present-but-False value must NOT silently downgrade to
+    # allow_warn — only a missing key (an old server) does.
+    if "gate_self_coverage" not in check_response:
+        return ("allow_warn", "server has not deployed scoped gate-self coverage yet; "
+                              "failing open — review this gate-self change manually")
     return ("deny", "uncovered")
 
 

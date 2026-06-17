@@ -213,6 +213,102 @@ def _iter_file_hunks(diff_text):
     return results
 
 
+# ---------------------------------------------------------------------------
+# Gate self-mutation (§6.1, audit F-005) + the synthesized self-coverage hash.
+# A change touching the gate's OWN config/hooks can disable the gate from inside
+# (raise the threshold, empty the signal sets, unhook it) — privilege escalation,
+# so the gates force a review even when the content classifier finds nothing.
+# These live in this vendored module (byte-identical client + server) so the
+# client gate and the server receipt writer agree on BOTH detection and the
+# self-coverage hash. Moved from gate_lib.py 2026-06-17 (Option 4 deliberation).
+# ---------------------------------------------------------------------------
+
+# The gate's release authority, end to end: the client classifier + decision lib + hook
+# DRIVERS (weakening a driver disables the gate), AND the server-side files that decide
+# coverage / what counts as a releasing receipt (receipt_writer / receipt_coverage /
+# gate_skip). A change to any of these can disable the gate from inside, so they're all
+# gate-self (Option 4 audit F-003, 2026-06-17). NOTE the broad multi-route file
+# mcp_user_routes.py is intentionally NOT here (it carries dozens of unrelated routes);
+# its /receipts/check endpoint is protected by PR review + the manual Replit deploy gate.
+_GATE_SELF_PATHS = re.compile(
+    r"(^|/)(risk_signals\.json|risk_classifier\.py|gate_lib\.py|hooks\.json"
+    r"|audit_gate\.py|deliberate_gate\.py"
+    r"|receipt_writer\.py|receipt_coverage\.py|gate_skip\.py"
+    r"|\.claude-plugin/|\.git/hooks/)",
+    re.IGNORECASE,
+)
+
+
+def is_gate_self_mutation(path):
+    """True if `path` would modify the gate's own config/hooks (a bypass vector)."""
+    if not path:
+        return False
+    return bool(_GATE_SELF_PATHS.search(path.replace("\\", "/")))
+
+
+def diff_touches_gate_self(diff_text):
+    """True if any file in the diff modifies the gate's own config/hooks."""
+    for line in (diff_text or "").splitlines():
+        if line.startswith("+++ b/"):
+            if is_gate_self_mutation(line[6:].strip()):
+                return True
+        elif line.startswith("diff --git "):
+            parts = line.split(" b/", 1)
+            if len(parts) > 1 and is_gate_self_mutation(parts[1].strip()):
+                return True
+    return False
+
+
+# Namespace so a synthesized gate-self hash can never collide with — or be satisfied
+# by — a normal hunk_content_hash (which is bare hex). The coverage check, the SKIP
+# filter, and the deliberate-only-contributes-gate-self rule all key off the NAMESPACE
+# (version-agnostic). The construction PREFIX is versioned (audit F-005): bump the
+# version if the hashed inputs ever change, so stale receipts mismatch diagnosably
+# (and a future migration can recognize both) rather than silently failing coverage.
+GATE_SELF_HASH_NAMESPACE = "gself:"
+GATE_SELF_HASH_PREFIX = GATE_SELF_HASH_NAMESPACE + "v1:"
+
+
+def gate_self_coverage_hash(diff_text):
+    """Deterministic self-coverage hash for a gate-self change whose CONTENT
+    classifies to ZERO risky hunks (a comment, a deleted signal pattern, ...).
+
+    The gate can't bind such a change to a normal hunk hash, so it binds to THIS
+    hash; a real audit/deliberate PASS of the same diff writes the same hash into
+    the receipt's covered_hunks (receipt_writer), and ONLY that releases the gate —
+    never recent_pass, never a SKIP (Option 4, 2026-06-17 deliberation).
+
+    Hashes per-file ADDED/REMOVED lines (sigil-tagged so add != remove; same
+    rstrip / drop-blank normalization as hunk_content_hash), restricted to
+    gate-self files, stable-sorted by normalized path. NOT the whole diff: context
+    lines, `index <sha>` headers and CRLF all differ between the audit-time and
+    commit-time diffs, but the per-file +/- content does not. Prefixed with
+    GATE_SELF_HASH_PREFIX to namespace it away from hunk_content_hash.
+
+    Byte-identical client (plugin/hooks/) and server (mcp_server/) — both import it
+    from this vendored module (sync_risk_classifier.py --check enforces it).
+
+    Limitation (re-audit F-003): a pure rename / mode-only change to a gate-self file has
+    no +/- content, so it yields zero segments and a content-insensitive constant hash.
+    Such changes are rare and still require a real PASS to release (no bypass), but two of
+    them would collide on coverage — accepted as a known edge, not a security gap.
+    """
+    segments = {}
+    for path, added, removed in _iter_file_hunks(diff_text):
+        norm_path = (path or "").replace("\\", "/")
+        if not _GATE_SELF_PATHS.search(norm_path):
+            continue
+        tagged = (["+" + ln.rstrip() for ln in added if ln.strip() != ""]
+                  + ["-" + ln.rstrip() for ln in removed if ln.strip() != ""])
+        if tagged:
+            segments.setdefault(norm_path, []).extend(tagged)
+    h = hashlib.sha256()
+    for p in sorted(segments):
+        h.update(("\x00path:" + p + "\x00").encode("utf-8"))
+        h.update(("\n".join(segments[p]) + "\n").encode("utf-8"))
+    return GATE_SELF_HASH_PREFIX + h.hexdigest()[:40]
+
+
 def _any_match(patterns, lines):
     for pat in patterns:
         for ln in lines:

@@ -52,39 +52,48 @@ def main():
     classification = classify_diff(
         g.synth_write_diff(path, content), trigger_threshold=g.effective_threshold(cfg))
     # Gate self-mutation (§6.1, audit F-005): writing the gate's own config/hooks is
-    # privilege escalation — ALWAYS require a review (force_risky) even if the content
-    # classifier finds nothing, but route it through the SAME release path (unlock /
-    # recent_pass / fail-open) so the gate's own files stay maintainable via a review —
-    # not the old unconditional deny.
+    # privilege escalation — ALWAYS require a review even if the content classifier finds
+    # nothing. The gate-self branch below releases ONLY on a real PASS of THIS exact change
+    # (its synthesized self-coverage hash), never recent_pass / skip / area (Option 4).
     gate_self = g.is_gate_self_mutation(path)
     if not classification["risky"] and not gate_self:
         g.emit_allow()
 
     cwd = inp.get("cwd") or os.getcwd()
     repo = g.repo_fingerprint(cwd)
-    area = os.path.dirname(path) or "repo-root"
     session_id = inp.get("session_id")
-    resp = g.check_deliberate_unlock(cfg, repo, area, session_id)
 
-    # Gate-self: always block until reviewed (every mode), releasable via unlock /
-    # recent_pass / fail-open. No skip branch — a real deliberation is required.
+    # Gate self-mutation (§6.1, audit F-005): writing the gate's own config/hooks is
+    # privilege escalation. It releases ONLY on a real review (audit/deliberate PASS) of
+    # THIS exact write — keyed on the synthesized self-coverage hash of the content being
+    # written — never recent_pass, never a skip, never the coarse area-unlock (Option 4,
+    # 2026-06-17). The authoritative gate-self control is the commit gate; this is the
+    # symmetric pre-write layer. Still fails OPEN on infra error (no deadlock).
     if gate_self:
-        gs_action, gs_detail = g.deliberate_decision(
-            classification, resp, cfg["deliberate_mode"], force_risky=True)
+        self_hash = g.gate_self_coverage_hash(g.synth_write_diff(path, content))
+        gs_resp = g.check_audit_coverage(cfg, repo, [self_hash])
+        gs_action, gs_detail = g.audit_decision_gate_self(gs_resp)
         if gs_action == "deny":
             g.emit_deny(
                 "TruVerifAI flagged a high-risk change for a quick review before it ships — "
                 "this write edits the review gate's own settings (risk_signals.json / "
                 "risk_classifier.py / gate_lib.py / hooks.json / .claude-plugin), the "
                 "highest-stakes area, so the review can't be skipped.\n"
-                "Run `deliberate_coding` with your question + options_considered, AND pass:\n"
+                "Run `deliberate_coding` (or `audit_coding`) with your question + "
+                "options_considered, AND pass:\n"
                 f'  gate_repo = "{repo}"\n'
-                "  gate_diff = the change you're about to write\n"
+                "  gate_diff = a unified diff ADDING the file's new contents "
+                "(the change you're about to write)\n"
                 f'  gate_session_id = "{session_id or ""}"\n'
                 "TruVerifAI records the result and the write proceeds on retry. "
-                "(Gate-self changes need a real review — they can't be skipped.)"
+                "(Gate-self changes need a real review of THIS change — they can't be "
+                "skipped, and an unrelated recent review won't release them.)"
             )
-        g.emit_allow(gs_detail)  # unlocked / recent_pass / fail-open
+        g.emit_allow(gs_detail)  # covered / fail-open
+
+    # Non-gate-self design fork: coarse area-unlock (unchanged — recent_pass escape valve OK).
+    area = os.path.dirname(path) or "repo-root"
+    resp = g.check_deliberate_unlock(cfg, repo, area, session_id)
 
     action, detail = g.deliberate_decision(classification, resp, cfg["deliberate_mode"])
     cats = ", ".join(sorted({h["category"] for h in classification["hunks"]}))
