@@ -7,7 +7,7 @@
   },
   "metadata": {
     "description": "Multi-model second-opinion deliberation for high-stakes coding decisions. Five skills route your agent to TruVerifAI's MCP server (audit / deliberate / synthesize / record-outcome / skip-gate), plus proactive PreToolUse review gates that prompt an audit before risky commits and a deliberation or synthesize before risky design changes.",
-    "version": "0.2.1"
+    "version": "0.2.2"
   },
   "plugins": [
     {

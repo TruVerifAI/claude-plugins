@@ -31,12 +31,17 @@ much higher than ~15s–5min of review.
 
 ## What to do
 
-1. **Read the gate message** for `gate_repo` (always) and, depending on which
-   gate fired, either the staged diff (audit/commit gate) or the area
-   (deliberate/synthesize write gate), plus an optional `gate_session_id`.
+1. **Read the gate message.** It prints, ready to copy verbatim:
+   - `gate_repo` — always.
+   - The **release key** the skip needs — the gate computes and prints it for you, so
+     you never reconstruct it:
+     - audit / commit gate → a `hunk_hashes = [...]` list.
+     - deliberate / synthesize write gate → an `area = "..."` directory path.
+   - `gate_session_id` (when the write gate provides one) and a `gate_signal` line
+     (`classifier_version` / `score` / `risk_categories`).
 
 2. **Call `record_gate_skip`** (it may appear as `mcp__truverifai__record_gate_skip` depending on your client) with:
-   - `gate_repo` — the value from the gate message.
+   - `gate_repo` — copied from the gate message.
    - `reason_code` — the closest fit from the enum (see `references/reason-codes.md`):
      `false_positive_not_risky`, `trivial_change`, `already_reviewed_this_session`,
      `reviewed_outside_truverifai`, `generated_or_vendored_code`, `test_or_docs_only`,
@@ -46,9 +51,11 @@ much higher than ~15s–5min of review.
      1-sentence reason. General terms only — no secrets, file paths, or proprietary
      identifiers (same privacy rule as `record_outcome`).
    - `hunk_hashes` (audit/commit gate) **OR** `area` (deliberate/synthesize write
-     gate) — whichever the gate provided; plus `session_id` if it gave one.
+     gate) — **copy the value the gate printed**, verbatim; do NOT re-derive it. Plus
+     `session_id` if the gate gave one, and the `gate_signal` fields if you have them.
 
-3. **Retry the original action.** The gate now sees a logged skip and releases.
+3. **Retry the original action.** The gate recomputes the same key in-process, sees
+   your logged skip covering it, and releases.
 
 ## Legitimate reasons to skip (and the matching code)
 

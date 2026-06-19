@@ -23,6 +23,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 
 from risk_classifier import (  # vendored, same dir
@@ -606,8 +607,8 @@ def borderline_budget_consume(session_id, cap):
     """
     if not cap or cap <= 0:
         return True
-    sid = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id or "nosession"))[:64]
-    path = os.path.join(_borderline_state_dir(), "borderline_budget_%s.json" % sid)
+    path = os.path.join(_borderline_state_dir(),
+                        "borderline_budget_%s.json" % _safe_session_id(session_id))
     try:
         count = 0
         if os.path.exists(path):
@@ -620,6 +621,84 @@ def borderline_budget_consume(session_id, cap):
         return True
     except Exception:
         return True  # fail open — never let the budget file brick the gate
+
+
+# ---------------------------------------------------------------------------
+# Borderline ADVISORY visibility (Option B, 2026-06-19) — model-facing nudge + throttle
+# ---------------------------------------------------------------------------
+# In advisory mode the borderline tier used to write its "consider synthesize_coding"
+# note to stderr, which only reaches the user transcript — the MODEL never saw it, so
+# synthesize was never called. Option B surfaces it via PreToolUse `additionalContext`
+# (model-facing, non-blocking, no auto-approve). Because borderline is the high-VOLUME
+# band, an unthrottled per-write nudge would train the model to dismiss it (alarm
+# fatigue), so the hook shows the model-facing advisory only for Borderline-HEAVY spikes,
+# at most ONCE PER AREA PER SESSION (deliberate_coding mcp_f044c940, 0.88). All state here
+# is best-effort and fails toward showing — a throttle must never wall the agent.
+
+def _safe_session_id(session_id):
+    """Filesystem-safe session id for per-session state filenames (shared by the
+    advisory-seen state, the advisory log, and the borderline budget counter)."""
+    return re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id or "nosession"))[:64]
+
+
+def _advisory_seen_path(session_id):
+    return os.path.join(_borderline_state_dir(), "advisory_seen_%s.json" % _safe_session_id(session_id))
+
+
+def area_advisory_seen(session_id, area):
+    """True if a synthesize advisory already fired for `area` this session (dedupe).
+    Fail-open: any error -> False (show the advisory; a throttle never blocks)."""
+    try:
+        path = _advisory_seen_path(session_id)
+        if not os.path.exists(path):
+            return False
+        with open(path, "r", encoding="utf-8") as fh:
+            return area in set(json.load(fh).get("areas", []))
+    except Exception:
+        return False
+
+
+def mark_area_advisory_seen(session_id, area):
+    """Record that the synthesize advisory fired for `area` this session. Best-effort;
+    persisted to disk so it survives a session resume (additionalContext is replayed on
+    resume, so the dedupe state must be too). Never raises.
+
+    Read-modify-write is unlocked: two truly-concurrent same-session hooks could both
+    pass area_advisory_seen() and double-fire. PreToolUse hooks run sequentially in
+    practice (same assumption as borderline_budget_consume), and the worst case is one
+    duplicate non-blocking nudge — the throttle fails toward SHOWING, the safe direction."""
+    try:
+        path = _advisory_seen_path(session_id)
+        areas = []
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as fh:
+                areas = json.load(fh).get("areas", [])
+        if area not in areas:
+            areas.append(area)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"areas": areas}, fh)
+    except Exception:
+        pass
+
+
+def log_advisory_shown(session_id, area, categories):
+    """Append-only LOCAL log of synthesize advisories shown — the denominator for the
+    'advisory shown -> was synthesize then called?' experiment (Option B). Local only:
+    the gate is client-side / privacy-preserving (no source, no network), so this never
+    leaves the machine; aggregate it manually for now. Best-effort; never raises."""
+    try:
+        path = os.path.join(_borderline_state_dir(), "advisory_shown.log")
+        rec = {
+            "ts": int(time.time()),
+            "session": _safe_session_id(session_id),
+            "area": area,
+            "categories": categories or [],   # classification.risk_categories can be None
+            "plugin_version": plugin_version(),
+        }
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -637,14 +716,38 @@ def gate_signal_line(classification):
                cats))
 
 
-def skip_and_signal(classification, audit):
+def skip_and_signal(classification, audit, area=None):
     """The 'or log a skip' second branch + the gate_signal line for a deny message
     (design §5.1 second branch + §5.3). `audit` selects the gate context the agent
-    passes (hunk_hashes for the commit gate, area for the write gate)."""
-    ctx = "hunk_hashes (derive from gate_diff)" if audit else "area"
+    passes (hunk_hashes for the commit gate, area for the write gate).
+
+    1a (gate-skip usability, 2026-06-19): emit the ACTUAL release key the gate
+    already computed — the hunk content-hashes (commit gate) or the area directory
+    (write gate) — as a copy-pasteable value, instead of telling the agent to
+    reconstruct it. Reconstruction was the fragile step: the agent re-ran the
+    classifier in a shell that could be a different plugin VERSION or a different
+    git COMMAND context than the live gate, so the rebuilt hash set diverged and the
+    skip covered the wrong hunks (see docs/MCP/gate-skip-friction-findings.md). The
+    retry recomputes the same hashes in THIS same hook process at THIS same version,
+    so a value copied from here always matches — no server round-trip, no skew."""
+    if audit:
+        hashes = [h["content_hash"] for h in classification.get("hunks", [])]
+        ctx = "  hunk_hashes = %s" % json.dumps(hashes)
+    elif area:
+        # json.dumps (not hand-quoting): the key is now a copy-verbatim protocol, so a
+        # quote/backslash/newline in the path must not produce malformed output.
+        ctx = "  area = %s" % json.dumps(area)
+    else:
+        # Defensive: every write-gate caller passes a non-empty area
+        # (deliberate_gate derives `os.path.dirname(path) or "repo-root"`). If one ever
+        # doesn't, do NOT emit a blank `area = ""` — that fails server validation the
+        # same way the bug this fixes did. Route to the review instead.
+        ctx = "  (no area available — run the suggested review instead of skipping)"
     return (
         "Or, if this genuinely does NOT need review, call `record_gate_skip` (free) "
-        f"with a reason_code, gate_repo, and {ctx}; if you skip, forward this too:\n"
+        "with a reason_code, gate_repo, and the gate context below (copy it verbatim), "
+        "then retry:\n"
+        + ctx + "\n"
         + gate_signal_line(classification)
     )
 
@@ -654,6 +757,78 @@ def read_hook_input():
         return json.loads(sys.stdin.read() or "{}")
     except Exception:
         return {}
+
+
+# ---------------------------------------------------------------------------
+# Plugin-version self-diagnostics (2a, 2026-06-19)
+# ---------------------------------------------------------------------------
+# Claude Code does NOT hot-reload plugin hooks after an auto-update: a session
+# that was running when the plugin updated keeps the OLD hooks registered (its
+# `${CLAUDE_PLUGIN_ROOT}` still points at the now-superseded version) until
+# `/reload-plugins` or a restart. The gate then silently runs stale classifier
+# logic — the recurring "issues every upgrade" symptom. We can't force a reload
+# from inside the hook, but we CAN make the staleness self-announcing so it's an
+# actionable message instead of a silent mystery (and stamp the running version so
+# "which version actually ran" is observable from the transcript/logs).
+#
+# Claude Code marks a superseded cache version with an `.orphaned_at` file in the
+# plugin root and prunes it once no session holds it (a refcounted `.in_use/` dir);
+# we do NOT touch that lifecycle (deleting an in-use version would break a live
+# session). `.orphaned_at` is an undocumented marker, so every check here is
+# best-effort and fails toward "not stale" — a missing/renamed marker just means
+# the warning doesn't fire, never a false alarm or a blocked action.
+
+def _plugin_root():
+    """`${CLAUDE_PLUGIN_ROOT}` — the plugin dir. Layout assumption: this file lives at
+    `<plugin_root>/hooks/gate_lib.py`, so the root is two dirs up. If the packaging
+    layout ever changes, update this (every caller fails open, so a wrong root only
+    suppresses the version stamp / staleness warning — never blocks)."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def plugin_version():
+    """The running plugin's version (from its own .claude-plugin/plugin.json), or
+    'unknown' on any error. Used to stamp deny messages / logs."""
+    try:
+        with open(os.path.join(_plugin_root(), ".claude-plugin", "plugin.json"),
+                  encoding="utf-8") as fh:
+            return json.load(fh).get("version") or "unknown"
+    except Exception:
+        return "unknown"
+
+
+# Memoized: the orphaned marker can't change during a single (short-lived) hook
+# process, and is_stale_version() is consulted a few times per deny — stat once.
+_STALE_CACHE = None
+
+
+def is_stale_version():
+    """Best-effort: True if this hook is running from a Claude-Code-orphaned
+    (superseded) plugin version — i.e. the plugin updated but this session still has
+    the old hooks loaded. Any error -> False (never a false 'stale' warning)."""
+    global _STALE_CACHE
+    if _STALE_CACHE is None:
+        try:
+            _STALE_CACHE = os.path.exists(os.path.join(_plugin_root(), ".orphaned_at"))
+        except Exception:
+            _STALE_CACHE = False
+    return _STALE_CACHE
+
+
+_STALE_WARNING = (
+    "this TruVerifAI gate is running a SUPERSEDED version — the plugin updated but "
+    "this session still has the old hooks loaded. Run `/reload-plugins` or restart "
+    "so the gates run the latest classifier."
+)
+
+
+def version_suffix():
+    """A short version stamp for a deny message — or a loud staleness warning when the
+    running hook is a superseded (orphaned) version (2a)."""
+    v = plugin_version()
+    if is_stale_version():
+        return "\n\n⚠️ NOTE: %s (currently loaded: v%s)" % (_STALE_WARNING, v)
+    return "\n\n(TruVerifAI gate v%s)" % v
 
 
 # User-facing one-liner shown alongside the deny via the top-level
@@ -677,10 +852,14 @@ def emit_deny(reason, system_message=_DENY_SYSTEM_MESSAGE):
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
+            # Stamp the running plugin version (or a staleness warning) on every deny
+            # so "which version walled this" is visible and a stale hook self-announces.
+            "permissionDecisionReason": reason + version_suffix(),
         }
     }
     if system_message:
+        if is_stale_version():
+            system_message = system_message + " (Gate is on a SUPERSEDED version — /reload-plugins.)"
         out["systemMessage"] = system_message
     print(json.dumps(out))
     sys.exit(0)
@@ -688,7 +867,31 @@ def emit_deny(reason, system_message=_DENY_SYSTEM_MESSAGE):
 
 def emit_allow(note=None):
     """Allow (defer). For advisory / allow-with-warning, surface a note on stderr
-    so it reaches the transcript without blocking."""
+    so it reaches the transcript without blocking. When the running hook is a
+    superseded (orphaned) version, append the staleness warning to a meaningful note
+    (2a) — but only when a note is already present, so trivial early-exit allows
+    (every non-git Bash, every non-risky write) don't spam the transcript."""
+    if note and is_stale_version():
+        note = note + " | " + _STALE_WARNING
     if note:
         sys.stderr.write("TruVerifAI: " + note + "\n")
+    sys.exit(0)
+
+
+def emit_allow_advisory(additional_context):
+    """Allow the tool but inject a MODEL-VISIBLE advisory via PreToolUse
+    `additionalContext` (Option B). Crucially emits NO `permissionDecision`, so the
+    tool still goes through the user's normal permission flow — this does NOT
+    auto-approve (that would need permissionDecision='allow'). Unlike emit_allow's
+    stderr note (user-transcript only), additionalContext reaches the model so it can
+    choose to act. Degrades harmlessly on Claude Code builds that ignore the field, and
+    fails open (a serialization error still exits 0 — the gate never traps the agent)."""
+    try:
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": additional_context,
+        }}))
+        sys.stdout.flush()  # ensure the JSON lands before exit if stdout is piped/buffered
+    except Exception:
+        pass
     sys.exit(0)

@@ -75,13 +75,13 @@ Beyond the auto-activating skills, the plugin ships **PreToolUse review gates** 
 - **Audit gate** — before a risky `git commit`, prompts `audit_coding` on the about-to-be-committed change.
 - **Deliberate gate** — before a risky design **Write / Edit** (schema, migration, dependency, auth, IaC exposure, etc.), prompts `deliberate_coding`.
 
-A local classifier scores the change across many domains — web (auth, billing, secrets), data migrations, infra-as-code, plus universal risk shapes and **risky deletions** (e.g. a removed permission or validation check) — and routes by confidence: high-confidence risks prompt a review; lower-confidence "borderline" changes get a fast `synthesize_coding` nudge (see `borderline_mode`). Either way the agent can release by running the suggested tool **or** calling the `record_gate_skip` MCP tool to log a skip-with-reason (free; the reason improves the classifier). The gate sends TruVerifAI only a repo fingerprint + hunk content hashes — never source, paths, or diffs — and **fails open** on any error (missing token, no network, our server down); it never deadlocks.
+A local classifier scores the change across many domains — web (auth, billing, secrets), data migrations, infra-as-code, plus universal risk shapes and **risky deletions** (e.g. a removed permission or validation check) — and routes by confidence: high-confidence risks prompt a review; lower-confidence "borderline" changes get a fast `synthesize_coding` nudge (see `borderline_mode`). Either way the agent can release by running the suggested tool **or** calling the `record_gate_skip` MCP tool to log a skip-with-reason (free; the reason improves the classifier). When a gate blocks, its message prints the exact release key to copy into `record_gate_skip` — a `hunk_hashes` list (commit gate) or an `area` directory (write gate) — so a skip is copy-paste, not a reconstruction. The gate sends TruVerifAI only a repo fingerprint + hunk content hashes — never source, paths, or diffs — and **fails open** on any error (missing token, no network, our server down); it never deadlocks.
 
 Options, set in `/plugin` → **Installed** → **AI Panel Review** (type the value, then `/reload-plugins`):
 
 - **`enable_gates`** (`true` / `false`, default `true`) — turns the gates on or off.
 - **`deliberate_mode`** (`tiered` / `block` / `advisory`, default `tiered`) — `tiered` blocks only high-confidence / irreversible design forks and is advisory on the rest; `block` blocks every risky design write; `advisory` never blocks (surfaces a suggestion only). The audit (pre-commit) gate is unaffected.
-- **`borderline_mode`** (`advisory` / `synthesize_gate` / `off`, default `advisory`) — how borderline (low-confidence) changes are handled: `advisory` surfaces a fast `synthesize_coding` suggestion; `synthesize_gate` soft-gates the highest-signal borderline changes (releasable by a quick `synthesize_coding` or a one-line skip); `off` ignores them. Never hard-blocks.
+- **`borderline_mode`** (`advisory` / `synthesize_gate` / `off`, default `advisory`) — how borderline (low-confidence) changes are handled: `advisory` surfaces a fast `synthesize_coding` suggestion **to the agent** (non-blocking; shown once per area per session for the highest-signal "heavy" spikes); `synthesize_gate` soft-gates the highest-signal borderline changes (releasable by a quick `synthesize_coding` or a one-line skip); `off` ignores them. Never hard-blocks.
 
 ## Pricing
 
@@ -92,6 +92,10 @@ Tool invocations are billed against your TruVerifAI account. Pricing at https://
 For Codex CLI / Gemini CLI / Cursor: see `install-cross-platform.sh` in the plugin directory. Cursor users invoke skills manually (`/skill-name`) — Cursor doesn't have native auto-discovery yet, so the plugin's value on Cursor is reduced to "well-curated reference material for invoking TruVerifAI MCP via your existing MCP client."
 
 ## Known limitations
+
+### Run `/reload-plugins` after the plugin updates (or the gates run stale)
+
+Claude Code does **not** hot-reload plugin hooks after an auto-update: a session that was already running when the plugin updated keeps the **previous** version's gate hooks loaded until you run `/reload-plugins` or restart. The gates then run the older classifier. As of v0.2.2 a blocked-gate message **stamps the version it ran** and, if it detects it's a superseded version, prints a `⚠️ running a SUPERSEDED version — /reload-plugins` warning — so staleness is visible rather than silent. **After any plugin update, run `/reload-plugins`** (Claude Code prunes the old cached version on its own once no session is using it; you don't need to delete anything).
 
 ### No in-progress display during 60-120s calls (Claude Code regression)
 

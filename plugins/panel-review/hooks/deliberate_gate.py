@@ -14,6 +14,7 @@ deadlock. A Write already contains finished code, so this is pre-PERSISTENCE
 (not pre-decision) — see v2-hybrid §2.
 """
 
+import json
 import os
 import sys
 
@@ -109,7 +110,7 @@ def main():
             f'  gate_session_id = "{session_id or ""}"\n'
             "TruVerifAI records the result and the write proceeds on retry. "
             "(`deliberate_coding` is in your MCP tools.)\n"
-            + g.skip_and_signal(classification, audit=False)
+            + g.skip_and_signal(classification, audit=False, area=area)
         )
     if action == "allow_warn":
         g.emit_allow(detail)  # recent_pass escape valve
@@ -137,10 +138,38 @@ def main():
                 "OR record a one-line skip with a reason (`record_gate_skip`), AND pass:\n"
                 f'  gate_repo = "{repo}"\n'
                 f'  gate_session_id = "{session_id or ""}"\n'
+                # The synthesize soft-gate releases on an AREA skip (the write-gate key);
+                # without this line a `record_gate_skip` here fails server validation
+                # (no gate context) and the borderline skip is unusable (2026-06-19 fix).
+                # json.dumps so a quote/backslash in the path can't malform the copy key.
+                f"  area = {json.dumps(area)}\n"
                 + g.gate_signal_line(classification) + "\n"
                 "Then retry. (`synthesize_coding` is in your MCP tools.)"
             )
         if b_action == "advise":
+            # Option B (2026-06-19): make the nudge MODEL-visible so synthesize can
+            # actually get called — but only for a Borderline-HEAVY spike, once per area
+            # per session, and not if the area was already consulted. Borderline is the
+            # high-volume band, so an unthrottled per-write nudge would train the model to
+            # dismiss it (deliberate_coding mcp_f044c940, 0.88). Scoped to borderline_mode
+            # == 'advisory' (the default): in synthesize_gate mode 'advise' means the
+            # soft-gate DEGRADED (not sampled / budget spent / area consulted), where a
+            # "worth calling synthesize" nudge would be misleading — that path keeps the
+            # old stderr note. Lite / repeat / consulted changes also keep the stderr note.
+            if (cfg["borderline_mode"] == "advisory"
+                    and classification.get("borderline_tier") == "heavy"
+                    and not area_consulted
+                    and not g.area_advisory_seen(session_id, area)):
+                # Order matters: mark + log BEFORE emit (emit_allow_advisory calls
+                # sys.exit, so anything after it is unreachable). Marking first makes the
+                # advisory genuinely once-per-area even though the emit exits.
+                g.mark_area_advisory_seen(session_id, area)
+                g.log_advisory_shown(session_id, area, classification.get("risk_categories"))
+                g.emit_allow_advisory(
+                    f"`synthesize_coding` can give a fast, independent multi-model read on "
+                    f"this {cats} change — worth calling if you're unsure it's correct "
+                    "before building on it. Optional; it won't block you."
+                )  # exits; the emit_allow below is the fall-through for every other case
             g.emit_allow(
                 f"consider `synthesize_coding` for this {cats} change "
                 "(fast second opinion; advisory — not blocking)."

@@ -1,7 +1,7 @@
 {
   "name": "panel-review",
   "displayName": "AI Panel Review",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Multi-model second-opinion deliberation for high-stakes coding decisions. Five skills (audit / deliberate / synthesize / record-outcome / skip-gate) route to the TruVerifAI MCP server, where four frontier models reason independently and conflict-target each other's positions to produce decision-grade output. Outcome reporting closes the loop — the dashboard shows what % of MCP calls actually changed the agent's decision.",
   "author": {
     "name": "TruVerifAI",
@@ -47,7 +47,7 @@
     "borderline_mode": {
       "type": "string",
       "title": "Borderline (low-confidence) tier",
-      "description": "How to handle borderline changes — consequential but not high-confidence-risky (e.g. a new public API surface, a notable refactor). 'advisory' (default) surfaces a fast synthesize_coding suggestion without blocking; 'synthesize_gate' soft-gates the highest-signal borderline changes (releasable by running synthesize_coding OR calling record_gate_skip with a reason_code); 'off' ignores borderline entirely. Never hard-blocks like the audit gate. To change it, type one of: advisory, synthesize_gate, or off.",
+      "description": "How to handle borderline changes — consequential but not high-confidence-risky (e.g. a new public API surface, a notable refactor). 'advisory' (default) surfaces a fast synthesize_coding suggestion to the agent without blocking (shown once per area per session for the highest-signal 'heavy' spikes); 'synthesize_gate' soft-gates the highest-signal borderline changes (releasable by running synthesize_coding OR calling record_gate_skip with a reason_code); 'off' ignores borderline entirely. Never hard-blocks like the audit gate. To change it, type one of: advisory, synthesize_gate, or off.",
       "default": "advisory"
     },
     "gate_threshold": {

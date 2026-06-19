@@ -3,6 +3,27 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/panel-review/.claude-plugin/plugin.json`.
 
+## 0.2.2
+
+**Gate-skip usability + a more visible second-opinion nudge.**
+
+- **Skipping a gate is now copy-paste.** When a review gate blocks a commit or a
+  write, its message prints the exact value to pass to `record_gate_skip` — a
+  `hunk_hashes` list (commit gate) or an `area` directory (write gate). No more
+  reconstructing the key by hand.
+- **Fixed:** a borderline "consider `synthesize_coding`" nudge could route you to
+  `record_gate_skip` without the context the server needs, so the skip was rejected.
+  It now carries the right key.
+- **Stale-version safety.** After the plugin auto-updates, a still-running session
+  can keep the *old* gate hooks until you reload. A blocked-gate message now stamps
+  the version it ran, and warns you to run `/reload-plugins` if it detects it's a
+  superseded version. (Run `/reload-plugins` after any plugin update.)
+- **More visible borderline nudge.** For low-confidence-but-consequential changes,
+  the `synthesize_coding` suggestion is now surfaced to the agent (once per area per
+  session, for the highest-signal changes) instead of only the user transcript — so
+  a fast second opinion actually gets considered. Still non-blocking; nothing
+  auto-approves.
+
 ## 0.2.1
 
 **Review-gate correctness fixes** — closes cases where the proactive gates could
