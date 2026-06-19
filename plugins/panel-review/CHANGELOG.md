@@ -3,6 +3,23 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/panel-review/.claude-plugin/plugin.json`.
 
+## 0.3.0
+
+**Financial profile — a second profile for high-stakes finance decisions.**
+
+- **New: three financial skills** — `synthesize-financial`, `deliberate-financial`,
+  and `audit-financial` — the finance counterparts to the coding trio. They serve
+  the full loop (generate / decide / verify) across **any** finance decision:
+  trading & investment, valuation (DCF / LBO / comparables), capital allocation
+  (M&A / capex / buyback), FP&A / forecasting, credit / lending, and
+  accounting / disclosure. They route to the matching `*_financial` MCP tools and
+  return a verdict / recommendation / answer_status, severity-tagged findings, and
+  a server-derived action. **Information / critique, not advice.**
+- **The plugin now ships eight skills across two profiles** (coding + financial).
+  The proactive PreToolUse review gates remain **coding-only**; finance is invoked
+  through its skills.
+- Broadened the coding/finance copy throughout (README, catalog, descriptions).
+
 ## 0.2.2
 
 **Gate-skip usability + a more visible second-opinion nudge.**

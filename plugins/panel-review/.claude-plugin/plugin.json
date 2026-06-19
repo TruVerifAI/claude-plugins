@@ -1,8 +1,8 @@
 {
   "name": "panel-review",
   "displayName": "AI Panel Review",
-  "version": "0.2.2",
-  "description": "Multi-model second-opinion deliberation for high-stakes coding decisions. Five skills (audit / deliberate / synthesize / record-outcome / skip-gate) route to the TruVerifAI MCP server, where four frontier models reason independently and conflict-target each other's positions to produce decision-grade output. Outcome reporting closes the loop — the dashboard shows what % of MCP calls actually changed the agent's decision.",
+  "version": "0.3.0",
+  "description": "Multi-model second-opinion deliberation for high-stakes coding and financial decisions. Eight skills across two profiles — coding and financial (audit / deliberate / synthesize per profile), plus shared record-outcome and skip-gate — route to the TruVerifAI MCP server, where four frontier models reason independently and conflict-target each other's positions to produce decision-grade output. Outcome reporting closes the loop — the dashboard shows what % of MCP calls actually changed the agent's decision.",
   "author": {
     "name": "TruVerifAI",
     "email": "support@truverif.ai",
