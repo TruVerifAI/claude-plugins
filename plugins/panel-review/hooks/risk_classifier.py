@@ -68,6 +68,19 @@ def _compile_config(cfg):
             "auto": auto,
             "match": s.get("match", "added"),
             "patterns": [re.compile(p) for p in s["patterns"]],
+            # Pattern indices that match against the comment/string-stripped "code
+            # skeleton" of a line instead of the raw line (design §4 precision pass):
+            # a bare keyword inside prose / JSX text / a string literal / a comment is
+            # NOT code and must not fire, while the SAME keyword as a real identifier or
+            # call must. Applied ONLY to the listed indices (the bare-keyword unions);
+            # every other pattern — and every signal without this key — stays on raw
+            # lines. Secret/SQL/import-string patterns deliberately stay raw (they look
+            # INSIDE strings), so they are never listed here.
+            "skeleton_match": set(int(i) for i in s.get("skeleton_match", [])),
+            # Pattern indices that, on a match, additionally require a real-secret-looking
+            # quoted value on the line (literature #3 — the generic `key="value"` secret
+            # pattern over-fires on $VAR interpolations and placeholders). Recall-safe.
+            "value_filter_patterns": set(int(i) for i in s.get("value_filter_patterns", [])),
         })
     suppressors = []
     for s in cfg["suppressors"]:
@@ -80,6 +93,10 @@ def _compile_config(cfg):
     return {
         "signals": signals,
         "suppressors": suppressors,
+        # True iff any signal opts a pattern into skeleton matching — lets the
+        # hot path skip the (regex-heavy) skeleton build entirely when no signal
+        # needs it (and keeps the fail-open empty config zero-cost).
+        "has_skeleton": any(sig["skeleton_match"] for sig in signals),
         "trigger": int(th["trigger"]),
         "borderline_low": int(th["borderline_low"]),
         "version": cfg.get("version", "2"),
@@ -309,6 +326,67 @@ def gate_self_coverage_hash(diff_text):
     return GATE_SELF_HASH_PREFIX + h.hexdigest()[:40]
 
 
+# ---------------------------------------------------------------------------
+# Secret-value false-positive filter (literature #3 — the recall-SAFE subset of
+# the gitleaks / detect-secrets model). Applies ONLY to the hardcoded_secret
+# signal's GENERIC `key = "value"` pattern (the one that over-fires); the specific
+# key-format patterns (sk_live_, ghp_, AKIA, PEM) are precise and never filtered.
+#
+# We deliberately ship only filters that CANNOT drop a real secret (audit
+# mcp_8ddbcfae found three recall holes in an earlier draft — all fixed here):
+#  - sigil interpolation (`${VAR}`, `$(...)`, `{{ }}`, `%(...)s`, `#{}`, `<% %>`) or a
+#    whole-value format field (`"{settings.KEY}"`) -> a REFERENCE, not the secret. A
+#    real credential never contains a sigil; a bare `{word}` is only treated as a
+#    reference when it is the ENTIRE value (so `"Tr0ub4dor{Blue}99"` still fires).
+#  - placeholders matched ONLY whole-value or as a START-of-value `word + delimiter`
+#    prefix (`your-...`, `changeme_...`) — NEVER a bare substring, since a real token
+#    can contain `null`/`your` via a `-`/`/`/`.` delimiter (`"v1.null.xK9..."` is real).
+#  - all-filler / single-char-repeated values.
+# No entropy floor: a weak real password (`"111122223333"`) is low-entropy but real,
+# so an entropy gate would drop it (audit F-001). The repeated-char anchor below
+# covers degenerate filler without that recall cost.
+# ---------------------------------------------------------------------------
+
+# Interpolation: a sigil anywhere, OR a value that is ENTIRELY a `{...}` format field.
+_INTERP_RE = re.compile(r"\$\{|\$\(|\{\{|\}\}|%\([^)]*\)|%[sd]\b|#\{|<%|^\{[^}]{1,60}\}$")
+# Backslash-aware quote scan (audit F-004): an escaped quote inside the value must not
+# truncate it (`"ab\"cd..."`). Matches `\\.` (any escaped char) or a non-quote char.
+_QUOTED_RE = re.compile(r"""(['"])((?:\\.|(?!\1).)*)\1""")
+# Placeholder shapes — all anchored (audit F-002): whole-value filler / repeated char /
+# bare placeholder word, OR a value that STARTS with a placeholder word + a delimiter.
+_PLACEHOLDER_RE = re.compile(
+    r"^[xX*.\-_0\s]+$"                                       # all filler chars
+    r"|^(.)\1{6,}$"                                          # one char repeated
+    r"|^(none|null|undefined|changeme|placeholder|redacted|tbd|todo)$"   # whole-value word
+    r"|^(your|my|the|example|sample|dummy|fake|test|placeholder|change[_-]?me|"
+    r"replace[_-]?me|insert|enter|put|set)[_-]",             # placeholder-word + delimiter
+    re.IGNORECASE,
+)
+
+# Don't scan pathological minified lines (audit F-005): a quote-dense line is O(n^2) for
+# the backtracking scan. Conservatively treat an over-long line as possibly-real (fires).
+_SECRET_LINE_SCAN_CAP = 2000
+
+
+def _has_real_secret_value(line):
+    """True if `line` contains a quoted literal that looks like an ACTUAL secret —
+    not a $VAR/sigil interpolation, not an anchored placeholder, not all-filler.
+    Recall-safe: returns True for anything that could plausibly be a real credential
+    (no entropy floor — a weak real password must still fire)."""
+    if len(line) > _SECRET_LINE_SCAN_CAP:
+        return True
+    for m in _QUOTED_RE.finditer(line):
+        v = m.group(2)
+        if len(v) < 12:
+            continue
+        if _INTERP_RE.search(v):
+            continue
+        if _PLACEHOLDER_RE.search(v):
+            continue
+        return True
+    return False
+
+
 def _any_match(patterns, lines):
     for pat in patterns:
         for ln in lines:
@@ -322,6 +400,116 @@ def _path_match(patterns, path):
         return False
     norm = path.replace("\\", "/")
     return any(p.search(norm) for p in patterns)
+
+
+# ---------------------------------------------------------------------------
+# Code-skeleton normalization (design §4 precision pass — deliberated 2026-06-23,
+# agreement 0.82). Produces a "code skeleton" of a line for the bare-keyword union
+# signals ONLY: it blanks the *content* of comments, string literals, and JSX text
+# nodes (preserving delimiters / token boundaries) so a keyword that is prose — a
+# marketing string, a JSX label, a comment — disappears, while the SAME keyword used
+# as a real identifier or call (outside any quote/comment) survives unchanged. This
+# cuts the dominant false-positive class (keyword-in-prose hard-walls) at ZERO recall
+# loss on executable code.
+#
+# Guards (each a deliberation finding):
+#  - Interpolated literals are kept RAW: a Python f-string with `{...}` and a JS
+#    template literal with `${...}` are left untouched, so `f"...{session}"` /
+#    `` `SELECT ${role}` `` keep their keyword. Only non-interpolated literals are
+#    blanked (those are UI/log strings).
+#  - Only patterns listed in a signal's `skeleton_match` use the skeleton; the
+#    hardcoded-secret, SQL, and import-string patterns match the RAW line (they look
+#    INSIDE strings — skeletonizing would blind them).
+#  - `--` is intentionally NOT treated as a comment (it is JS/C decrement); `#` is a
+#    comment only when not preceded by `.`/word char (so JS private fields `this.#x`
+#    are not stripped). These keep the skeleton from ever eating real code.
+# ---------------------------------------------------------------------------
+
+# One alternation over the lexical regions we blank. Order matters: a `#`/`//` inside
+# a string is consumed by the string branch first (earlier start position), so it is
+# not mistaken for a comment.
+_SK_TOKEN = re.compile(
+    r"(?P<lc>//[^\n]*|(?<![\w.])#[^\n]*)"             # line comments (// , bare #)
+    r"|(?P<bc>/\*.*?\*/)"                              # inline /* ... */ block comment
+    r"|(?P<tmpl>`(?:\\.|[^`\\])*`)"                    # JS/TS template literal
+    r"|(?P<str>(?P<pre>[A-Za-z]{0,3})(?P<q>['\"])(?:\\.|(?!(?P=q)).)*(?P=q))"  # quoted string (opt. f/r/b prefix)
+)
+
+# A JSX text node: the text between an element's opening `>` and its CLOSING tag `</`.
+# Applied ONLY in .jsx/.tsx files (audit F-002) — elsewhere `a > x < b` is a comparison.
+# Requiring the trailing `<` to begin a closing tag (`</`) — not just any `<` — is what
+# distinguishes `<p>Login</p>` (real text node) from a compact comparison `a>role<b`
+# (audit F-A): the latter has `<b`, not `</`, so `role` is never blanked. The lookbehind
+# keeps `>` tag-adjacent (preceded by a word / quote / `}` attr-expr / `/`). Real
+# marketing-copy FPs are all `>text</tag>`, so this loses no FP coverage.
+_SK_JSX_TEXT = re.compile(r"(?<=[\w\"'}/])>([^<>{}]+)<(?=/)")
+
+
+def _sk_blank(m):
+    if m.group("lc") is not None or m.group("bc") is not None:
+        return " "
+    t = m.group("tmpl")
+    if t is not None:
+        return t if "${" in t else "``"          # keep interpolated template raw
+    s = m.group("str")
+    if s is not None:
+        pre = m.group("pre") or ""
+        q = m.group("q")
+        if "f" in pre.lower() and "{" in s:
+            return s                               # keep interpolated f-string raw
+        return pre + q + q                         # blank content, keep prefix+delimiters
+    return m.group(0)
+
+
+def _code_skeleton(line, in_block, is_jsx):
+    """Return (skeleton, in_block) for one line. `in_block` carries multi-line
+    block-comment state across the lines of a hunk. `is_jsx` enables JSX-text-node
+    blanking — only safe in .jsx/.tsx, since in other languages `>x<` is a comparison
+    (`a > x < b`), not a tag boundary (audit F-002)."""
+    if in_block:
+        close = line.find("*/")
+        if close == -1:
+            return "", True                        # whole line still inside /* ... */
+        line = line[close + 2:]                     # inside a comment, string syntax is inert
+        in_block = False
+    # Blank comments/strings/templates FIRST, so a `/*` that lives *inside a string*
+    # is already gone before we look for an unterminated block comment (audit F-001:
+    # scanning the raw line for `/*` would truncate real code after a string literal
+    # like "/*", silently dropping a keyword that follows it on the same line).
+    s = _SK_TOKEN.sub(_sk_blank, line)
+    open_idx = s.find("/*")
+    if open_idx != -1 and "*/" not in s[open_idx:]:
+        s = s[:open_idx]                            # unterminated /* — drop the tail
+        in_block = True
+    if is_jsx:
+        s = _SK_JSX_TEXT.sub("><", s)
+    return s, in_block
+
+
+def _skeletonize(lines, is_jsx):
+    out = []
+    in_block = False
+    for ln in lines:
+        sk, in_block = _code_skeleton(ln, in_block, is_jsx)
+        out.append(sk)
+    return out
+
+
+def _signal_hit(patterns, skeleton_idx, value_filter_idx, raw_lines, sk_lines):
+    """True if any of `patterns` matches. A pattern whose index is in
+    `skeleton_idx` matches against `sk_lines` (the code skeleton); all others
+    match against `raw_lines`. A pattern whose index is in `value_filter_idx`
+    additionally requires a real-secret-looking quoted value on the matched line
+    (literature #3 secret FP filter), else that match is skipped."""
+    for i, pat in enumerate(patterns):
+        targets = sk_lines if (skeleton_idx and i in skeleton_idx) else raw_lines
+        vfilter = bool(value_filter_idx) and i in value_filter_idx
+        for ln in targets:
+            if pat.search(ln):
+                if vfilter and not _has_real_secret_value(ln):
+                    continue  # placeholder / $VAR interpolation — not a real secret
+                return True
+    return False
 
 
 def _classify_hunk(path, added, removed, trigger_threshold=None):
@@ -340,15 +528,28 @@ def _classify_hunk(path, added, removed, trigger_threshold=None):
 
     threshold = _CFG["trigger"] if trigger_threshold is None else int(trigger_threshold)
 
+    # Build the comment/string-stripped "code skeleton" once per side (only when a
+    # signal actually opts a pattern into skeleton matching — else it's free).
+    if _CFG.get("has_skeleton"):
+        # JSX text-node blanking is scoped to .jsx/.tsx (audit F-002); comment/string
+        # blanking is universal (safe in every language).
+        is_jsx = bool(path) and path.lower().endswith((".jsx", ".tsx"))
+        sk_added = _skeletonize(added, is_jsx)
+        sk_removed = _skeletonize(removed, is_jsx)
+    else:
+        sk_added, sk_removed = added, removed
+
     fired = []
     for s in _CFG["signals"]:
         m = s["match"]
         if m == "path":
             hit = _path_match(s["patterns"], path)
         elif m == "removed":
-            hit = _any_match(s["patterns"], removed)
+            hit = _signal_hit(s["patterns"], s["skeleton_match"],
+                              s["value_filter_patterns"], removed, sk_removed)
         else:  # "added"
-            hit = _any_match(s["patterns"], added)
+            hit = _signal_hit(s["patterns"], s["skeleton_match"],
+                              s["value_filter_patterns"], added, sk_added)
         if hit:
             fired.append(s)
 

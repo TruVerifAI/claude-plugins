@@ -527,7 +527,16 @@ def deliberate_decision(classification, check_response, mode, force_risky=False)
         blocking = True
     else:  # 'tiered' (default): only high-confidence forks block
         blocking = (conf == "high")
-    return ("deny", "uncovered") if blocking else ("advise", "uncovered (low confidence)")
+    if not blocking:
+        return ("advise", "uncovered (low confidence)")
+    # Advisory-downgrade (2026-06-23 deliberation): a PROACTIVE deliberation covered
+    # this area this session — a real review ran before the gate fired — so soften the
+    # block to an advisory nudge instead of denying. Deliberately NOT applied to a
+    # gate-self change (force_risky): that path returned above already blocking=True and
+    # must keep its full strength (proactive area receipts can't release gate-self).
+    if not force_risky and check_response.get("proactive_consulted"):
+        return ("advise", "proactive deliberation this session; downgraded to advisory")
+    return ("deny", "uncovered")
 
 
 def borderline_decision(classification, mode, sampled=True, area_consulted=False):

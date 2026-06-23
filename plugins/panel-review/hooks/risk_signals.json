@@ -1,12 +1,12 @@
 {
   "_comment": "SINGLE SOURCE OF TRUTH for the two-channel risk classifier (docs/MCP/Classifier/risk-trigger-classifier-design.md). Canonical: mcp_server/risk_signals.json; vendored byte-identical copy: plugin/hooks/risk_signals.json (synced by scripts/sync_risk_classifier.py, enforced by tests/test_classifier_sync.py). Edit signals/weights/thresholds HERE only.",
-  "version": "2.0.0",
+  "version": "2.2.0",
   "thresholds": { "trigger": 25, "borderline_low": 5 },
   "large_hunk_added_lines": 50,
   "large_hunk_weight": 10,
   "trigger_threshold_ceiling": 29,
   "signals": [
-    { "name": "hardcoded_secret", "class": "trigger", "category": "hardcoded_secret", "weight": 100, "auto_trigger": true, "match": "added",
+    { "name": "hardcoded_secret", "class": "trigger", "category": "hardcoded_secret", "weight": 100, "auto_trigger": true, "match": "added", "value_filter_patterns": [5],
       "patterns": [
         "(sk|pk)_(live|test)_[A-Za-z0-9]{16,}",
         "gh[posu]_[A-Za-z0-9]{30,}",
@@ -15,7 +15,7 @@
         "-----BEGIN [A-Z ]*PRIVATE KEY-----",
         "(?i)(password|secret|api[_-]?key|access[_-]?token)\\s*[:=]\\s*[\"'][^\"'\\s]{12,}[\"']"
       ] },
-    { "name": "auth_security", "class": "trigger", "category": "auth_security", "weight": 30, "match": "added",
+    { "name": "auth_security", "class": "trigger", "category": "auth_security", "weight": 30, "match": "added", "skeleton_match": [0],
       "patterns": [
         "(?i)\\b(password|passwd|secret|api[_-]?key|bearer|jwt|oauth|session(_id)?|login|logout|permission|privilege|\\brole\\b|require_admin|is_admin|authenticate|authoriz|access[_-]?token|refresh[_-]?token)\\b",
         "@require_admin",
@@ -24,14 +24,14 @@
         "(?i)from\\s+(django\\.contrib\\.auth|flask_login)",
         "(?i)(require|import).*['\"](devise|passport|next-auth|express-jwt|warden|pundit|cancancan)['\"]"
       ] },
-    { "name": "billing", "class": "trigger", "category": "billing", "weight": 30, "match": "added",
+    { "name": "billing", "class": "trigger", "category": "billing", "weight": 30, "match": "added", "skeleton_match": [0, 1],
       "patterns": [
         "(?i)\\b(stripe|braintree|paypal|adyen|chargebee)\\b",
         "(?i)\\b(charge|refund|payout|invoice|subscription|checkout|price_id|line_item)\\b",
         "Stripe::",
         "(?i)(import|from|require).*['\"]?stripe"
       ] },
-    { "name": "crypto", "class": "trigger", "category": "crypto", "weight": 30, "match": "added",
+    { "name": "crypto", "class": "trigger", "category": "crypto", "weight": 30, "match": "added", "skeleton_match": [0],
       "patterns": [
         "(?i)\\b(encrypt|decrypt|hmac|cipher|fernet|bcrypt|argon2|pbkdf2|scrypt|hashlib|secrets\\.token|os\\.urandom|private[_-]?key)\\b",
         "(?i)(import|from)\\s+(cryptography|nacl|pycryptodome)\\b",
@@ -58,7 +58,7 @@
     { "name": "env_access", "class": "trigger", "category": "env_access", "weight": 20, "match": "added",
       "patterns": [ "os\\.environ(\\[|\\.get)", "process\\.env\\.", "System\\.getenv\\s*\\(", "\\bENV\\[", "\\bgetenv\\s*\\(" ] },
     { "name": "sql_injection_surface", "class": "trigger", "category": "sql_risk", "weight": 25, "match": "added",
-      "patterns": [ "(?i)(execute|query|raw)\\s*\\(\\s*[f\"'].*(SELECT|INSERT|UPDATE|DELETE).*\\+", "(?i)\\bTRUNCATE\\b", "(?i)\\b(DELETE\\s+FROM|UPDATE)\\s+\\w+(?:(?!\\bWHERE\\b).)*;" ] },
+      "patterns": [ "(?i)(execute|query|raw)\\s*\\(\\s*[f\"'].*(SELECT|INSERT|UPDATE|DELETE).*\\+", "(?i)\\bTRUNCATE\\b", "(?i)\\bUPDATE\\s+\\w[\\w.]*\\s+SET\\b(?:(?!\\bWHERE\\b).)*;", "(?i)\\bDELETE\\s+FROM\\s+\\w[\\w.]*(?:(?!\\bWHERE\\b).)*;" ] },
     { "name": "iac_public_exposure", "class": "trigger", "category": "iac_exposure", "weight": 35, "match": "added",
       "patterns": [ "0\\.0\\.0\\.0/0", "(?i)\"?(Action|Principal)\"?\\s*[:=]\\s*\"\\*\"", "\"\\*:\\*\"", "(?i)acl\\s*=\\s*\"public-read", "(?i)privileged\\s*[:=]\\s*true", "(?i)runAsUser\\s*[:=]\\s*0\\b" ] },
     { "name": "secret_material_path", "class": "trigger", "category": "secret_material", "weight": 30, "match": "path",

@@ -3,6 +3,31 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/panel-review/.claude-plugin/plugin.json`.
 
+## 0.3.1
+
+**Fewer false-positive gate blocks — same risk detection.** The local risk
+classifier (the engine behind the proactive coding gates) was re-tuned to stop
+walling changes that only *look* risky, with no loss of recall on real risks:
+
+- **Prose & UI no longer trip the gate.** A risk keyword (`auth`, `session`,
+  `billing`, …) inside a comment, a string literal, marketing copy, or JSX text is
+  recognized as *not code* — so docs, marketing pages, and presentational
+  components stop hard-blocking. The same keyword used as real code still fires.
+- **Tighter SQL detection.** The bulk-DELETE/UPDATE check now requires real SQL
+  shape (`UPDATE … SET`, `DELETE FROM`), so presentational React/TS no longer
+  matches.
+- **Smarter secret detection.** Placeholder and env-interpolation values
+  (`"${DB_PASSWORD}"`, `"your-api-key-here"`) no longer hit the always-on secret
+  block; genuine hardcoded secrets — even weak ones — still fire.
+- **Proactive-review credit.** If your agent runs `deliberate_coding` on an area
+  *before* the deliberate gate fires (optionally passing `relevant_paths`), a later
+  deliberate gate on that same area this session is downgraded to an advisory nudge
+  instead of blocking — a review you already ran isn't demanded twice. Only the
+  directory is recorded, never file contents. The pre-commit `audit` gate is
+  unchanged.
+
+No configuration changes; existing settings carry over.
+
 ## 0.3.0
 
 **Financial profile — a second profile for high-stakes finance decisions.**
