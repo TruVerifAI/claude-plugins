@@ -3,6 +3,19 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/panel-review/.claude-plugin/plugin.json`.
 
+## 0.3.2
+
+**Long-running calls survive client tool-call timeouts (continuation).**
+`deliberate_*` and `audit_*` run several minutes — longer than the tool-call timeout
+most MCP clients enforce (~60s on many clients; 300s on Claude Code v2.1.187+). A long
+call may now return a holding response — `{ "status": "in_progress",
+"continuation_token": "…" }` — before it finishes; the agent re-invokes the same tool
+with only that token until the verdict returns. The orchestration keeps running on the
+server between calls and credits are charged once, on completion. Most agents handle
+this automatically from the `next_step` instruction in the response. (The continuation
+logic is server-side; this plugin release is the descriptive copy in the README and the
+audit / deliberate skills.)
+
 ## 0.3.1
 
 **Fewer false-positive gate blocks — same risk detection.** The local risk

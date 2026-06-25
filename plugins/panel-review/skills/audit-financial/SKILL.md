@@ -38,7 +38,7 @@ Distinct from `audit-before-commit` (coding): this fires on **finance** artifact
 
 1. **Put the drafted decision** in `proposed_action` — the trade thesis, sizing, strategy, backtest interpretation, or approve/decline call. Don't pass a one-liner; the audit needs enough to ground the critique.
 2. **Provide** `relevant_data`, `assumptions`, `tests_backtests` (backtests / scenarios / stress tests), and `constraints` (risk limits, mandate, capital).
-3. **Call `audit_financial`** (may appear as `mcp__truverifai__audit_financial`).
+3. **Call `audit_financial`** (may appear as `mcp__truverifai__audit_financial`). If it returns `{ "status": "in_progress", "continuation_token": "..." }` instead of a verdict, it has NOT finished — call `audit_financial` again with ONLY that `continuation_token` (no other fields), repeating until you get the verdict. Long calls return this to survive client tool-call timeouts; the work continues on the server and you're charged once, on completion.
 4. **Read the response.** `verdict` is the primary signal (`sound` / `sound_with_caveats` / `reconsider` / `reject`); `critique` is the prose; `findings[]` are severity-tagged defects (`critical` / `major` / `minor` / `preference`; categories incl. `tail_risk` / `liquidity` / `model_risk` / `leverage` / `data_quality` / `assumptions` / `edge_quality` / `crowding_decay` / `accounting_disclosure`). `action` is **server-derived** and floored by finding severity (a `critical` finding → `escalate_to_human`) — act on `action`, not `agreement_score` (auxiliary; high agreement on a `reject` is expected).
 5. **This is a critique, not advice** — and a `reconsider` means "fix the gaps before committing," not "never."
 

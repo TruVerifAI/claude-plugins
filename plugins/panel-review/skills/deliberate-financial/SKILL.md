@@ -38,7 +38,7 @@ Distinct from `deliberate-before-implementing` (coding): this fires on **finance
 
 1. **State the decision** in `question`. For a ranking, list the candidates in `options_considered`.
 2. **Provide** `relevant_data` (prices, factor data, model output), `assumptions` (market environment, vol, liquidity, horizon, leverage), and `constraints` (risk limits, mandate, capital).
-3. **Call `deliberate_financial`** (may appear as `mcp__truverifai__deliberate_financial`).
+3. **Call `deliberate_financial`** (may appear as `mcp__truverifai__deliberate_financial`). If it returns `{ "status": "in_progress", "continuation_token": "..." }` instead of a recommendation, it has NOT finished — call `deliberate_financial` again with ONLY that `continuation_token` (no other fields), repeating until you get the result. Long calls return this to survive client tool-call timeouts; the work continues on the server and you're charged once, on completion.
 4. **Read the response.** `recommendation` is the primary signal (`clear` / `qualified` / `split` / `insufficient_basis`); `conclusion` is the reasoned call; `findings[]` are risks/weaknesses of the recommended path (risk- *and* opportunity-side — `edge_quality` / `crowding_decay`); `action` is **server-derived** (`proceed` / `review_assumptions` / `gather_more_data` / `escalate_to_human`) — act on `action`, not on `agreement_score` (auxiliary). `dimensions_of_disagreement` shows residual splits.
    - The deliberation defaults to the most **calibrated** conclusion and earns *both* an "edge" and a "no-edge" call to the same bar — so a `gather_more_data` / "no durable edge" result is a real, useful answer, not a failure.
 5. **This is reasoning, not advice** — not a recommendation to act at real-money size.

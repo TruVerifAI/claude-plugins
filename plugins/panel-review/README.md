@@ -115,6 +115,17 @@ Workarounds while waiting for the upstream fix:
 
 We've added the `anthropic/expandByDefault: true` `_meta` annotation to all tools — the moment Anthropic ships the #51713 fix, our tools will auto-expand and show streaming progress without any plugin update needed.
 
+### Long-running calls may return a continuation token
+
+`deliberate_*` / `audit_*` run several minutes — longer than the tool-call timeout most MCP clients enforce (≈60s on Cursor / Cline / Zed; 300s on Claude Code v2.1.187+). To stay under any client's limit, a long call may return a holding response **before it finishes**, instead of the verdict:
+
+```json
+{ "status": "in_progress", "continuation_token": "mcp_…", "stage": "running",
+  "next_step": "Not finished. Call the SAME tool again with only continuation_token …" }
+```
+
+The agent then calls the **same tool** again with **only** that `continuation_token` (no other arguments), repeating until the final verdict returns. The orchestration keeps running on the server between calls — each call just waits up to the client's budget — and credits are charged once, on completion. The token is scoped to your API key and the specific tool; an unknown / expired / not-yours token returns `{ "status": "expired" }`, meaning re-run from scratch. Most agents handle this re-invocation automatically from the `next_step` instruction — you don't need to do anything.
+
 ### Cursor: no native skill auto-discovery
 
 Cursor (as of 2026-05) doesn't auto-activate skills. The skills install correctly under `~/.cursor/skills/` but you have to invoke them manually (`/audit-before-commit`). The references and examples files give Cursor the context it needs once invoked. Auto-discovery may land in a future Cursor release.
