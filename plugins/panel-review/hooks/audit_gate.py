@@ -36,6 +36,7 @@ def main():
         g.emit_allow()  # not a commit/merge
 
     cwd = inp.get("cwd") or os.getcwd()
+    session_id = inp.get("session_id")
     diff = g.staged_diff(cwd, command)
     if not diff.strip():
         g.emit_allow()  # nothing staged
@@ -73,12 +74,24 @@ def main():
             )
         g.emit_allow(detail if action == "allow_warn" else None)
 
-    # Non-gate-self risky change: unchanged — covered / recent_pass escape valve / fail-open.
+    # Non-gate-self risky change: covered / recent_pass escape valve / fail-open. Send the
+    # fire-time classifier metadata (+ session_id) so the server can mint a COMPLETE
+    # gate-fire context (Step 0, design §2.2) and return its gate_context_id — the
+    # preferred skip handle surfaced by skip_and_signal below.
     hashes = [h["content_hash"] for h in classification["hunks"]]
-    resp = g.check_audit_coverage(cfg, repo, hashes)
+    resp = g.check_audit_coverage(cfg, repo, hashes,
+                                  classification=classification, session_id=session_id)
     action, detail = g.audit_decision(classification, resp, force_risky=False)
     if action == "deny":
         cats = ", ".join(sorted({h["category"] for h in classification["hunks"]})) or "high-stakes code"
+        # §4.E human override (Phase 4 Increment 1): a floor-class hunk uncovered AND the
+        # review tool in a SUSTAINED outage (both server-asserted on `resp`) → no agent
+        # self-release; route to a FAST, agent-inaccessible HUMAN via permissionDecision
+        # "ask". maybe_human_override EXITS the process on the ask; otherwise it RETURNS and
+        # the normal deny below runs. Fails open by construction (None `resp` → our
+        # gate-server down → returns → normal deny) and robust (any internal failure → returns
+        # → normal deny, never crashes / never auto-allows). Debounced per repo+hunkset.
+        g.maybe_human_override(cfg, classification, resp, session_id, repo)
         g.emit_deny(
             f"TruVerifAI flagged a potential high-risk change for a quick review before "
             f"it ships — this commit touches {cats}.\n"
@@ -87,7 +100,14 @@ def main():
             "  gate_diff = the staged diff (run: git diff --staged)\n"
             "TruVerifAI records the result and the commit proceeds on retry. "
             "(`audit_coding` is in your MCP tools.)\n"
-            + g.skip_and_signal(classification, audit=True)
+            # §4.I diff-delta: re-committing after addressing earlier audit findings only
+            # needs the CHANGED code re-audited — a prior audit PASS still covers the hunks
+            # you didn't touch, and the two compose. Keeps the mandatory re-review cheap.
+            "If this is a re-commit after fixing earlier audit findings, you can scope "
+            "`audit_coding` to the changed hunks and any newly affected surrounding code — "
+            "your prior PASS still covers the hunks you didn't touch.\n"
+            + g.skip_and_signal(classification, audit=True,
+                                gate_context_id=(resp or {}).get("gate_context_id"))
         )
 
     g.emit_allow(detail if action == "allow_warn" else None)

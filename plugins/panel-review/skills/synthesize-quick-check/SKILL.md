@@ -54,6 +54,22 @@ This is a free call (no credits charged). The user sees the aggregate on their T
 - `examples/library-sanity.md` — bounded library choice
 - `examples/standard-pattern.md` — "is-there-a-known-pattern" question
 
+## Releasing a review gate — including a floor-class false positive
+
+When a TruVerifAI review gate blocks a change you judge a **genuine false positive**,
+`synthesize_coding` is the cheap way to clear it — and it's the *intended* path on a **floor
+class** (auth / secrets / money / migration / removed-guard), where a one-line `record_gate_skip`
+with a judgment code is denied. Pass the gate context the block message printed:
+
+- **`gate_repo`** — copied from the gate message.
+- **`gate_diff`** — the change being gated (the staged diff, or the content being written).
+- **`gate_session_id`** — when the gate provided one.
+
+If the panel agrees the change is low-risk, the server mints a **SYNTH_CONFIRM** bound to the
+flagged hunks and the gate **releases on retry** — ~15–30s, no full `audit_coding`. If the panel
+surfaces real risk instead, run `audit_coding`. Ordinary synthesize calls (no gate context) never
+write a receipt; this only applies when a gate routed you here.
+
 ## When NOT to use
 
 If you can find the answer in 30 seconds with a search engine or a doc lookup, skip this skill. Synthesize is for moments where you want multiple models' takes on something genuinely ambiguous, not for moments where a single canonical answer exists in the docs.

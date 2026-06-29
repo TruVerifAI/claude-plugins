@@ -64,6 +64,20 @@ Once you've decided what to do with the audit's findings — whether you accepte
 
 This is a free call (no credits charged). The user sees the aggregate on their TruVerifAI dashboard; outcome reporting is how they evaluate whether the tool is worth keeping.
 
+## Releasing a review gate
+
+If a TruVerifAI **commit gate** (or the deliberate write gate) routed you here, pass the gate
+context the block message printed so a PASS writes a releasing receipt bound to the flagged hunks:
+
+- **`gate_repo`** — from the gate message.
+- **`gate_diff`** — the staged diff being committed (or the content being written).
+- **`gate_session_id`** — when the gate provided one.
+
+A PASS verdict (`approve` / `approve_with_caveats`) releases the gate on retry. On a **floor class**
+(auth / secrets / money / migration / removed-guard) a judgment `record_gate_skip` is **denied** —
+so the only releases are this audit, a `synthesize_coding` SYNTH_CONFIRM (for a genuine false
+positive — cheaper, ~15–30s), or, under a sustained review-tool outage, a human approval prompt.
+
 ## Worked examples
 
 - `examples/auth-change.md` — authentication-layer change (token validation logic)

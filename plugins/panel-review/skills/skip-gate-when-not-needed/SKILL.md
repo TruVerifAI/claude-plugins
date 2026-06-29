@@ -35,38 +35,71 @@ much higher than ~15s–5min of review.
    - `gate_repo` — always.
    - The **release key** the skip needs — the gate computes and prints it for you, so
      you never reconstruct it:
-     - audit / commit gate → a `hunk_hashes = [...]` list.
-     - deliberate / synthesize write gate → an `area = "..."` directory path.
+     - `gate_context_id = "gc_…"` — **the preferred handle**, when the gate prints one.
+       It's a server-issued id proving the gate fired; pass it and the server uses its
+       own recorded hunks/area, so you do NOT also need `hunk_hashes`/`area`.
+     - Otherwise (an older gate that printed no id) the legacy key:
+       - audit / commit gate → a `hunk_hashes = [...]` list.
+       - deliberate / synthesize write gate → an `area = "..."` directory path.
    - `gate_session_id` (when the write gate provides one) and a `gate_signal` line
      (`classifier_version` / `score` / `risk_categories`).
 
 2. **Call `record_gate_skip`** (it may appear as `mcp__truverifai__record_gate_skip` depending on your client) with:
    - `gate_repo` — copied from the gate message.
    - `reason_code` — the closest fit from the enum (see `references/reason-codes.md`):
-     `false_positive_not_risky`, `trivial_change`, `already_reviewed_this_session`,
-     `reviewed_outside_truverifai`, `generated_or_vendored_code`, `test_or_docs_only`,
-     `time_critical_hotfix`, `disagree_with_classification`, `tool_unavailable`,
-     `other`.
-   - `reason_text` — REQUIRED for `other` and `disagree_with_classification`; a
-     1-sentence reason. General terms only — no secrets, file paths, or proprietary
+     `false_positive_not_risky`, `trivial_change`, `reviewed_outside_truverifai`,
+     `generated_or_vendored_code`, `test_or_docs_only`, `time_critical_hotfix`,
+     `disagree_with_classification`, `tool_unavailable`, `other`. (Not a skip:
+     `prior_pass_receipt_match` — a real prior audit PASS releases automatically; it's
+     denied as a skip reason. Don't use the deprecated `already_reviewed_this_session`.)
+   - `reason_text` — REQUIRED for `other` and `disagree_with_classification`, **and for the
+     judgment codes (`false_positive_not_risky`, `trivial_change`,
+     `reviewed_outside_truverifai`, `time_critical_hotfix`) at the deliberate/audit gates**;
+     a 1-sentence reason. General terms only — no secrets, file paths, or proprietary
      identifiers (same privacy rule as `record_outcome`).
+   - `gate_context_id` — **preferred**, when the gate printed one. **Copy it verbatim.**
+     When you pass it, omit `hunk_hashes`/`area` (the server uses its own recorded
+     evidence). A `gate_context_id` is single-use and short-lived: if it's expired or
+     already used, just re-run the original action so the gate issues a fresh one.
    - `hunk_hashes` (audit/commit gate) **OR** `area` (deliberate/synthesize write
-     gate) — **copy the value the gate printed**, verbatim; do NOT re-derive it. Plus
-     `session_id` if the gate gave one, and the `gate_signal` fields if you have them.
+     gate) — only for an older gate that printed no `gate_context_id`. **Copy the value
+     the gate printed**, verbatim; do NOT re-derive it. Plus `session_id` if the gate
+     gave one, and the `gate_signal` fields if you have them.
 
-3. **Retry the original action.** The gate recomputes the same key in-process, sees
-   your logged skip covering it, and releases.
+3. **Retry the original action.** The gate sees your logged skip covering it (matched
+   via the server-issued context, or the recomputed key on an older gate) and releases.
 
 ## Legitimate reasons to skip (and the matching code)
 
 - It's a **false positive** — the flagged change isn't actually risky → `false_positive_not_risky`.
-- You **already reviewed** this exact change this session (ran audit/deliberate) → `already_reviewed_this_session`.
 - It was reviewed **outside** TruVerifAI (human review, another tool) → `reviewed_outside_truverifai`.
 - It's **generated or vendored** code, not hand-written risk → `generated_or_vendored_code`.
 - It's **test or docs** only → `test_or_docs_only`.
 - It's a genuine **time-critical hotfix** and you accept the risk → `time_critical_hotfix`.
 - The classifier mis-categorized it and you disagree → `disagree_with_classification` (explain).
 - The review tool is **down/unavailable** → `tool_unavailable`.
+
+### Floor classes can't be skipped with a judgment code
+
+If the change touches a **floor class — auth / secrets / money / migration / removed-guard**, a
+judgment skip (`false_positive_not_risky`, `trivial_change`, `disagree_with_classification`,
+`reviewed_outside_truverifai`, `time_critical_hotfix`, `tool_unavailable`, `other`) is **denied**
+(`gate_skip_reason_floor_denied`). Only the path-verified `test_or_docs_only` /
+`generated_or_vendored_code` can release a floor change. To release one otherwise:
+- **Genuine false positive →** run `synthesize_coding` with `gate_repo` + `gate_diff` (a ~15–30s
+  check). If the panel agrees it's low-risk, it mints a **SYNTH_CONFIRM** that releases the gate —
+  no full audit needed.
+- **Otherwise →** run `audit_coding` with `gate_repo`/`gate_diff` (a PASS releases it).
+- **Tool down + sustained outage →** the gate prompts a **human** to approve; you can't skip past
+  it. The deny message names the exact path; follow it instead of retrying the skip.
+
+A reason code can also be **suspended** for a repo (Phase 5 calibration, off by default) if its
+skips keep preceding real findings — a suspended skip is denied and you run the review.
+
+If you **already audited this exact code**, you don't need a skip at all — the gate
+releases automatically because a matching PASS receipt covers the hunks. If the gate still
+fired, the code changed since that review: re-run `audit_coding` (scope it to the changed
+hunks; your prior PASS still covers the rest). "Already reviewed" is **not** a skip reason.
 
 ## When NOT to use
 

@@ -100,10 +100,17 @@ def effective_threshold(cfg):
 # Structured skip reason codes (design §5.2). The agent releases a gate by acting
 # OR by recording a skip with one of these + free-form text (the free-form is the
 # training signal for the §3.4 classifier-improvement model).
+#
+# MUST stay byte-identical with mcp_server.gate_skip.REASON_CODES and the record_gate_skip
+# tool enum (Rule 9). §4.A renamed `already_reviewed_this_session` →
+# `prior_pass_receipt_match` via add-alias-then-deprecate: both are listed during the
+# transition (server accepts both), but the plugin no longer EMITS the deprecated alias —
+# the deny messages / skill stop offering it; it remains here only so an in-flight skip
+# still validates. The alias is removed in the Phase-2 cleanup deploy.
 SKIP_REASON_CODES = (
     "false_positive_not_risky",
     "trivial_change",
-    "already_reviewed_this_session",
+    "prior_pass_receipt_match",
     "reviewed_outside_truverifai",
     "generated_or_vendored_code",
     "test_or_docs_only",
@@ -111,6 +118,7 @@ SKIP_REASON_CODES = (
     "disagree_with_classification",
     "tool_unavailable",
     "other",
+    "already_reviewed_this_session",  # DEPRECATED alias of prior_pass_receipt_match (no longer emitted)
 )
 
 
@@ -136,6 +144,51 @@ def repo_fingerprint(cwd):
     if not basis:
         basis = _git(["rev-parse", "--show-toplevel"], cwd).strip() or (cwd or ".")
     return "repo_" + hashlib.sha256(basis.encode("utf-8", "replace")).hexdigest()[:24]
+
+
+def is_out_of_repo_scope(path, cwd):
+    """True ONLY when confident the write target is OUTSIDE the working repo, or under a
+    temp/scratch dir — i.e. it cannot be committed/merged, so it cannot SHIP. Used by the
+    write gate (P6.3) to suppress out-of-repo / scratchpad false positives: the gate's
+    threat model is "review before it ships," and an unversioned file has nothing to ship.
+
+    Fails toward REVIEW: any uncertainty / error -> False (the gate proceeds, doesn't
+    suppress). The CALLER keeps firing on a real secret VALUE (auto_trigger) regardless of
+    location — a leaked key written anywhere is still a leak (that carve-out is the caller's,
+    not this function's).
+
+    Scope is the repo the agent is operating IN (resolved from `cwd`), not whatever repo
+    happens to contain the target path — correct for a safety gate (a file inside an
+    unrelated repo elsewhere on disk is out-of-scope for THIS session). Audit F-006.
+    """
+    try:
+        if not path:
+            return False
+        abspath = path if os.path.isabs(path) else os.path.join(cwd or ".", path)
+        # realpath (not abspath) so a symlinked temp (/tmp -> /private/tmp on macOS) is
+        # resolved consistently on both sides before the prefix compare (audit F-003).
+        low = os.path.realpath(abspath).replace("\\", "/").lower().rstrip("/")
+        # 1) The git working-tree root is AUTHORITATIVE when resolvable (audit F-001): a file
+        #    INSIDE it is in scope — it can be committed/merged and therefore can ship — even
+        #    if the whole repo lives under /tmp (CI checkouts, containers). A file outside a
+        #    known root is out of scope. The temp heuristic must NOT override this.
+        root = (_git(["rev-parse", "--show-toplevel"], cwd) or "").strip()  # F-005: never None
+        if root:
+            root_low = os.path.realpath(root).replace("\\", "/").lower().rstrip("/")
+            return not (low == root_low or low.startswith(root_low + "/"))
+        # 2) No git root resolvable (cwd isn't in a repo) -> fall back to the temp/scratch
+        #    heuristic so a scratchpad write is still recognized as non-shipping.
+        temp_roots = {os.path.realpath(tempfile.gettempdir()).replace("\\", "/").lower().rstrip("/")}
+        for env in ("TMPDIR", "TEMP", "TMP"):
+            v = os.environ.get(env)
+            if v:
+                temp_roots.add(os.path.realpath(v).replace("\\", "/").lower().rstrip("/"))
+        for t in temp_roots:
+            if t and (low == t or low.startswith(t + "/")):
+                return True
+        return False
+    except Exception:
+        return False
 
 
 def staged_diff(cwd, command=""):
@@ -418,13 +471,72 @@ def _post(cfg, path, body):
         return None
 
 
-def check_audit_coverage(cfg, repo, hunk_hashes):
-    return _post(cfg, "/api/mcp/receipts/check", {"repo": repo, "hunks": hunk_hashes})
+def _classifier_meta(classification, session_id=None):
+    """Fire-time classifier metadata to ride along on a coverage POST so the server
+    can mint a COMPLETE gate-fire context (Step 0, design §2.2): `floor_class` is
+    derived from `risk_categories` AT FIRE TIME, so the server needs them here, not
+    reconstructed on a later skip. Privacy: this adds NO source content — only the
+    classifier's own labels (the SAME ones the deny message already shows the agent
+    via `gate_signal_line`) plus the opaque `session_id`.
+
+    Additive: when metadata is present the POST body is a SUPERSET of the old
+    {repo,hunks} / {repo,area,session_id} body, so the OLD body shape is the subset —
+    an old server must simply ignore the extra keys. That holds because the endpoints
+    deserialize permissively (`request.get_json()` + `.get()`, no strict schema /
+    reject-extra). Empties are omitted (and `score=0` is preserved via `is not None`),
+    and this never raises — a missing/odd field is dropped, not coerced — so metadata
+    enrichment can't break the fail-open contract before `_post()` runs."""
+    meta = {}
+    if isinstance(classification, dict):
+        cats = classification.get("risk_categories")
+        if cats:
+            meta["risk_categories"] = list(cats)  # shallow copy — never alias caller state
+        cver = classification.get("classifier_version")
+        if cver:
+            meta["classifier_version"] = cver
+        score = classification.get("score")
+        if score is not None:  # keep 0 — truthiness would drop a legitimate score of 0
+            meta["score"] = score
+    if session_id:
+        meta["session_id"] = session_id
+    return meta
 
 
-def check_deliberate_unlock(cfg, repo, area, session_id):
-    return _post(cfg, "/api/mcp/receipts/deliberate-check",
-                 {"repo": repo, "area": area, "session_id": session_id})
+def check_audit_coverage(cfg, repo, hunk_hashes, classification=None, session_id=None):
+    body = {"repo": repo, "hunks": hunk_hashes}
+    body.update(_classifier_meta(classification, session_id))
+    # §4.B (Phase 3): send the per-hunk path-class tags so the server can verify a
+    # test_or_docs_only / generated_or_vendored_code skip against fire-time evidence (never
+    # raw paths — the classifier computed these client-side). Additive; old server ignores it.
+    if classification:
+        pcs = [{"content_hash": h["content_hash"], "path_class": h.get("path_class")}
+               for h in classification.get("hunks", [])
+               if h.get("content_hash") and h.get("path_class")]
+        if pcs:
+            body["hunk_path_classes"] = pcs
+        # §4.E (Phase 4): send the per-hunk classifier CATEGORY so the server can derive +
+        # store per-hunk FLOOR membership on the fire (the floor list is server-side; the
+        # client only reports the raw category — the same label class already in the aggregate
+        # risk_categories, never a path or source). Additive; an old server ignores it.
+        cats = [{"content_hash": h["content_hash"], "category": h.get("category")}
+                for h in classification.get("hunks", [])
+                if h.get("content_hash") and h.get("category")]
+        if cats:
+            body["hunk_categories"] = cats
+    return _post(cfg, "/api/mcp/receipts/check", body)
+
+
+def check_deliberate_unlock(cfg, repo, area, session_id, classification=None,
+                            gate_type="deliberate"):
+    # session_id already rides in the body, so don't duplicate it via _classifier_meta.
+    body = {"repo": repo, "area": area, "session_id": session_id}
+    body.update(_classifier_meta(classification, session_id=None))
+    # The write gate splits into a deliberate tier (high-confidence fork) and a
+    # synthesize tier (borderline); the caller knows which fired, so the fire records
+    # the right gate_type. The server defaults to 'deliberate' on anything else.
+    if gate_type in ("deliberate", "synthesize"):
+        body["gate_type"] = gate_type
+    return _post(cfg, "/api/mcp/receipts/deliberate-check", body)
 
 
 # ---------------------------------------------------------------------------
@@ -711,6 +823,168 @@ def log_advisory_shown(session_id, area, categories):
 
 
 # ---------------------------------------------------------------------------
+# §4.E human override (Phase 4 Increment 1) — the floor-class × SUSTAINED review-tool
+# outage cell has NO agent self-release; the only path is a FAST, agent-inaccessible
+# human via Claude Code's PreToolUse `permissionDecision:"ask"`. The DECISION is made
+# server-side and read here (the hook never decides "is this floor" — the server does,
+# via floor_uncovered + review_tool_health on the check response). Fails OPEN: a None /
+# missing response (our infra down) is NOT the ask cell — the normal fail-open deny path
+# runs instead (never trap the agent on our own outage; §5.1 deadlock invariant).
+# ---------------------------------------------------------------------------
+
+# Suppress a re-ask for the same repo+hunkset within this window so the agent retrying its
+# commit doesn't re-prompt the human (the human already saw it). UX dedup ONLY — eligibility
+# is the server's call; this never CREATES an ask, only throttles a repeat.
+_OVERRIDE_DEBOUNCE_SECONDS = 60
+
+
+def should_ask_human_override(check_response):
+    """True iff the §4.E floor + sustained-outage cell should route to a human override.
+    Requires (all server-asserted): an UNCOVERED floor-class hunk AND review_tool_health
+    reporting a SUSTAINED 'down'. Fail-open: a None/!dict response (our gate-server down)
+    returns False → the caller takes the normal fail-open path, never the ask.
+
+    STRICT booleans (audit F-002): the trigger widens the rare human prompt, so schema drift
+    must NOT widen it — `floor_uncovered`/`sustained` must be the literal `True`, never just a
+    truthy value (bool('false') is True). A non-bool from a drifted/old server reads as 'no'."""
+    if not isinstance(check_response, dict):
+        return False
+    if check_response.get("floor_uncovered") is not True:
+        return False
+    health = check_response.get("review_tool_health") or {}
+    return health.get("status") == "down" and health.get("sustained") is True
+
+
+def _override_key(repo, hunk_hashes):
+    h = hashlib.sha256("|".join(sorted(hunk_hashes or [])).encode("utf-8", "replace")).hexdigest()[:16]
+    return "%s:%s" % (repo, h)
+
+
+def _override_debounce_path(session_id):
+    return os.path.join(_borderline_state_dir(),
+                        "override_prompted_%s.json" % _safe_session_id(session_id))
+
+
+def override_recently_prompted(session_id, repo, hunk_hashes, now=None):
+    """True if a human was already prompted for this repo+hunkset within the debounce window.
+    Fail-open: any error → False (show the prompt; a throttle must never wall the human gate)."""
+    now = now if now is not None else time.time()
+    try:
+        path = _override_debounce_path(session_id)
+        if not os.path.exists(path):
+            return False
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        ts = data.get(_override_key(repo, hunk_hashes))
+        return isinstance(ts, (int, float)) and (now - ts) < _OVERRIDE_DEBOUNCE_SECONDS
+    except Exception:
+        return False
+
+
+def mark_override_prompted(session_id, repo, hunk_hashes, now=None):
+    """Record that a human was prompted for this repo+hunkset. Prunes stale entries to bound
+    the file. Best-effort; never raises (a failed write just means a possible duplicate
+    prompt — the safe direction)."""
+    now = now if now is not None else time.time()
+    try:
+        path = _override_debounce_path(session_id)
+        data = {}
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        data = {k: v for k, v in data.items()
+                if isinstance(v, (int, float)) and (now - v) < _OVERRIDE_DEBOUNCE_SECONDS}
+        data[_override_key(repo, hunk_hashes)] = now
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+    except Exception:
+        pass
+
+
+def post_override_event(cfg, repo, *, gate_context_id=None, server_reason=None,
+                        review_tool_health=None, hunk_hashes=None):
+    """POST the §4.E human-override PROMPT event (observability — the human-prompt-rate
+    metric; NEVER a releasing receipt). Best-effort via _post (returns None on any error);
+    the prompt fires regardless of whether this logs."""
+    body = {"repo": repo, "outcome": "prompted", "reason_code": "floor_review_tool_outage"}
+    if gate_context_id:
+        body["gate_context_id"] = gate_context_id
+    if server_reason:
+        body["server_reason"] = server_reason
+    if isinstance(review_tool_health, dict):
+        body["review_tool_health"] = review_tool_health
+    if hunk_hashes:
+        body["hunk_hashes"] = hunk_hashes
+    return _post(cfg, "/api/mcp/receipts/override", body)
+
+
+def override_ask_message(classification):
+    """The HOOK/SERVER-authored stakes shown to the human on the `ask` prompt — deliberately
+    NOT agent-authored (the agent must not be able to spin the human; root-cause #1 one layer
+    up). Names the classifier categories the hook saw + the outage, and states the decision is
+    the human's. No source content — only labels."""
+    cats = ", ".join(classification.get("risk_categories") or []) or "a protected high-risk area"
+    return (
+        "TruVerifAI — HUMAN DECISION REQUIRED. This commit touches a PROTECTED high-risk "
+        f"area ({cats}: auth / secrets / money / migrations / a removed safety check) AND the "
+        "review tool is currently unavailable (a sustained outage), so it cannot be "
+        "auto-reviewed and must not land un-reviewed.\n"
+        "Approve ONLY if you have personally verified this change is safe. Otherwise deny and "
+        "wait for the review tool to recover (or review it out-of-band). This is your call, "
+        "not the agent's."
+    )
+
+
+def maybe_human_override(cfg, classification, check_response, session_id, repo):
+    """§4.E human override. If the floor × SUSTAINED-outage cell applies, prompt a HUMAN via
+    emit_ask (which PRINTS the `ask` and EXITS the process) and never returns; otherwise
+    return so the caller proceeds to the normal deny.
+
+    ROBUST by construction (audit F-001/F-004/F-007): every step is inside a try/except that
+    falls through (returns) to the caller's normal deny on ANY failure — a malformed
+    classification, a bad debounce file, a failed POST — so this branch can never crash the
+    hook and can never auto-allow. emit_ask raises SystemExit (a BaseException), which is NOT
+    caught by `except Exception`, so the `ask` exit propagates cleanly; only a genuine error
+    short of the exit falls through to deny. Ordering is encapsulated here (debounce mark +
+    event POST happen before the exit) so a future edit can't silently reorder it.
+
+    Debounce/POST failure posture (audit F-R02/F-R03): mark_override_prompted and
+    post_override_event are BOTH best-effort and NEVER raise (each swallows its own errors
+    internally — see their defs + _post), so neither trips this function's `except` — a failed
+    debounce write therefore still reaches emit_ask and PROMPTS (over-prompting a human is the
+    SAFE direction vs. silently suppressing a floor-outage prompt), and a failed POST can't
+    leave a mark-but-no-prompt window. The `except` here is for an UNEXPECTED error (e.g. a
+    malformed classification), which falls through to the normal deny — never a crash, never
+    an auto-allow. The debounce read/check/write is not locked, but PreToolUse hooks run
+    sequentially in practice (same assumption as borderline_budget_consume / area_advisory_seen),
+    so at worst a rare duplicate prompt — never a missed one."""
+    try:
+        if not should_ask_human_override(check_response):
+            return
+        hunk_hashes = [h.get("content_hash") for h in (classification.get("hunks") or [])
+                       if isinstance(h, dict) and h.get("content_hash")]
+        if not hunk_hashes:
+            return  # nothing to bind/debounce → normal deny
+        if override_recently_prompted(session_id, repo, hunk_hashes):
+            return  # human already prompted for this exact change → normal deny on retry
+        mark_override_prompted(session_id, repo, hunk_hashes)
+        post_override_event(
+            cfg, repo,
+            gate_context_id=(check_response or {}).get("gate_context_id"),
+            server_reason="floor-class change, review tool in sustained outage",
+            review_tool_health=(check_response or {}).get("review_tool_health"),
+            hunk_hashes=hunk_hashes,
+        )
+        emit_ask(
+            override_ask_message(classification),
+            system_message="TruVerifAI: a protected high-risk change needs a HUMAN decision — "
+                           "the review tool is down and it can't be auto-reviewed.",
+        )
+    except Exception:
+        return  # any failure short of the ask-exit → fall through to the normal deny
+
+
+# ---------------------------------------------------------------------------
 # Hook input / output
 # ---------------------------------------------------------------------------
 
@@ -725,10 +999,18 @@ def gate_signal_line(classification):
                cats))
 
 
-def skip_and_signal(classification, audit, area=None):
+def skip_and_signal(classification, audit, area=None, gate_context_id=None):
     """The 'or log a skip' second branch + the gate_signal line for a deny message
     (design §5.1 second branch + §5.3). `audit` selects the gate context the agent
     passes (hunk_hashes for the commit gate, area for the write gate).
+
+    Step 0 (design §2.2): when the server minted a gate-fire context, emit its
+    `gate_context_id` as the PREFERRED copy-paste handle. A later `record_gate_skip`
+    echoes it so the server verifies a gate truly fired (not a client-fabricated
+    context) and binds the skip to the fire's OWN server-canonical hunks/area — the
+    agent never recomputes them. The `hunk_hashes`/`area` line stays alongside it for
+    the backward-compat window: an OLD server mints no id, so the message falls back to
+    the locally-computed key; emitting both is harmless (the server prefers the id).
 
     1a (gate-skip usability, 2026-06-19): emit the ACTUAL release key the gate
     already computed — the hunk content-hashes (commit gate) or the area directory
@@ -739,25 +1021,34 @@ def skip_and_signal(classification, audit, area=None):
     skip covered the wrong hunks (see docs/MCP/gate-skip-friction-findings.md). The
     retry recomputes the same hashes in THIS same hook process at THIS same version,
     so a value copied from here always matches — no server round-trip, no skew."""
+    lines = []
+    if isinstance(gate_context_id, str) and gate_context_id:
+        # PREFERRED handle (Step 0). isinstance+truthy so a None/empty/non-string id never
+        # prints a bogus handle; json.dumps emits a quoted token (`gate_context_id = "gc_…"`)
+        # matching the existing hunk_hashes/area lines, so a stray quote can't malform it.
+        lines.append("  gate_context_id = %s" % json.dumps(gate_context_id))
     if audit:
         hashes = [h["content_hash"] for h in classification.get("hunks", [])]
-        ctx = "  hunk_hashes = %s" % json.dumps(hashes)
+        lines.append("  hunk_hashes = %s" % json.dumps(hashes))
     elif area:
-        # json.dumps (not hand-quoting): the key is now a copy-verbatim protocol, so a
+        # json.dumps (not hand-quoting): the key is a copy-verbatim protocol, so a
         # quote/backslash/newline in the path must not produce malformed output.
-        ctx = "  area = %s" % json.dumps(area)
-    else:
-        # Defensive: every write-gate caller passes a non-empty area
-        # (deliberate_gate derives `os.path.dirname(path) or "repo-root"`). If one ever
-        # doesn't, do NOT emit a blank `area = ""` — that fails server validation the
-        # same way the bug this fixes did. Route to the review instead.
-        ctx = "  (no area available — run the suggested review instead of skipping)"
+        lines.append("  area = %s" % json.dumps(area))
+    elif not (isinstance(gate_context_id, str) and gate_context_id):
+        # Defensive: a write-gate caller with neither an area NOR a usable server id (same
+        # predicate as the preferred-handle check above — a valid gate_context_id alone is
+        # a sufficient handle, so suppress this line then). Every
+        # write-gate caller passes a non-empty area (deliberate_gate derives
+        # `os.path.dirname(path) or "repo-root"`); if one ever doesn't, do NOT emit a
+        # blank `area = ""` (it fails server validation the same way the bug this fixes
+        # did) — route to the review instead.
+        lines.append("  (no area available — run the suggested review instead of skipping)")
+    lines.append(gate_signal_line(classification))
     return (
         "Or, if this genuinely does NOT need review, call `record_gate_skip` (free) "
         "with a reason_code, gate_repo, and the gate context below (copy it verbatim), "
         "then retry:\n"
-        + ctx + "\n"
-        + gate_signal_line(classification)
+        + "\n".join(lines)
     )
 
 
@@ -869,6 +1160,27 @@ def emit_deny(reason, system_message=_DENY_SYSTEM_MESSAGE):
     if system_message:
         if is_stale_version():
             system_message = system_message + " (Gate is on a SUPERSEDED version — /reload-plugins.)"
+        out["systemMessage"] = system_message
+    print(json.dumps(out))
+    sys.exit(0)
+
+
+def emit_ask(reason, system_message=None):
+    """Emit a PreToolUse `permissionDecision:"ask"` — the §4.E human-override channel. Claude
+    Code shows an INTERACTIVE permission prompt that the AGENT CANNOT approve (permission
+    decisions are evaluated by Claude Code, not the model), and it FAILS CLOSED in headless /
+    `-p` mode (an unattended floor change during an outage blocks, not slips through). If an
+    older Claude Code doesn't recognize "ask", the tool falls through to the NORMAL permission
+    flow (still a user prompt — never a silent auto-allow), so the degradation is safe. The
+    `reason` is hook/server-authored (never the agent's words)."""
+    out = {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "ask",
+            "permissionDecisionReason": reason + version_suffix(),
+        }
+    }
+    if system_message:
         out["systemMessage"] = system_message
     print(json.dumps(out))
     sys.exit(0)

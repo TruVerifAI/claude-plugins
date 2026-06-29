@@ -1,6 +1,6 @@
 {
   "_comment": "SINGLE SOURCE OF TRUTH for the two-channel risk classifier (docs/MCP/Classifier/risk-trigger-classifier-design.md). Canonical: mcp_server/risk_signals.json; vendored byte-identical copy: plugin/hooks/risk_signals.json (synced by scripts/sync_risk_classifier.py, enforced by tests/test_classifier_sync.py). Edit signals/weights/thresholds HERE only.",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "thresholds": { "trigger": 25, "borderline_low": 5 },
   "large_hunk_added_lines": 50,
   "large_hunk_weight": 10,
@@ -16,13 +16,19 @@
         "(?i)(password|secret|api[_-]?key|access[_-]?token)\\s*[:=]\\s*[\"'][^\"'\\s]{12,}[\"']"
       ] },
     { "name": "auth_security", "class": "trigger", "category": "auth_security", "weight": 30, "match": "added", "skeleton_match": [0],
+      "_comment": "STRONG auth signals only (Phase 6 specificity stratification). Specific auth verbs/decision-flags/credential nouns/protocol names/decorators/imports — each self-sufficient for HIGH on the floor class. The AMBIGUOUS nouns (session/login/logout/permission/privilege/role), which are common identifiers, live in the borderline-class `auth_surface` signal below and never reach HIGH alone (they need a strong co-signal — corroboration). gitleaks composite-rule pattern. See docs/MCP/gate skip solve/PHASE6-DESIGN.md.",
       "patterns": [
-        "(?i)\\b(password|passwd|secret|api[_-]?key|bearer|jwt|oauth|session(_id)?|login|logout|permission|privilege|\\brole\\b|require_admin|is_admin|authenticate|authoriz|access[_-]?token|refresh[_-]?token)\\b",
+        "(?i)\\b(password|passwd|secret|api[_-]?key|bearer|jwt|oauth|require_admin|is_admin|authenticate|authoriz|access[_-]?token|refresh[_-]?token)\\b",
         "@require_admin",
         "@(PreAuthorize|Secured|RolesAllowed|PermitAll|DenyAll)",
         "(?i)\\b(check_password|has_secure_password|set_password|verify_password)\\b",
         "(?i)from\\s+(django\\.contrib\\.auth|flask_login)",
         "(?i)(require|import).*['\"](devise|passport|next-auth|express-jwt|warden|pundit|cancancan)['\"]"
+      ] },
+    { "name": "auth_surface", "class": "significance", "category": "auth_surface", "weight": 10, "match": "added", "skeleton_match": [0],
+      "_comment": "WEAK auth nouns commonly used as ordinary identifiers (session/login/logout/permission/privilege/role). Borderline-class significance, NON-floor category (auth_surface is intentionally absent from gate_fire_models.FLOOR_CATEGORIES). Fires a LOW advisory checkpoint alone; reaches HIGH only when a strong auth_security signal co-occurs (corroboration). Stacked weak nouns never escalate (one signal, weight 10). skeleton_match[0] keeps an in-string/comment match blanked. Plurals are matched (permissions/roles/privileges/sessions) — audit F-001 closed a pre-existing \\b plural gap; this is a recall gain (still LOW non-floor). snake_case compounds (role_id, user_role) intentionally do NOT match (audit F-004 — even lower auth likelihood, less noise).",
+      "patterns": [
+        "(?i)\\b(session(_id)?s?|logins?|logouts?|permissions?|privileges?|roles?)\\b"
       ] },
     { "name": "billing", "class": "trigger", "category": "billing", "weight": 30, "match": "added", "skeleton_match": [0, 1],
       "patterns": [

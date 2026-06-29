@@ -52,6 +52,21 @@ def main():
 
     classification = classify_diff(
         g.synth_write_diff(path, content), trigger_threshold=g.effective_threshold(cfg))
+    cwd = inp.get("cwd") or os.getcwd()
+
+    # P6.3 (repo-scope suppression): a write whose target resolves OUTSIDE the working repo
+    # or into a temp/scratch dir cannot be committed/merged — it can't SHIP, and the gate's
+    # threat model is "review before it ships." So it never gates — EXCEPT a real secret
+    # VALUE (auto_trigger -> the hardcoded_secret category), which is a leak regardless of
+    # where it is written. Recall-safe by construction (an out-of-repo file has nothing to
+    # review-before-merge); the secret carve-out preserves the one location-independent risk.
+    # is_out_of_repo_scope fails toward REVIEW (uncertain -> not out-of-scope), so this only
+    # suppresses when confident. Checked before gate-self because an out-of-repo path is
+    # never a gate-self file (those live in the repo), and before the risky/advisory tiers.
+    if (g.is_out_of_repo_scope(path, cwd)
+            and "hardcoded_secret" not in (classification.get("risk_categories") or [])):
+        g.emit_allow()
+
     # Gate self-mutation (§6.1, audit F-005): writing the gate's own config/hooks is
     # privilege escalation — ALWAYS require a review even if the content classifier finds
     # nothing. The gate-self branch below releases ONLY on a real PASS of THIS exact change
@@ -60,7 +75,6 @@ def main():
     if not classification["risky"] and not gate_self:
         g.emit_allow()
 
-    cwd = inp.get("cwd") or os.getcwd()
     repo = g.repo_fingerprint(cwd)
     session_id = inp.get("session_id")
 
@@ -92,9 +106,20 @@ def main():
             )
         g.emit_allow(gs_detail)  # covered / fail-open
 
-    # Non-gate-self design fork: coarse area-unlock (unchanged — recent_pass escape valve OK).
+    # Non-gate-self design fork: coarse area-unlock (recent_pass escape valve OK). Send the
+    # fire-time classifier metadata so the minted gate-fire context is COMPLETE (Step 0), and
+    # label it with the write gate's TIER. The two blocking tiers are deliberate (high-
+    # confidence fork) and synthesize (low-confidence borderline). We only reach here for a
+    # risky non-gate-self change, so max_confidence is "high" or "low" (None means non-risky,
+    # which returned earlier); map ONLY those two and omit gate_type otherwise so the server
+    # applies its own default rather than a guessed label (audit F-001/F-002, 2026-06-26).
+    # Server contract: when gate_type is omitted, /receipts/deliberate-check defaults the
+    # minted fire to 'deliberate' (mcp_user_routes.receipts_deliberate_check).
     area = os.path.dirname(path) or "repo-root"
-    resp = g.check_deliberate_unlock(cfg, repo, area, session_id)
+    gate_type = {"high": "deliberate", "low": "synthesize"}.get(
+        classification.get("max_confidence"))
+    resp = g.check_deliberate_unlock(cfg, repo, area, session_id,
+                                     classification=classification, gate_type=gate_type)
 
     action, detail = g.deliberate_decision(classification, resp, cfg["deliberate_mode"])
     cats = ", ".join(sorted({h["category"] for h in classification["hunks"]}))
@@ -110,7 +135,8 @@ def main():
             f'  gate_session_id = "{session_id or ""}"\n'
             "TruVerifAI records the result and the write proceeds on retry. "
             "(`deliberate_coding` is in your MCP tools.)\n"
-            + g.skip_and_signal(classification, audit=False, area=area)
+            + g.skip_and_signal(classification, audit=False, area=area,
+                                gate_context_id=(resp or {}).get("gate_context_id"))
         )
     if action == "allow_warn":
         g.emit_allow(detail)  # recent_pass escape valve
@@ -131,6 +157,10 @@ def main():
                 session_id, cfg["borderline_session_budget"]):
             b_action = "advise"  # session synthesize soft-gate budget exhausted
         if b_action == "deny":
+            # PREFERRED handle (Step 0): the server-issued gate-fire id, when present. The
+            # area line stays for the backward-compat window (an old server returns no id).
+            gcid = (resp or {}).get("gate_context_id")
+            gcid_line = ("  gate_context_id = %s\n" % json.dumps(gcid)) if gcid else ""
             g.emit_deny(
                 f"TruVerifAI flagged a borderline-consequential {cats} change — worth a "
                 "fast second opinion before building on it.\n"
@@ -138,11 +168,12 @@ def main():
                 "OR record a one-line skip with a reason (`record_gate_skip`), AND pass:\n"
                 f'  gate_repo = "{repo}"\n'
                 f'  gate_session_id = "{session_id or ""}"\n'
+                + gcid_line
                 # The synthesize soft-gate releases on an AREA skip (the write-gate key);
                 # without this line a `record_gate_skip` here fails server validation
                 # (no gate context) and the borderline skip is unusable (2026-06-19 fix).
                 # json.dumps so a quote/backslash in the path can't malform the copy key.
-                f"  area = {json.dumps(area)}\n"
+                + f"  area = {json.dumps(area)}\n"
                 + g.gate_signal_line(classification) + "\n"
                 "Then retry. (`synthesize_coding` is in your MCP tools.)"
             )

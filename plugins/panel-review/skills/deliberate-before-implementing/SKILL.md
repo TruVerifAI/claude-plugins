@@ -61,6 +61,20 @@ Skip it for: choices with one sensible answer, refactors where any reasonable ap
 
 4. **Use the response to make your decision.** Follow `action`. The assessment (`recommendation`) and `findings` explain it. If `action` looks stricter than the recommendation, that's intentional — `action` already folded in the findings; read `action_reason` for the cause. Never act on the recommendation over `action`. `agreement_score` is auxiliary context only — it does not drive `action`. If `action` is `escalate_to_human`, treat the decision as still open and either gather more context or bring the user in.
 
+## Releasing a review gate
+
+If a TruVerifAI **deliberate write gate** routed you here (a risky design Write/Edit), pass the
+gate context the block message printed so a PASS writes a releasing receipt for the area:
+
+- **`gate_repo`** — from the gate message.
+- **`gate_diff`** — the change you're about to write.
+- **`gate_session_id`** — when the gate provided one.
+
+A PASS (`proceed` / `proceed_with_caveats`) releases the gate on retry. If the write touches a
+**floor class** (auth / secrets / money / migration / removed-guard), a judgment
+`record_gate_skip` is **denied** — release it with this deliberation, an `audit_coding` PASS, or a
+`synthesize_coding` SYNTH_CONFIRM for a genuine false positive.
+
 ## After acting on the response
 
 Once you've committed to a design choice — whether you went with the deliberation's recommendation, picked a different option, or escalated — call `record_outcome` (it may appear as `mcp__truverifai__record_outcome`) to report the outcome:

@@ -3,6 +3,30 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/panel-review/.claude-plugin/plugin.json`.
 
+## 0.4.0
+
+**Higher-stakes review gates + a more precise classifier.** The proactive coding gates
+now enforce a hard floor and fire more precisely, and the skills/docs describe both.
+
+- **Floor classes can't be skipped with a judgment call.** For changes touching **auth,
+  secrets, money, migrations, or a removed guard**, a one-line `record_gate_skip` (false
+  positive, trivial, etc.) is **denied**. Release a floor change by running `audit_coding`,
+  or — for a genuine false positive — `synthesize_coding` with `gate_repo` + `gate_diff`,
+  which mints a cheap **SYNTH_CONFIRM** (~15–30s) when the panel agrees it's low-risk. Under
+  a *sustained* review-tool outage the commit gate asks a **human** to approve (the agent
+  can't skip past it). The `audit` / `deliberate` / `synthesize` skills document the
+  `gate_repo` / `gate_diff` / `gate_session_id` release params.
+- **A reason code can be suspended.** If a skip reason's skips keep preceding real findings,
+  it can be suspended for a repo (off by default, maintainer-enabled) — a suspended skip is
+  denied and you run the review.
+- **Classifier precision (recall-safe).** Fewer false-positive walls with no loss of recall:
+  an auth **mention** (a `role` / `session` / `permission` identifier in ordinary code) is now
+  at most an advisory nudge, while an auth **action** (a permission decorator, an auth/
+  credential check, a real secret value) still blocks. The gate ignores writes **outside your
+  repo** or in scratch/temp dirs (they can't ship — except a real secret value, which always
+  fires), and **docs/prose** no longer fire on a keyword unless they contain a real secret
+  value (which now correctly fires even in a `.md`).
+
 ## 0.3.2
 
 **Long-running calls survive client tool-call timeouts (continuation).**
