@@ -537,6 +537,17 @@ def check_audit_coverage(cfg, repo, hunk_hashes, classification=None, session_id
         if nhs:
             body["hunk_normalized"] = nhs
             body["norm_version"] = NORM_VERSION
+        # Phase 9.1: send the per-hunk @@ line ranges so the server stores them on the fire — the
+        # coarse-structural coverage fallback matches these (a multiset of line ranges) when BOTH
+        # the strict AND normalized hashes miss (real mojibake / re-encoding drift the normalizer
+        # can't fold), then binds the fire's STORED strict hash. Additive; an old server ignores it.
+        hst = [{"content_hash": h["content_hash"], "old_start": h["structural"]["old_start"],
+                "old_count": h["structural"]["old_count"], "new_start": h["structural"]["new_start"],
+                "new_count": h["structural"]["new_count"]}
+               for h in classification.get("hunks", [])
+               if h.get("content_hash") and isinstance(h.get("structural"), dict)]
+        if hst:
+            body["hunk_structural"] = hst
     return _post(cfg, "/api/mcp/receipts/check", body)
 
 
@@ -877,28 +888,48 @@ def log_advisory_shown(session_id, area, categories):
 _OVERRIDE_DEBOUNCE_SECONDS = 60
 
 
-def should_ask_human_override(check_response):
-    """True iff the §4.E floor + sustained-outage cell should route to a human override.
-    Requires (all server-asserted): an UNCOVERED floor-class hunk AND review_tool_health
-    reporting a SUSTAINED 'down'. Fail-open: a None/!dict response (our gate-server down)
-    returns False → the caller takes the normal fail-open path, never the ask.
+# §4.E override-cell tags — constants so a typo can't silently break the message/reason branch
+# (audit F-002). These exact strings are also the override-event reason discriminators downstream.
+CELL_SUSTAINED_OUTAGE = "sustained_outage"
+CELL_POST_REVIEW_DEADLOCK = "post_review_deadlock"
 
-    STRICT booleans (audit F-002): the trigger widens the rare human prompt, so schema drift
-    must NOT widen it — `floor_uncovered`/`sustained` must be the literal `True`, never just a
-    truthy value (bool('false') is True). A non-bool from a drifted/old server reads as 'no'."""
+
+def human_override_cell(check_response):
+    """WHICH §4.E human-override cell applies, or None. The two cells need DIFFERENT human
+    messaging (Inc 3, audit-trail fix — the old code hardcoded 'sustained outage' for BOTH and
+    misled the human on the common drift case):
+      'sustained_outage'     — an UNCOVERED floor-class hunk AND review_tool_health reports a
+                               SUSTAINED 'down': a real outage, the change can't be auto-reviewed.
+      'post_review_deadlock' — an UNCOVERED floor hunk but a recent audit PASSed (recent_pass):
+                               the review tool is HEALTHY; the agent likely DID review but this
+                               change's own coverage missed (the reviewed diff drifted from what's
+                               committed). Ask a human so a genuinely-reviewed floor change is
+                               never hard-trapped — and so a real coverage miss isn't silent.
+    Fail-open: a None/!dict response (our gate-server down) → None (the caller takes the normal
+    fail-open path, never the ask). STRICT booleans (audit F-002): `floor_uncovered` / `sustained`
+    / `recent_pass` must be the literal True, so a non-bool from a drifted/old server reads as 'no'
+    and can't WIDEN this rare human prompt. (As of Inc 2 the post-review-deadlock cell is rarer
+    still: a reviewed floor change now binds via the coarse-structural tier instead of reaching
+    here — this is a genuine last resort.)"""
     if not isinstance(check_response, dict):
-        return False
+        return None
     if check_response.get("floor_uncovered") is not True:
-        return False
+        return None
     health = check_response.get("review_tool_health") or {}
-    sustained_outage = health.get("status") == "down" and health.get("sustained") is True
-    # Phase 9 backstop: a floor hunk STILL uncovered after a recent review PASS (recent_pass) is
-    # the post-review-deadlock cell — the agent DID review, but coverage missed (an old client
-    # that didn't pass gate_context_id, or a drift the normalized hash couldn't catch). Ask a
-    # human rather than hard-deny, so floor-scoping recent_pass (above) can't TRAP a genuinely
-    # reviewed floor change. STRICT True (F-002): a non-bool from a drifted server reads as 'no'.
-    post_review_deadlock = check_response.get("recent_pass") is True
-    return sustained_outage or post_review_deadlock
+    if health.get("status") == "down" and health.get("sustained") is True:
+        return CELL_SUSTAINED_OUTAGE
+    # A NON-sustained 'down' (a transient blip, sustained != True) is NOT the outage cell; if
+    # recent_pass also holds it falls to the drift cell below — drift is the actionable signal, and
+    # a transient blip isn't worth alarming the human about an "outage". Intentional (audit F-001).
+    if check_response.get("recent_pass") is True:
+        return CELL_POST_REVIEW_DEADLOCK
+    return None
+
+
+def should_ask_human_override(check_response):
+    """True iff a §4.E human-override cell applies (see human_override_cell). Kept for the
+    callers/tests that only need the boolean."""
+    return human_override_cell(check_response) is not None
 
 
 def _override_key(repo, hunk_hashes):
@@ -947,12 +978,13 @@ def mark_override_prompted(session_id, repo, hunk_hashes, now=None):
         pass
 
 
-def post_override_event(cfg, repo, *, gate_context_id=None, server_reason=None,
-                        review_tool_health=None, hunk_hashes=None):
+def post_override_event(cfg, repo, *, reason_code="floor_review_tool_outage", gate_context_id=None,
+                        server_reason=None, review_tool_health=None, hunk_hashes=None):
     """POST the §4.E human-override PROMPT event (observability — the human-prompt-rate
-    metric; NEVER a releasing receipt). Best-effort via _post (returns None on any error);
-    the prompt fires regardless of whether this logs."""
-    body = {"repo": repo, "outcome": "prompted", "reason_code": "floor_review_tool_outage"}
+    metric; NEVER a releasing receipt). `reason_code` is the cell-accurate code (Inc 3): the
+    server stores it verbatim, so the dashboard distinguishes a real outage from a coverage-drift
+    deadlock. Best-effort via _post (returns None on any error); the prompt fires regardless."""
+    body = {"repo": repo, "outcome": "prompted", "reason_code": reason_code}
     if gate_context_id:
         body["gate_context_id"] = gate_context_id
     if server_reason:
@@ -964,21 +996,29 @@ def post_override_event(cfg, repo, *, gate_context_id=None, server_reason=None,
     return _post(cfg, "/api/mcp/receipts/override", body)
 
 
-def override_ask_message(classification):
-    """The HOOK/SERVER-authored stakes shown to the human on the `ask` prompt — deliberately
-    NOT agent-authored (the agent must not be able to spin the human; root-cause #1 one layer
-    up). Names the classifier categories the hook saw + the outage, and states the decision is
-    the human's. No source content — only labels."""
+def override_ask_message(classification, cell=CELL_SUSTAINED_OUTAGE):
+    """The HOOK/SERVER-authored stakes shown to the human on the `ask` prompt — deliberately NOT
+    agent-authored (the agent must not be able to spin the human; root-cause #1 one layer up).
+    Names the classifier categories the hook saw + WHY a human is needed, BRANCHED on the cell
+    (Inc 3): the old single message hardcoded 'sustained outage', which was wrong — and alarming —
+    on the common coverage-drift case. No source content — only labels. The decision is the
+    human's; this is a rare, high-impact moment, framed for a single informed approve/deny."""
     cats = ", ".join(classification.get("risk_categories") or []) or "a protected high-risk area"
-    return (
-        "TruVerifAI — HUMAN DECISION REQUIRED. This commit touches a PROTECTED high-risk "
-        f"area ({cats}: auth / secrets / money / migrations / a removed safety check) AND the "
-        "review tool is currently unavailable (a sustained outage), so it cannot be "
-        "auto-reviewed and must not land un-reviewed.\n"
-        "Approve ONLY if you have personally verified this change is safe. Otherwise deny and "
-        "wait for the review tool to recover (or review it out-of-band). This is your call, "
-        "not the agent's."
-    )
+    head = ("TruVerifAI — HUMAN DECISION REQUIRED. This commit changes a PROTECTED high-impact area "
+            f"({cats}: auth / secrets / money / migrations / a removed safety check)")
+    if cell == CELL_POST_REVIEW_DEADLOCK:
+        body = (" that is NOT covered by a review of THIS exact change — a recent unrelated review "
+                "passed, but this change's own coverage is missing (most often the reviewed diff "
+                "drifted from what's actually committed). It must not land unverified.\n"
+                "Approve ONLY if you've personally verified THIS change is safe; otherwise deny and "
+                "run a review of this exact change. Your call, not the agent's.")
+    else:  # sustained_outage
+        body = (" AND the review tool is currently unavailable (a sustained outage), so it can't be "
+                "auto-reviewed and must not land un-reviewed.\n"
+                "Approve ONLY if you've personally verified this change is safe; otherwise deny and "
+                "wait for the review tool to recover (or review it out-of-band). Your call, not the "
+                "agent's.")
+    return head + body
 
 
 def maybe_human_override(cfg, classification, check_response, session_id, repo):
@@ -1005,7 +1045,8 @@ def maybe_human_override(cfg, classification, check_response, session_id, repo):
     sequentially in practice (same assumption as borderline_budget_consume / area_advisory_seen),
     so at worst a rare duplicate prompt — never a missed one."""
     try:
-        if not should_ask_human_override(check_response):
+        cell = human_override_cell(check_response)
+        if cell is None:
             return
         hunk_hashes = [h.get("content_hash") for h in (classification.get("hunks") or [])
                        if isinstance(h, dict) and h.get("content_hash")]
@@ -1014,18 +1055,27 @@ def maybe_human_override(cfg, classification, check_response, session_id, repo):
         if override_recently_prompted(session_id, repo, hunk_hashes):
             return  # human already prompted for this exact change → normal deny on retry
         mark_override_prompted(session_id, repo, hunk_hashes)
+        # Cell-accurate reason + system_message (Inc 3) — never the misleading 'outage' wording on
+        # the coverage-drift cell.
+        if cell == CELL_POST_REVIEW_DEADLOCK:
+            reason_code = "floor_uncovered_recent_pass"
+            server_reason = ("floor-class change uncovered by a review of THIS change; a recent "
+                             "unrelated audit passed (coverage drift)")
+            sys_msg = ("TruVerifAI: a protected high-impact change needs a HUMAN decision — it "
+                       "isn't covered by a review of this exact change.")
+        else:  # sustained_outage
+            reason_code = "floor_review_tool_outage"
+            server_reason = "floor-class change, review tool in sustained outage"
+            sys_msg = ("TruVerifAI: a protected high-impact change needs a HUMAN decision — the "
+                       "review tool is down and it can't be auto-reviewed.")
         post_override_event(
-            cfg, repo,
+            cfg, repo, reason_code=reason_code,
             gate_context_id=(check_response or {}).get("gate_context_id"),
-            server_reason="floor-class change, review tool in sustained outage",
+            server_reason=server_reason,
             review_tool_health=(check_response or {}).get("review_tool_health"),
             hunk_hashes=hunk_hashes,
         )
-        emit_ask(
-            override_ask_message(classification),
-            system_message="TruVerifAI: a protected high-risk change needs a HUMAN decision — "
-                           "the review tool is down and it can't be auto-reviewed.",
-        )
+        emit_ask(override_ask_message(classification, cell), system_message=sys_msg)
     except Exception:
         return  # any failure short of the ask-exit → fall through to the normal deny
 
@@ -1212,12 +1262,20 @@ def emit_deny(reason, system_message=_DENY_SYSTEM_MESSAGE):
 
 
 def emit_ask(reason, system_message=None):
-    """Emit a PreToolUse `permissionDecision:"ask"` — the §4.E human-override channel. Claude
-    Code shows an INTERACTIVE permission prompt that the AGENT CANNOT approve (permission
-    decisions are evaluated by Claude Code, not the model), and it FAILS CLOSED in headless /
-    `-p` mode (an unattended floor change during an outage blocks, not slips through). If an
-    older Claude Code doesn't recognize "ask", the tool falls through to the NORMAL permission
-    flow (still a user prompt — never a silent auto-allow), so the degradation is safe. The
+    """Emit a PreToolUse `permissionDecision:"ask"` — the §4.E human-override channel. In a NORMAL
+    interactive session Claude Code shows a permission prompt that the AGENT CANNOT approve
+    (permission decisions are evaluated by Claude Code, not the model) — a single human
+    approve/deny, with `permissionDecisionReason` as the stakes.
+
+    CAVEAT — corrected Inc 3 against the Claude Code hooks/permissions docs (an earlier version of
+    this docstring WRONGLY claimed `ask` fails closed in headless): `ask` is only GUARANTEED to
+    prompt in interactive mode. In `bypassPermissions` (operator ran `--dangerously-skip-permissions`)
+    PreToolUse hooks cannot block or deny AT ALL, and the behavior of `ask` in headless / `-p` /
+    autonomous runs is undocumented — so an `ask` may AUTO-PROCEED with no human when the operator
+    has opted out of prompts. That is an ACCEPTED boundary: this gate protects high-impact decisions
+    for operators who have not disabled the safety; it does not (and cannot) override a deliberate
+    bypass. `deny` is the only unconditionally non-bypassable outcome, but the floor backstop must
+    NOT hard-trap a genuinely-reviewed change, so it deliberately uses `ask`, not `deny`. The
     `reason` is hook/server-authored (never the agent's words)."""
     out = {
         "hookSpecificOutput": {

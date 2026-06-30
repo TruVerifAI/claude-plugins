@@ -3,6 +3,29 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/panel-review/.claude-plugin/plugin.json`.
 
+## 0.6.0
+
+**The drift-tolerant coverage from 0.5.0, now actually reliable.** 0.5.0 promised that a
+real review would clear a cosmetically-drifted change — but the binding still missed when
+the diff that reached the server was *mangled* (a multibyte char like an em-dash arriving as
+mojibake), and on a miss it silently bound to the wrong change, so a review you *did* run
+left the change blocked. 0.6.0 makes the coverage hold through that mangling and never binds
+to the wrong thing.
+
+- **Coverage survives real multibyte mangling.** Beyond exact and cosmetic-normalized
+  matching, a review now also binds by the change's **structure** (which hunks moved, where)
+  when the bytes themselves were garbled in transit — so a floor change with an em-dash in a
+  comment releases on a genuine review instead of deadlocking. If nothing matches, the review
+  records **no coverage at all** (a loud miss) rather than silently binding to the agent's
+  re-hashed diff — the failure mode that could mask an unreviewed change.
+- **Accurate human-override prompt.** The rare one-click human prompt (an uncovered floor
+  change with a recent unrelated pass) now names the real reason — *coverage drift* — instead
+  of mislabeling it a tool outage, and logs `floor_uncovered_recent_pass`. It stays a single
+  approve/deny click; the agent still can't self-approve it.
+- **The fix is visible to the agent.** `ping` (and the server `/health`) now advertise a
+  `capabilities` block (`structural_coverage`, classifier/normalization versions), so an agent
+  or operator can confirm in one call that the reliable-coverage build is live.
+
 ## 0.5.0
 
 **Reliable review coverage + a stricter floor release.** A genuine review now clears a

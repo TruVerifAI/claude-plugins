@@ -283,17 +283,52 @@ def hunk_normalized_hash(lines, path=None, category=None):
 # Hunk boundaries match v1 (one run under each @@), so added-hunk hashes are unchanged.
 # ---------------------------------------------------------------------------
 
+# Phase 9.1 — per-hunk STRUCTURAL position, the coarse-structural coverage fallback's match key.
+# Parsed from the unified-diff hunk header `@@ -old_start,old_count +new_start,new_count @@`.
+# Counts default to 1 when omitted (`@@ -1 +1 @@`). These integers survive byte-level corruption
+# (mojibake / re-encoding) that breaks the content + normalized hashes, so when a reviewed diff's
+# content hashes miss the fire, coverage can still bind on file-path + per-file hunk count + these
+# ranges + net delta (deliberate mcp_009859f1, Option E). A combined/merge header (`@@@ ... @@@`)
+# or any non-standard header → None. A consumer MUST treat structural=None as "no structural
+# fallback available" (NEVER a zero-line hunk) — content lines that accumulate before the first
+# valid @@ of a file (malformed input) also carry None.
+# PREFIX-only ON PURPOSE (audit F-004): no `$` anchor, because a real header routinely carries a
+# context label after the closing `@@` (e.g. `@@ -1,3 +1,4 @@ def foo():`) — do NOT "fix" it by
+# anchoring. Counts use `is not None` (not `or 1`) so an explicit 0 (`@@ -0,0 ...`, a new file) is
+# preserved, not corrupted to 1.
+# VERSION NOTE (audit F-003): `structural` is unversioned today (inert — no consumer reads it). When
+# the Phase-9.1 resolver starts binding on it, version it like NORM_VERSION so a parser change can't
+# silently mis-bind a fire stored under the old shape.
+_HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def _parse_hunk_header(line):
+    m = _HUNK_HEADER_RE.match(line)
+    if not m:
+        return None
+    old_count = int(m.group(2)) if m.group(2) is not None else 1
+    new_count = int(m.group(4)) if m.group(4) is not None else 1
+    return {
+        "old_start": int(m.group(1)), "old_count": old_count,
+        "new_start": int(m.group(3)), "new_count": new_count,
+        "net_delta": new_count - old_count,   # convenience; == new_count - old_count (audit F-005)
+    }
+
+
 def _iter_file_hunks(diff_text):
+    """Yield (path, added_lines, removed_lines, structural) per hunk. `structural` is the parsed
+    @@ position dict (or None for a header that doesn't parse / pre-Phase-9.1 callers ignore it)."""
     path = None
     old_path = None
     added = []
     removed = []
     in_hunk = False
+    ranges = None
     results = []
 
     def flush():
         if path and (added or removed):
-            results.append((path, list(added), list(removed)))
+            results.append((path, list(added), list(removed), ranges))
 
     for line in diff_text.splitlines():
         if line.startswith("diff --git"):
@@ -302,6 +337,7 @@ def _iter_file_hunks(diff_text):
             path = None
             old_path = None
             in_hunk = False
+            ranges = None
             continue
         # File headers `--- `/`+++ ` only appear BEFORE the first @@ of a file, so we
         # match them only when not in a hunk. This is what lets an in-hunk content line
@@ -320,6 +356,7 @@ def _iter_file_hunks(diff_text):
             # separators — it's the only inter-file boundary in that format.
             flush()
             added, removed = [], []
+            ranges = None
             p = line[4:].strip()
             if p.startswith("b/"):
                 p = p[2:]
@@ -329,6 +366,7 @@ def _iter_file_hunks(diff_text):
         if line.startswith("@@"):
             flush()
             added, removed = [], []
+            ranges = _parse_hunk_header(line)
             in_hunk = True
             continue
         if not in_hunk:
@@ -435,7 +473,7 @@ def diff_is_inert(diff_text):
     Used by the gate-self trivial-edit skip (increment 5): a comment/whitespace-only edit to a
     NON-gate-core gate-self file releases without a full review."""
     saw_hunk = False
-    for path, added, removed in _iter_file_hunks(diff_text or ""):
+    for path, added, removed, _r in _iter_file_hunks(diff_text or ""):
         saw_hunk = True
         is_jsx = bool(path) and path.lower().endswith((".jsx", ".tsx"))
         for line in _skeletonize(added, is_jsx) + _skeletonize(removed, is_jsx):
@@ -479,7 +517,7 @@ def gate_self_coverage_hash(diff_text):
     them would collide on coverage — accepted as a known edge, not a security gap.
     """
     segments = {}
-    for path, added, removed in _iter_file_hunks(diff_text):
+    for path, added, removed, _r in _iter_file_hunks(diff_text):
         norm_path = (path or "").replace("\\", "/")
         if not _GATE_SELF_PATHS.search(norm_path):
             continue
@@ -921,7 +959,8 @@ def classify_diff(diff_text, trigger_threshold=None):
           "suppressed_by": [str, ...],                   # union of suppressors applied
           "classifier_version": str,
           "borderline_tier": "heavy" | "lite" | None,   # §6.5 synthesize gate
-          "hunks": [ {path, content_hash, category, confidence, signals, path_class}, ... ],
+          "hunks": [ {path, content_hash, normalized_hash, structural, category, confidence,
+                      signals, path_class}, ... ],   # `structural`: @@ position or None (Ph 9.1)
         }
 
     Empty / trivial diffs return risky=False with no hunks. `max_confidence` and per-hunk
@@ -934,7 +973,7 @@ def classify_diff(diff_text, trigger_threshold=None):
     verdicts = []
     any_spike = False
 
-    for path, added, removed in _iter_file_hunks(diff_text or ""):
+    for path, added, removed, hrange in _iter_file_hunks(diff_text or ""):
         verdict = _classify_hunk(path, added, removed, trigger_threshold=trigger_threshold)
         if verdict is None:
             continue
@@ -942,6 +981,10 @@ def classify_diff(diff_text, trigger_threshold=None):
         hunks.append({
             "path": path,
             "content_hash": hunk_content_hash(verdict["content_basis"]),
+            # Phase 9.1: the per-hunk @@ position (old/new start+count, net_delta) or None — the
+            # coarse-structural coverage fallback's match key, additive + inert until the Phase-9.1
+            # resolver reads it. Survives mojibake/re-encoding drift that the hashes above do not.
+            "structural": hrange,
             # Phase 9: a cosmetic-drift-tolerant fallback match key + the filetype that
             # drove its comment-stripping decision. Additive — inert until the Phase 9
             # coverage path reads it; the v1 fields above are unchanged.
