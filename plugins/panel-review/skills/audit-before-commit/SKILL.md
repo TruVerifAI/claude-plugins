@@ -71,6 +71,9 @@ context the block message printed so a PASS writes a releasing receipt bound to 
 
 - **`gate_repo`** — from the gate message.
 - **`gate_diff`** — the staged diff being committed (or the content being written).
+- **`gate_context_id`** — the `gc_…` the gate printed. **Pass it** — coverage then binds to the
+  gate's OWN recorded hunks, so a cosmetically drifted `gate_diff` (a smart-quote, an em-dash) still
+  releases the change instead of silently missing coverage.
 - **`gate_session_id`** — when the gate provided one.
 
 A PASS verdict (`approve` / `approve_with_caveats`) releases the gate on retry. On a **floor class**

@@ -63,6 +63,8 @@ with a judgment code is denied. Pass the gate context the block message printed:
 
 - **`gate_repo`** — copied from the gate message.
 - **`gate_diff`** — the change being gated (the staged diff, or the content being written).
+- **`gate_context_id`** — the `gc_…` the gate printed. **Pass it** — the SYNTH_CONFIRM then binds to
+  the gate's OWN recorded floor hunks, so a cosmetically drifted `gate_diff` still releases.
 - **`gate_session_id`** — when the gate provided one.
 
 If the panel agrees the change is low-risk, the server mints a **SYNTH_CONFIRM** bound to the

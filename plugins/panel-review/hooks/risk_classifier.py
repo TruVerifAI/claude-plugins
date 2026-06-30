@@ -30,6 +30,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 import warnings
 
 
@@ -178,6 +179,106 @@ def hunk_content_hash(lines):
 
 
 # ---------------------------------------------------------------------------
+# Normalized hash (Phase 9) — a SECOND, cosmetic-drift-tolerant hash per hunk.
+#
+# Why: coverage today binds to hunk_content_hash, which is sensitive to every byte
+# (incl. unicode) — so a gate_diff that drifts from the staged diff by a cosmetic
+# character (a smart-quote, an em-dash) misses coverage and a GENUINELY reviewed
+# change stays blocked. The normalized hash is a FALLBACK match key: identical strict
+# hash → cover as today; else identical NORMALIZED hash → cosmetically the same → bind
+# coverage to the fire's STORED strict hash (Phase 9 receipt path).
+#
+# SECURITY MODEL — the only thing that matters here is NO FALSE MATCH (two
+# SEMANTICALLY DIFFERENT hunks must never share a normalized hash; that would let a
+# review of one change cover a different change). Over-conservatism is free: if the
+# normalized hash differs when it cosmetically "shouldn't", it just falls back to
+# strict matching (and ultimately the human-override backstop) — never a false match.
+# Therefore v1 does the MINIMAL safe normalization:
+#   - NFC unicode normalization (canonical-equivalent forms collapse).
+#   - Fold cosmetic dashes/smart-quotes to ASCII — ONLY OUTSIDE string/template
+#     literals. String/template CONTENTS are preserved VERBATIM, so a new secret
+#     value / token / SQL literal ALWAYS changes the hash.
+#   - Leading + internal whitespace preserved (only trailing stripped, like strict),
+#     so indentation-significant code can't collapse to a false match.
+#   - Comment text is KEPT (folded like code, never stripped). Comment-STRIPPING was
+#     evaluated and REJECTED for v1 (audit mcp_4204070b): it created deterministic
+#     false-coverage holes — bare `#` is a C/C++/JS preprocessor directive or private
+#     field, not a comment, and pragma comments (`# type: ignore`, `# noqa`,
+#     `//go:build`, `// nolint`) are semantically load-bearing; stripping any of these
+#     collides distinct hunks. A future increment may add filetype-specific,
+#     directive-preserving comment handling if telemetry shows comment drift is a real
+#     pain — until then, comment drift just falls to the backstop.
+#   - Bump NORM_VERSION on any change here (the hashed blob carries it, so stale
+#     receipts mismatch diagnosably). Vendored byte-identical to plugin/hooks/.
+# ---------------------------------------------------------------------------
+NORM_VERSION = "1"
+
+# Cosmetic unicode an LLM courier routinely mangles, folded ONLY outside string/
+# template literals (inside a literal these are CONTENT and preserved verbatim).
+_NORM_FOLD = str.maketrans({
+    "—": "-", "–": "-", "‒": "-", "−": "-",   # em/en/figure/minus dash → hyphen
+    "‘": "'", "’": "'", "‛": "'",                   # single smart quotes → '
+    "“": '"', "”": '"', "‟": '"',                   # double smart quotes → "
+})
+
+
+def hunk_filetype(path):
+    """The lowercase extension of `path` (no dot), or '' — stored on the fire as
+    metadata for a possible future filetype-aware normalization pass. Not used by the
+    v1 hash (which is filetype-agnostic)."""
+    if not path:
+        return ""
+    base = path.rsplit("/", 1)[-1]
+    return base.rsplit(".", 1)[-1].lower() if "." in base else ""
+
+
+def _fold_span(span):
+    """NFC + cosmetic-unicode-fold a CODE or COMMENT span — but ONLY when it contains no
+    stray string delimiter (`"` `'` or backtick). A stray delimiter means we may be inside a
+    MULTI-LINE string literal whose opener was on an earlier line (the per-line tokenizer can't
+    see it — audit mcp_01b89c12 F-001): folding such a span could alter literal CONTENT, a
+    false-match. In that case we preserve the span byte-for-byte. Conservative: the worst case
+    is less drift-tolerance, never a false match. (NFC is applied per-span, never to a matched
+    string token, so byte-distinct-but-NFC-equivalent literals stay distinct — F-002.)"""
+    if '"' in span or "'" in span or "`" in span:
+        return span
+    return unicodedata.normalize("NFC", span).translate(_NORM_FOLD)
+
+
+def _normalize_line(line):
+    """Normalize ONE line for the cosmetic-tolerant hash. Tokenize the RAW line; preserve
+    string/template literal tokens VERBATIM (content incl. a secret value, no NFC, no fold);
+    everywhere else — code AND comment text — NFC + fold cosmetic unicode via _fold_span (which
+    self-guards against multi-line-literal fragments). Nothing is stripped, so a directive /
+    `#include` / pragma survives and can't collide with a different hunk. Only trailing
+    whitespace is stripped (like the strict hash); leading + internal whitespace is preserved."""
+    out = []
+    pos = 0
+    for m in _SK_TOKEN.finditer(line):
+        out.append(_fold_span(line[pos:m.start()]))             # code gap before token
+        if m.group("str") is not None or m.group("tmpl") is not None:
+            out.append(line[m.start():m.end()])                 # literal — verbatim (raw bytes)
+        else:
+            out.append(_fold_span(line[m.start():m.end()]))     # comment — NFC+fold (delimiter-guarded)
+        pos = m.end()
+    out.append(_fold_span(line[pos:]))
+    return "".join(out).rstrip()
+
+
+def hunk_normalized_hash(lines, path=None, category=None):
+    """Cosmetic-drift-tolerant hash of a hunk (Phase 9). NFC + cosmetic-unicode folding
+    outside string/template literals; literal contents and all comment/code text are
+    preserved (nothing stripped). Blob prefixed with NORM_VERSION so a bump invalidates
+    stale records diagnosably. 128-bit (32 hex) for collision headroom in a long-lived
+    store. `path`/`category` are accepted for signature stability + a future
+    filetype-aware pass; v1 ignores them."""
+    norm = [_normalize_line(ln) for ln in lines]
+    norm = [ln for ln in norm if ln.strip() != ""]
+    blob = "norm:v%s\n%s" % (NORM_VERSION, "\n".join(norm))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:32]
+
+
+# ---------------------------------------------------------------------------
 # Diff parsing — yields (path, added_lines, removed_lines) per hunk.
 # Hunk boundaries match v1 (one run under each @@), so added-hunk hashes are unchanged.
 # ---------------------------------------------------------------------------
@@ -273,17 +374,74 @@ def is_gate_self_mutation(path):
     return bool(_GATE_SELF_PATHS.search(path.replace("\\", "/")))
 
 
-def diff_touches_gate_self(diff_text):
-    """True if any file in the diff modifies the gate's own config/hooks."""
+def _diff_paths(diff_text):
+    """Yield every file path the diff references — BOTH the a/ (old) and b/ (new) sides of each
+    `diff --git`, the `+++ b/` / `--- a/` headers, and `rename from` / `rename to` — so a
+    path-membership check (gate-self, gate-core) catches a DELETION (its `+++` is /dev/null, so
+    the a/ side is the real path) and a RENAME that moves a protected file OUT of its enforced
+    location (a security-relevant act — audit mcp_2df9d33b F-001/F-002). /dev/null is skipped."""
     for line in (diff_text or "").splitlines():
-        if line.startswith("+++ b/"):
-            if is_gate_self_mutation(line[6:].strip()):
-                return True
-        elif line.startswith("diff --git "):
-            parts = line.split(" b/", 1)
-            if len(parts) > 1 and is_gate_self_mutation(parts[1].strip()):
-                return True
-    return False
+        if line.startswith("diff --git "):
+            rest = line[len("diff --git "):]
+            if " b/" in rest:
+                a_side, b_side = rest.split(" b/", 1)
+                yield a_side[2:].strip() if a_side.startswith("a/") else a_side.strip()
+                yield b_side.strip()
+        elif line.startswith("+++ b/"):
+            yield line[6:].strip()
+        elif line.startswith("--- a/"):
+            yield line[6:].strip()
+        elif line.startswith("rename from ") or line.startswith("rename to "):
+            yield line.split(" ", 2)[-1].strip()
+
+
+def diff_touches_gate_self(diff_text):
+    """True if any file the diff adds, removes, or renames is the gate's own config/hooks."""
+    return any(is_gate_self_mutation(p) for p in _diff_paths(diff_text) if p and p != "/dev/null")
+
+
+# Gate-CORE (Phase 9 increment 5): the subset of gate-self files where even a comment/whitespace
+# edit must ALWAYS get a real review — the classifier itself, the decision logic, the hook
+# entrypoints + config, the plugin manifest, and the real git hooks. A weakening here disables
+# enforcement, and a comment in the signal DATA (risk_signals.json) can be load-bearing. The
+# OTHER gate-self files (server receipt logic: receipt_writer / receipt_coverage / gate_skip) may
+# take the trivial-edit skip. Conservative: gate-core is the default; only an explicitly inert
+# edit to a non-core gate-self file skips.
+_GATE_CORE_PATHS = re.compile(
+    r"(^|/)(risk_signals\.json|risk_classifier\.py|gate_lib\.py|hooks\.json"
+    r"|audit_gate\.py|deliberate_gate\.py|\.claude-plugin/|\.git/hooks/)",
+    re.IGNORECASE,
+)
+
+
+def is_gate_core_mutation(path):
+    """True if `path` is a gate-CORE file (never eligible for the trivial-edit skip)."""
+    if not path:
+        return False
+    return bool(_GATE_CORE_PATHS.search(path.replace("\\", "/")))
+
+
+def diff_touches_gate_core(diff_text):
+    """True if any file the diff adds, removes, or renames is gate-core (checks BOTH a/ and b/
+    sides + rename headers via _diff_paths — a gate-core file moved/deleted must still review)."""
+    return any(is_gate_core_mutation(p) for p in _diff_paths(diff_text) if p and p != "/dev/null")
+
+
+def diff_is_inert(diff_text):
+    """True iff EVERY added AND removed line is structurally INERT — a comment, a blank, or
+    whitespace-only (its code skeleton is empty). A change that adds or removes any CODE — incl.
+    a string-literal assignment (the skeleton keeps its delimiters, so a changed secret/version
+    value is NOT inert) — returns False. An empty diff (no hunks) is NOT inert (nothing to skip).
+    Used by the gate-self trivial-edit skip (increment 5): a comment/whitespace-only edit to a
+    NON-gate-core gate-self file releases without a full review."""
+    saw_hunk = False
+    for path, added, removed in _iter_file_hunks(diff_text or ""):
+        saw_hunk = True
+        is_jsx = bool(path) and path.lower().endswith((".jsx", ".tsx"))
+        for line in _skeletonize(added, is_jsx) + _skeletonize(removed, is_jsx):
+            if line.strip():
+                return False
+    return saw_hunk
 
 
 # Namespace so a synthesized gate-self hash can never collide with — or be satisfied
@@ -784,6 +942,12 @@ def classify_diff(diff_text, trigger_threshold=None):
         hunks.append({
             "path": path,
             "content_hash": hunk_content_hash(verdict["content_basis"]),
+            # Phase 9: a cosmetic-drift-tolerant fallback match key + the filetype that
+            # drove its comment-stripping decision. Additive — inert until the Phase 9
+            # coverage path reads it; the v1 fields above are unchanged.
+            "normalized_hash": hunk_normalized_hash(
+                verdict["content_basis"], path, verdict["category"]),
+            "filetype": hunk_filetype(path),
             "category": verdict["category"],
             "confidence": verdict["confidence"],
             "signals": verdict["signals"],

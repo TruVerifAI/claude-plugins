@@ -29,11 +29,14 @@ import urllib.request
 from risk_classifier import (  # vendored, same dir
     classify_diff,
     hunk_content_hash,
+    NORM_VERSION,
     clamp_threshold,
     # Gate-self detection + the synthesized self-coverage hash live in the vendored
     # classifier so the client gate and the SERVER receipt writer agree byte-for-byte.
     is_gate_self_mutation,
     diff_touches_gate_self,
+    diff_touches_gate_core,
+    diff_is_inert,
     gate_self_coverage_hash,
     GATE_SELF_HASH_PREFIX,
 )
@@ -523,6 +526,17 @@ def check_audit_coverage(cfg, repo, hunk_hashes, classification=None, session_id
                 if h.get("content_hash") and h.get("category")]
         if cats:
             body["hunk_categories"] = cats
+        # Phase 9: send the per-hunk NORMALIZED hash + filetype so the server stores them on
+        # the fire — increment 3 binds coverage to the fire's STRICT hash when the agent's
+        # later review diff matches strict OR normalized (cosmetic-drift-tolerant). Additive;
+        # an old server ignores it. `norm_version` lets the server detect a stale normalizer.
+        nhs = [{"content_hash": h["content_hash"], "normalized_hash": h.get("normalized_hash"),
+                "filetype": h.get("filetype")}
+               for h in classification.get("hunks", [])
+               if h.get("content_hash") and h.get("normalized_hash")]
+        if nhs:
+            body["hunk_normalized"] = nhs
+            body["norm_version"] = NORM_VERSION
     return _post(cfg, "/api/mcp/receipts/check", body)
 
 
@@ -568,7 +582,23 @@ def audit_decision(classification, check_response, force_risky=False):
     # true — don't let that wave it through; require recent_pass (a real review).
     if classification.get("hunks") and check_response.get("covered"):
         return ("allow", "covered by a prior audit")
-    if check_response.get("recent_pass"):
+    # Phase 9: a FLOOR hunk that's uncovered must NOT release on the recent_pass valve (an
+    # UNRELATED recent audit in this repo) — that was the Phase-8 floor bypass. A floor change
+    # needs its OWN coverage (a real review of THIS change — now drift-tolerant via the
+    # gate_context_id binding, so a cosmetically-drifted gate_diff still releases it). recent_pass
+    # still releases a NON-floor change (the hash-misalignment deadlock-avoidance it exists for).
+    # The post-review-deadlock cell (floor_uncovered + recent_pass — reviewed but coverage still
+    # missed) is caught by the hook's maybe_human_override BEFORE this deny, so a genuinely
+    # reviewed floor change is never hard-trapped (it asks a human instead).
+    #   `is not True` (NOT `is False`) is deliberate: a response that OMITS floor_uncovered — a
+    #   gate-self change (no floor category), a non-floor change, or an old server — must still
+    #   release on recent_pass (else gate-self/non-floor recent_pass deadlocks). The server always
+    #   sends a proper bool floor_uncovered when uncovered hunks exist (it's set from `any(...)`),
+    #   so a real floor change always reads True here; the only "fail-open" case (a non-bool
+    #   truthy) is a server bug, not a reachable client state.
+    #   ACCEPTED EXCEPTION (audit F-003): a None response (our gate SERVER unreachable) already
+    #   fail-OPENs above (no-deadlock invariant) — a floor change can ship on a gate-server outage.
+    if check_response.get("recent_pass") and check_response.get("floor_uncovered") is not True:
         return ("allow_warn", "a recent audit passed but coverage could not be "
                               "confirmed (hash misalignment) — allowing")
     return ("deny", "uncovered")
@@ -627,7 +657,16 @@ def deliberate_decision(classification, check_response, mode, force_risky=False)
         return ("allow", "unlock check unavailable; failing open")
     if check_response.get("unlocked"):
         return ("allow", "area already deliberated")
-    if check_response.get("recent_pass"):
+    # Phase 9: same floor-scoping as audit_decision — a FLOOR write doesn't release on an
+    # unrelated recent deliberation. The commit (audit) gate is the real ship-time enforcement,
+    # but the write gate matches it for consistency. `floor_uncovered` is server-asserted on the
+    # deliberate-check response (the floor taxonomy is server-side, derived from the client's
+    # risk_categories — the Layer-1 cooperative trust assumption, audit F-004). `is not True`
+    # (NOT `is False`) so a gate-self / non-floor / old-server response that omits floor_uncovered
+    # still releases on recent_pass. A floor write that denies here is releasable via a real
+    # deliberate_coding of the design (→ area unlock), so the write gate needs no human-override
+    # (unlike the ship-time audit gate). Non-floor still releases.
+    if check_response.get("recent_pass") and check_response.get("floor_uncovered") is not True:
         return ("allow_warn", "a recent deliberation passed; area unverified — allowing")
 
     conf = classification.get("max_confidence")
@@ -852,7 +891,14 @@ def should_ask_human_override(check_response):
     if check_response.get("floor_uncovered") is not True:
         return False
     health = check_response.get("review_tool_health") or {}
-    return health.get("status") == "down" and health.get("sustained") is True
+    sustained_outage = health.get("status") == "down" and health.get("sustained") is True
+    # Phase 9 backstop: a floor hunk STILL uncovered after a recent review PASS (recent_pass) is
+    # the post-review-deadlock cell — the agent DID review, but coverage missed (an old client
+    # that didn't pass gate_context_id, or a drift the normalized hash couldn't catch). Ask a
+    # human rather than hard-deny, so floor-scoping recent_pass (above) can't TRAP a genuinely
+    # reviewed floor change. STRICT True (F-002): a non-bool from a drifted server reads as 'no'.
+    post_review_deadlock = check_response.get("recent_pass") is True
+    return sustained_outage or post_review_deadlock
 
 
 def _override_key(repo, hunk_hashes):

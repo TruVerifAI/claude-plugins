@@ -68,6 +68,8 @@ gate context the block message printed so a PASS writes a releasing receipt for 
 
 - **`gate_repo`** — from the gate message.
 - **`gate_diff`** — the change you're about to write.
+- **`gate_context_id`** — the `gc_…` the gate printed, when present (binds coverage to the gate's
+  own hunks so a cosmetically drifted diff still releases).
 - **`gate_session_id`** — when the gate provided one.
 
 A PASS (`proceed` / `proceed_with_caveats`) releases the gate on retry. If the write touches a

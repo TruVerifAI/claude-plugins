@@ -85,13 +85,21 @@ If the change touches a **floor class — auth / secrets / money / migration / r
 judgment skip (`false_positive_not_risky`, `trivial_change`, `disagree_with_classification`,
 `reviewed_outside_truverifai`, `time_critical_hotfix`, `tool_unavailable`, `other`) is **denied**
 (`gate_skip_reason_floor_denied`). Only the path-verified `test_or_docs_only` /
-`generated_or_vendored_code` can release a floor change. To release one otherwise:
-- **Genuine false positive →** run `synthesize_coding` with `gate_repo` + `gate_diff` (a ~15–30s
-  check). If the panel agrees it's low-risk, it mints a **SYNTH_CONFIRM** that releases the gate —
-  no full audit needed.
-- **Otherwise →** run `audit_coding` with `gate_repo`/`gate_diff` (a PASS releases it).
+`generated_or_vendored_code` can release a floor change. A **recent unrelated review does NOT
+release a floor change** (the `recent_pass` valve is floor-scoped) — it needs its own review. To
+release one otherwise (always also pass the `gate_context_id` the gate printed — coverage then binds
+to the gate's own hunks, so a cosmetically drifted `gate_diff` still releases):
+- **Genuine false positive →** run `synthesize_coding` with `gate_repo` + `gate_diff` +
+  `gate_context_id` (a ~15–30s check). If the panel agrees it's low-risk, it mints a
+  **SYNTH_CONFIRM** that releases the gate — no full audit needed.
+- **Otherwise →** run `audit_coding` with `gate_repo` / `gate_diff` / `gate_context_id` (a PASS
+  releases it).
 - **Tool down + sustained outage →** the gate prompts a **human** to approve; you can't skip past
   it. The deny message names the exact path; follow it instead of retrying the skip.
+
+A **purely inert** gate-self edit (comment/whitespace only) to a non-core gate file releases
+automatically (no review needed); a change to the gate's core (the classifier, decision logic,
+hooks, or plugin config) always requires a real review even when inert.
 
 A reason code can also be **suspended** for a repo (Phase 5 calibration, off by default) if its
 skips keep preceding real findings — a suspended skip is denied and you run the review.

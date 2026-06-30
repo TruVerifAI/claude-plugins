@@ -85,7 +85,14 @@ def main():
     # 2026-06-17). The authoritative gate-self control is the commit gate; this is the
     # symmetric pre-write layer. Still fails OPEN on infra error (no deadlock).
     if gate_self:
-        self_hash = g.gate_self_coverage_hash(g.synth_write_diff(path, content))
+        write_diff = g.synth_write_diff(path, content)
+        # Phase 9 (inc 5): a purely INERT gate-self write (comment/whitespace only) to a
+        # NON-gate-core file releases without a review (same rule as the commit gate). gate-CORE
+        # always reviews. (For a whole-file Write this rarely fires — the content has code — so
+        # it's conservative; it mainly helps a comment-only Edit to a non-core gate-self file.)
+        if g.diff_is_inert(write_diff) and not g.diff_touches_gate_core(write_diff):
+            g.emit_allow("trivial gate-self edit (comment/whitespace only, non-core) — released")
+        self_hash = g.gate_self_coverage_hash(write_diff)
         gs_resp = g.check_audit_coverage(cfg, repo, [self_hash])
         gs_action, gs_detail = g.audit_decision_gate_self(gs_resp)
         if gs_action == "deny":

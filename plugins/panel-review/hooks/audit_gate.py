@@ -57,6 +57,14 @@ def main():
     # to bare-hex hunk hashes (those would be SKIP-releasable). audit_decision_gate_self
     # ignores recent_pass; the server writes the matching gself hash on a PASS.
     if gate_self:
+        # Phase 9 (inc 5): a purely INERT gate-self edit (comment / whitespace only — its code
+        # skeleton is empty) to a NON-gate-core file doesn't change enforcement behavior, so
+        # release it without forcing a full review. gate-CORE files (the classifier, the decision
+        # logic, the hook entrypoints + config, the plugin manifest, the real git hooks) ALWAYS
+        # require a review, even for an inert edit (a comment there can be load-bearing). A
+        # string-value / code change is NOT inert (diff_is_inert keeps string delimiters).
+        if g.diff_is_inert(diff) and not g.diff_touches_gate_core(diff):
+            g.emit_allow("trivial gate-self edit (comment/whitespace only, non-core) — released")
         resp = g.check_audit_coverage(cfg, repo, [g.gate_self_coverage_hash(diff)])
         action, detail = g.audit_decision_gate_self(resp)
         if action == "deny":
@@ -92,12 +100,18 @@ def main():
         # gate-server down → returns → normal deny) and robust (any internal failure → returns
         # → normal deny, never crashes / never auto-allows). Debounced per repo+hunkset.
         g.maybe_human_override(cfg, classification, resp, session_id, repo)
+        gcid = (resp or {}).get("gate_context_id")
+        # Phase 9: pass the gate_context_id to audit_coding so coverage binds to the gate's OWN
+        # recorded hunks — a cosmetically-drifted gate_diff (a smart-quote, an em-dash an LLM
+        # courier mangled) then still releases the change instead of silently missing coverage.
+        gcid_line = f'  gate_context_id = "{gcid}"  (binds coverage to THIS change)\n' if gcid else ""
         g.emit_deny(
             f"TruVerifAI flagged a potential high-risk change for a quick review before "
             f"it ships — this commit touches {cats}.\n"
             "Run `audit_coding` with your proposed_action + relevant_code, AND pass:\n"
             f'  gate_repo = "{repo}"\n'
             "  gate_diff = the staged diff (run: git diff --staged)\n"
+            + gcid_line +
             "TruVerifAI records the result and the commit proceeds on retry. "
             "(`audit_coding` is in your MCP tools.)\n"
             # §4.I diff-delta: re-committing after addressing earlier audit findings only

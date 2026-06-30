@@ -3,6 +3,27 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/panel-review/.claude-plugin/plugin.json`.
 
+## 0.5.0
+
+**Reliable review coverage + a stricter floor release.** A genuine review now clears a
+change dependably even when the diff drifts cosmetically, and the high-stakes "floor" can
+no longer be released by an unrelated recent pass.
+
+- **Drift-tolerant coverage.** A real review used to miss its mark when the diff that
+  reached the server drifted by a byte (a smart-quote, an em-dash, a reflow) — so a change
+  you *did* review stayed blocked. Pass the **`gate_context_id`** the gate prints to
+  `audit_coding` / `deliberate_coding` / `synthesize_coding`, and the review binds to the
+  gate's own recorded change, so a cosmetically-drifted diff still releases. The audit /
+  deliberate / synthesize / skip-gate skills document the new param.
+- **The floor is no longer released by a recent unrelated pass.** A 15-minute "recent
+  pass" shortcut still releases ordinary changes, but **no longer** a **floor** change
+  (auth, secrets, money, migrations, a removed guard) — each floor change is reviewed on
+  its own. A human-override backstop catches the rare post-review edge case so nothing
+  hard-deadlocks.
+- **Trivial plugin-file edits release without a review.** A purely cosmetic
+  (comment/whitespace) edit to a non-core gate file no longer triggers a review; the
+  enforcement-defining gate files always review.
+
 ## 0.4.0
 
 **Higher-stakes review gates + a more precise classifier.** The proactive coding gates
