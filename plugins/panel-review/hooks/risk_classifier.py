@@ -40,6 +40,75 @@ LOW = "low"
 _TRIGGER_CLASS = "trigger"
 _BORDERLINE_CLASSES = ("primitive", "significance", "domain")
 
+# ---------------------------------------------------------------------------
+# Floor categories + gate-tightness tier (single source of truth, shared byte-identical
+# by the client gate hook and the server). The gate's HARD FLOOR (auth / secrets / money /
+# migration / removed-guard) always blocks a commit; `gate_tightness` tunes only the
+# NON-floor surface. `mcp_server.gate_fire_models.FLOOR_CATEGORIES` imports these so the
+# server-side floor derivation and the client-side tightness partition never drift.
+# See docs/MCP/gate skip solve/GATE-TIGHTNESS-DESIGN.md.
+# ---------------------------------------------------------------------------
+
+# The highest-risk classes the gate's hard floor protects, mapped to the classifier's actual
+# category names (risk_signals.json). Design wording "auth / secrets / money / migration /
+# removed-guard" → these tags.
+FLOOR_CATEGORIES = frozenset({
+    "auth_security",       # auth
+    "hardcoded_secret",    # secrets
+    "secret_material",     # secrets
+    "billing",             # money
+    "migration_schema",    # migration
+    "migration_path",      # migration
+    "removed_guard",       # removed-guard
+    "removed_conditional", # removed-guard (SOFT_FLOOR — see below)
+})
+
+# SOFT_FLOOR: a floor category that can only fire at LOW confidence — `removed_conditional` is
+# produced solely by the weight-10 borderline signal `removed_generic_conditional`, so it can
+# NEVER reach HIGH. It STAYS a floor class (it's the weak-signal guard-removal defense-in-depth;
+# `removed_guard` is the strong signal): under gate_tightness 'thorough' it blocks + needs a real
+# review, and its full floor enforcement (no recent_pass / judgment-skip release) is preserved.
+# But "floor always blocks at LOW" would be incoherent under 'focused' (a generic conditional
+# removal is usually noise), so SOFT_FLOOR makes it ADVISORY under 'focused' only. This is the
+# PERMANENT solution — the owner (2026-07-01) chose to KEEP it here rather than demote it out of
+# FLOOR_CATEGORIES, which would have weakened thorough-mode guard-removal protection (F-002 closed).
+SOFT_FLOOR = frozenset({"removed_conditional"})
+
+# Valid gate_tightness levels + the default. 'focused' = fire only on major decisions
+# (floor + high-confidence non-floor); 'thorough' = block any risky change (legacy behavior).
+GATE_TIGHTNESS_VALUES = frozenset({"focused", "thorough"})
+DEFAULT_GATE_TIGHTNESS = "focused"
+
+
+def is_hard_floor(category) -> bool:
+    """True if `category` is a HARD-floor class — a floor category excluding SOFT_FLOOR. A
+    hard-floor hunk blocks the commit at EVERY tightness level (even suppressed to LOW — a
+    floor near-miss must still block); a soft-floor hunk blocks only under 'thorough'."""
+    return category in FLOOR_CATEGORIES and category not in SOFT_FLOOR
+
+
+def hunk_blocks_under_tightness(category, confidence, tightness) -> bool:
+    """Does an uncovered risky hunk BLOCK the commit under the given `gate_tightness`?
+
+    'thorough' (and any unrecognized value → fail safe to blocking): every risky hunk blocks —
+        the legacy commit-gate behavior.
+    'focused': blocks only a HARD-floor hunk (any confidence) OR a non-floor HIGH-confidence
+        hunk; a non-floor LOW/borderline hunk and a soft-floor hunk are advisory (non-blocking).
+
+    Confidence is compared to the HIGH constant, so a suppressed-to-LOW hard-floor near-miss
+    still blocks via the is_hard_floor branch (not via confidence)."""
+    # Fail-safe (audit F-001): a missing/unknown category or a confidence that isn't one of the
+    # known labels BLOCKS — an unclassifiable hunk must never silently become a non-blocking
+    # advisory under 'focused'. This also covers the old-server fallback where hunks may lack a
+    # confidence field.
+    if not category or confidence not in (LOW, HIGH):
+        return True
+    if is_hard_floor(category):
+        return True
+    if tightness == "focused":
+        return confidence == HIGH
+    return True  # 'thorough' or any unknown value: block every risky hunk (safe direction)
+
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "risk_signals.json")
 
 # Prose/doc files don't gate on CONTENT keywords. A design doc / README / changelog / notes

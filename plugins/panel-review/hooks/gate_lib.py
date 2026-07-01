@@ -39,6 +39,11 @@ from risk_classifier import (  # vendored, same dir
     diff_is_inert,
     gate_self_coverage_hash,
     GATE_SELF_HASH_PREFIX,
+    # gate_tightness (commit-gate confidence tier): the floor set + per-hunk block/advise
+    # partition live in the vendored classifier so client + server agree byte-for-byte.
+    hunk_blocks_under_tightness,
+    GATE_TIGHTNESS_VALUES,
+    DEFAULT_GATE_TIGHTNESS,
 )
 
 
@@ -76,7 +81,32 @@ def config():
             os.environ.get("CLAUDE_PLUGIN_OPTION_BORDERLINE_SAMPLING_RATE", ""), 0.5),
         "borderline_session_budget": _parse_int(
             os.environ.get("CLAUDE_PLUGIN_OPTION_BORDERLINE_SESSION_BUDGET", ""), 3),
+        # Commit-gate tightness (fatigue lever, GATE-TIGHTNESS-DESIGN.md): 'focused' (default)
+        # blocks only floor + high-confidence non-floor and downgrades non-floor low-confidence
+        # changes to a non-blocking advisory; 'thorough' blocks every risky change (legacy).
+        # The floor always blocks at both levels. Invalid → default (fail safe: not looser).
+        "gate_tightness": _parse_tightness(
+            os.environ.get("CLAUDE_PLUGIN_OPTION_GATE_TIGHTNESS", "")),
     }
+
+
+def _parse_tightness(val):
+    """Validate the gate_tightness config value. Two distinct cases (audit F-002):
+    - EMPTY / unset → DEFAULT_GATE_TIGHTNESS ('focused') — the intentional product default (the
+      user chose not to set it).
+    - Non-empty but UNRECOGNIZED (typo / corruption / injection, e.g. 'focsed') → 'thorough' —
+      fail SAFE to the STRICTER mode, never silently to the looser 'focused'. A garbage value
+      must not loosen the gate.
+    The floor is enforced regardless of this value. Lowercased + stripped so 'Focused' /
+    ' thorough ' work."""
+    v = (val or "").strip().lower()
+    if not v:
+        return DEFAULT_GATE_TIGHTNESS
+    if v in GATE_TIGHTNESS_VALUES:
+        return v
+    sys.stderr.write(
+        "TruVerifAI: unrecognized gate_tightness %r — failing safe to 'thorough'\n" % (val,))
+    return "thorough"
 
 
 def _parse_rate(val, default):
@@ -508,6 +538,15 @@ def _classifier_meta(classification, session_id=None):
 def check_audit_coverage(cfg, repo, hunk_hashes, classification=None, session_id=None):
     body = {"repo": repo, "hunks": hunk_hashes}
     body.update(_classifier_meta(classification, session_id))
+    # gate_tightness (GATE-TIGHTNESS-DESIGN.md §6b): send the active tightness so the server can
+    # label the minted fire's gate_decision ('advisory' when uncovered-but-all-advisory under
+    # 'focused') and keep fire-rate telemetry honest — otherwise it would mint an orphan 'deny'
+    # fire for a change the client only advises on. Additive; an old server ignores it (and just
+    # keeps minting 'deny', harmless). The CLIENT still makes the actual gate decision locally
+    # (audit_decision) — this field is for the server's telemetry labeling, not the gate outcome.
+    tightness = cfg.get("gate_tightness") if isinstance(cfg, dict) else None
+    if tightness:
+        body["gate_tightness"] = tightness
     # §4.B (Phase 3): send the per-hunk path-class tags so the server can verify a
     # test_or_docs_only / generated_or_vendored_code skip against fire-time evidence (never
     # raw paths — the classifier computed these client-side). Additive; old server ignores it.
@@ -521,7 +560,11 @@ def check_audit_coverage(cfg, repo, hunk_hashes, classification=None, session_id
         # store per-hunk FLOOR membership on the fire (the floor list is server-side; the
         # client only reports the raw category — the same label class already in the aggregate
         # risk_categories, never a path or source). Additive; an old server ignores it.
-        cats = [{"content_hash": h["content_hash"], "category": h.get("category")}
+        # GATE-TIGHTNESS: also send per-hunk `confidence` (high/low, already in the classifier
+        # output) so the server can reproduce the focused block/advise partition for fire
+        # labeling. Additive; an old server ignores the extra key.
+        cats = [{"content_hash": h["content_hash"], "category": h.get("category"),
+                 "confidence": h.get("confidence")}
                 for h in classification.get("hunks", [])
                 if h.get("content_hash") and h.get("category")]
         if cats:
@@ -568,21 +611,40 @@ def check_deliberate_unlock(cfg, repo, area, session_id, classification=None,
 # Pure decision logic (unit-tested in tests/test_gate_logic.py)
 # ---------------------------------------------------------------------------
 
-def audit_decision(classification, check_response, force_risky=False):
-    """Return (action, detail). action ∈ {'allow', 'allow_warn', 'deny'}.
+def _uncovered_risky_hunks(classification, check_response):
+    """Return (uncovered_hunks, coverage_known).
+
+    `coverage_known` is False when the server did NOT return an `uncovered` set (`None` → an old
+    server / malformed response → the coverage state is AMBIGUOUS). On ambiguity the caller must
+    NOT downgrade — it blocks (fail-safe: BLOCK on ambiguous coverage; audit F-A/F-B). This is a
+    deliberate distinction from an explicit empty list `[]`, which is the server unambiguously
+    confirming full coverage (→ no uncovered hunks, known=True)."""
+    hunks = classification.get("hunks") or []
+    uncovered_hashes = check_response.get("uncovered") if isinstance(check_response, dict) else None
+    if uncovered_hashes is None:
+        return (hunks, False)  # missing set → ambiguous → caller must block, not downgrade
+    uc = set(uncovered_hashes)
+    return ([h for h in hunks if h.get("content_hash") in uc], True)
+
+
+def audit_decision(classification, check_response, force_risky=False, tightness=None):
+    """Return (action, detail). action ∈ {'allow', 'allow_warn', 'advise', 'deny'}.
 
     - not risky → allow.
     - network/None response → allow (FAIL-OPEN; never block on our infra).
     - covered → allow.
     - recent_pass (escape valve) → allow_warn (a recent audit passed; hashes
       didn't align, but we don't deadlock).
+    - `tightness='focused'` AND every uncovered risky hunk is advisory-class (non-floor
+      low-confidence + soft-floor) → advise (non-blocking, model-visible; GATE-TIGHTNESS-DESIGN.md).
     - else → deny (route the agent to audit_coding).
 
     `force_risky` (gate self-mutation, §6.1, audit F-005): treat the change as
     risky even if the classifier found nothing, so a commit touching the gate's
     own config/hooks ALWAYS requires a review — but is RELEASABLE (covered /
     recent_pass / fail-open), not the old unconditional deny (which made the gate's
-    own files un-maintainable through the gate).
+    own files un-maintainable through the gate). The tightness downgrade NEVER applies to a
+    gate-self change — it always blocks (loosening gate-self would be privilege escalation).
     """
     if not classification.get("risky") and not force_risky:
         return ("allow", "no risky hunks")
@@ -612,6 +674,31 @@ def audit_decision(classification, check_response, force_risky=False):
     if check_response.get("recent_pass") and check_response.get("floor_uncovered") is not True:
         return ("allow_warn", "a recent audit passed but coverage could not be "
                               "confirmed (hash misalignment) — allowing")
+    # gate_tightness (GATE-TIGHTNESS-DESIGN.md §3/§6b): under 'focused', a commit whose UNCOVERED
+    # risky hunks are ALL advisory-class (non-floor low-confidence + soft-floor) downgrades from a
+    # hard block to a non-blocking, model-visible advisory. A single blocking-class uncovered hunk
+    # (hard-floor at any confidence, OR non-floor HIGH) keeps the deny. Never for a gate-self change
+    # (force_risky) — gate-self always blocks. Fails safe: an empty uncovered set falls back to all
+    # hunks (_uncovered_risky_hunks), and an unknown tightness is treated as blocking by
+    # hunk_blocks_under_tightness — so this branch can only ever make the gate LOOSER for the exact
+    # focused/all-advisory case, never for floor or high-confidence risk.
+    if tightness == "focused" and not force_risky:
+        uncovered, coverage_known = _uncovered_risky_hunks(classification, check_response)
+        # Defense-in-depth (audit F-003): NEVER downgrade a gate-self change, even if a caller
+        # mis-passes force_risky=False. A gate-self hunk carries the `gself:` hash namespace, so
+        # its presence forces the block regardless of category/confidence. (The audit gate already
+        # routes gate-self commits to audit_decision_gate_self and never reaches here — this is a
+        # belt-and-suspenders guard local to the decision, not the primary enforcement.)
+        gate_self_hunk = any(
+            (h.get("content_hash") or "").startswith(GATE_SELF_HASH_PREFIX) for h in uncovered)
+        # `coverage_known` (audit F-A/F-B): if the coverage state is ambiguous (server omitted the
+        # `uncovered` set), do NOT downgrade — fall through to deny (block on ambiguity).
+        if coverage_known and uncovered and not gate_self_hunk and not any(
+            hunk_blocks_under_tightness(h.get("category"), h.get("confidence"), "focused")
+            for h in uncovered
+        ):
+            return ("advise", "focused: only non-floor low-confidence changes are uncovered "
+                              "— advisory, not blocking")
     return ("deny", "uncovered")
 
 

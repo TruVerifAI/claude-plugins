@@ -1,7 +1,7 @@
 {
   "name": "panel-review",
   "displayName": "AI Panel Review",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Multi-model second-opinion deliberation for high-stakes coding and financial decisions. Eight skills across two profiles — coding and financial (audit / deliberate / synthesize per profile), plus shared record-outcome and skip-gate — route to the TruVerifAI MCP server, where four frontier models reason independently and conflict-target each other's positions to produce decision-grade output. Outcome reporting closes the loop — the dashboard shows what % of MCP calls actually changed the agent's decision.",
   "author": {
     "name": "TruVerifAI",
@@ -37,6 +37,12 @@
       "title": "Enable the proactive review gates",
       "description": "When enabled, a PreToolUse gate runs before a risky git commit (audit) or a risky design write (deliberate). A local classifier scores the change across many domains (auth, billing, migrations, secrets, infra-as-code, and more — including risky DELETIONS like a removed permission check) and sends TruVerifAI only a repo fingerprint + hunk content hashes — never source, paths, or diffs. If the change isn't already covered the gate asks the agent to call audit_coding / deliberate_coding first, OR to record a one-line skip-with-reason. Fails open on any error and never deadlocks. Set to false to disable the gates entirely. Default true. To change it, type true or false.",
       "default": true
+    },
+    "gate_tightness": {
+      "type": "string",
+      "title": "Commit gate tightness (how often it blocks)",
+      "description": "Controls which changes the commit (audit) gate BLOCKS. 'focused' (default) blocks only the highest-stakes changes: the floor classes (auth, secrets, billing, migrations, a removed safety check) and high-confidence security signals (crypto, unsafe exec, deserialization, dependency changes, IaC exposure, SQL) — lower-confidence 'code-review' changes (API routes, concurrency, network calls, large refactors, error handling) become a non-blocking advisory instead. 'thorough' blocks the commit on ANY risky change that isn't covered by a review. The floor always blocks at BOTH levels — you cannot disable it this way (use enable_gates=false for that). To change it, type one of: focused, or thorough.",
+      "default": "focused"
     },
     "deliberate_mode": {
       "type": "string",

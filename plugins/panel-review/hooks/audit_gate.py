@@ -89,7 +89,8 @@ def main():
     hashes = [h["content_hash"] for h in classification["hunks"]]
     resp = g.check_audit_coverage(cfg, repo, hashes,
                                   classification=classification, session_id=session_id)
-    action, detail = g.audit_decision(classification, resp, force_risky=False)
+    action, detail = g.audit_decision(classification, resp, force_risky=False,
+                                      tightness=cfg["gate_tightness"])
     if action == "deny":
         cats = ", ".join(sorted({h["category"] for h in classification["hunks"]})) or "high-stakes code"
         # §4.E human override (Phase 4 Increment 1): a floor-class hunk uncovered AND the
@@ -124,6 +125,29 @@ def main():
                                 gate_context_id=(resp or {}).get("gate_context_id"))
         )
 
+    # gate_tightness 'focused' downgrade (GATE-TIGHTNESS-DESIGN.md §3/§6b): the uncovered risky
+    # hunks are ALL non-floor low-confidence (or soft-floor), so this is not a "major decision" —
+    # surface a MODEL-VISIBLE, NON-blocking advisory and allow. CRITICAL (feedback c/d): this path
+    # emits emit_allow_advisory ONLY — it never calls record_gate_skip or writes any receipt, so an
+    # advisory is neither a block nor a skip and cannot touch the Phase-5 skip counters/suspensions.
+    # emit_allow_advisory EXITS the process, so control never falls through to emit_allow below
+    # (deny above also exits) — the trailing emit_allow is the allow / allow_warn path only.
+    if action == "advise":
+        # audit F-004: name only the UNCOVERED (downgraded) hunk categories, not every hunk — a
+        # covered floor hunk must not appear here and imply the floor isn't blocking. (action is
+        # only 'advise' when coverage was KNOWN, so the tuple's known flag is True here.)
+        uncovered, _ = g._uncovered_risky_hunks(classification, resp)
+        cats = ", ".join(sorted({h.get("category") for h in uncovered if h.get("category")})) \
+            or "low-confidence changes"
+        g.emit_allow_advisory(
+            "TruVerifAI (focused tightness): this commit touches " + cats + " — lower-confidence, "
+            "non-floor changes, so the gate is NOT blocking (floor classes — auth / secrets / money / "
+            "migrations / removed guards — and high-confidence security changes still block). If any of "
+            "this is genuinely consequential, consider running `audit_coding` before you rely on it. "
+            "To block on every risky change instead, set the plugin's gate_tightness=thorough."
+        )
+
+    # Reached only for action in {'allow', 'allow_warn'} — 'deny' and 'advise' exited above.
     g.emit_allow(detail if action == "allow_warn" else None)
 
 

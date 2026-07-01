@@ -3,6 +3,22 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/panel-review/.claude-plugin/plugin.json`.
 
+## 0.7.0
+
+**Focus the gate on major decisions, not code review.** A new `gate_tightness` setting
+(default `focused`) makes the pre-commit gate block only on the highest-stakes changes: the
+floor classes (auth, secrets, billing, migrations, a removed safety check) and high-confidence
+security signals (crypto, unsafe exec, deserialization, dependency changes, IaC exposure, SQL).
+Lower-confidence "code-review" changes — API routes, concurrency, network calls, large
+refactors, error handling — become a **non-blocking advisory** instead of a hard block. Set
+`gate_tightness=thorough` to keep the previous behavior (block any risky change).
+
+- **The floor always blocks** at both levels — you can't disable it this way.
+- **Advisories are visible, never silent.** The agent still sees a note for a downgraded
+  change, and it is recorded as neither a block nor a skip.
+- On update, existing installs get the lighter `focused` behavior by default; switch to
+  `thorough` if you want every risky change to keep blocking.
+
 ## 0.6.0
 
 **The drift-tolerant coverage from 0.5.0, now actually reliable.** 0.5.0 promised that a
