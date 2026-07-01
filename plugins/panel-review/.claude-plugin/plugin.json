@@ -1,7 +1,7 @@
 {
   "name": "panel-review",
   "displayName": "AI Panel Review",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Multi-model second-opinion deliberation for high-stakes coding and financial decisions. Eight skills across two profiles — coding and financial (audit / deliberate / synthesize per profile), plus shared record-outcome and skip-gate — route to the TruVerifAI MCP server, where four frontier models reason independently and conflict-target each other's positions to produce decision-grade output. Outcome reporting closes the loop — the dashboard shows what % of MCP calls actually changed the agent's decision.",
   "author": {
     "name": "TruVerifAI",
@@ -47,7 +47,7 @@
     "deliberate_mode": {
       "type": "string",
       "title": "Deliberate gate strictness",
-      "description": "'tiered' (default) blocks only high-confidence/irreversible design forks (schema, migrations, auth, dependencies, IaC exposure) and routes lower-confidence borderline changes via borderline_mode (below); 'block' blocks every risky design write; 'advisory' never blocks (surfaces a suggestion only). A blocked write releases by running deliberate_coding OR calling record_gate_skip. The audit gate (pre-commit) is unaffected. To change it, type one of: tiered, block, or advisory.",
+      "description": "'tiered' (default) blocks only high-confidence/irreversible design forks (schema, migrations, auth, dependencies, IaC exposure) and routes lower-confidence borderline changes via borderline_mode (below); 'block' blocks every risky design write; 'advisory' never blocks (surfaces a suggestion only). A blocked write is finished code, so its natural review is audit_coding (a PASS releases it) — or a synthesize_coding SYNTH_CONFIRM for a low-risk check; deliberate_coding is also accepted (prefer it for a still-open design); or call record_gate_skip. The audit gate (pre-commit) is unaffected. To change it, type one of: tiered, block, or advisory.",
       "default": "tiered"
     },
     "borderline_mode": {

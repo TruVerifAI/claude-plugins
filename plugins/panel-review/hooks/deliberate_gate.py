@@ -128,22 +128,42 @@ def main():
     resp = g.check_deliberate_unlock(cfg, repo, area, session_id,
                                      classification=classification, gate_type=gate_type)
 
+    # Write-gate-deadlock fix: a Write/Edit is FINISHED code, so its natural review is `audit`.
+    # If the change is already reviewed — an `audit_coding` PASS or a `synthesize_coding`
+    # SYNTH_CONFIRM covers every risky hunk (server `covered`, floor-aware) — release NOW, for
+    # BOTH the deliberate and the borderline/synthesize tier, before any tier-specific logic.
+    # This is the primary fix that removes the deliberate-only deadlock and restores the design
+    # invariant "run the review -> release" at the write gate.
+    if resp and resp.get("covered"):
+        g.emit_allow("change reviewed — audit / SYNTH_CONFIRM covers every risky hunk")
+
     action, detail = g.deliberate_decision(classification, resp, cfg["deliberate_mode"])
     cats = ", ".join(sorted({h["category"] for h in classification["hunks"]}))
 
-    # 1. High-confidence design fork -> the deliberate gate (block in tiered/block mode).
+    # 1. High-confidence change -> block in tiered/block mode. This is FINISHED code, so the
+    #    natural review is `audit_coding`; `synthesize_coding` (SYNTH_CONFIRM) also releases a
+    #    low-risk floor; `deliberate_coding` is accepted for a still-open design. All three write
+    #    a receipt the server now reads at the write gate (covered / unlocked).
     if action == "deny":
+        gcid = (resp or {}).get("gate_context_id")
+        gcid_line = ("  gate_context_id = %s\n" % json.dumps(gcid)) if gcid else ""
         g.emit_deny(
-            f"TruVerifAI flagged a design decision worth a second opinion before you "
-            f"build on it ({cats}).\n"
-            "Run `deliberate_coding` with your question + options_considered, AND pass:\n"
+            f"TruVerifAI flagged a {cats} change worth a review before it ships.\n"
+            "This is finished code, so the natural review is `audit_coding` — run it with your "
+            "proposed_action, AND pass:\n"
             f'  gate_repo = "{repo}"\n'
             "  gate_diff = the change you're about to write\n"
             f'  gate_session_id = "{session_id or ""}"\n'
-            "TruVerifAI records the result and the write proceeds on retry. "
-            "(`deliberate_coding` is in your MCP tools.)\n"
+            + gcid_line +
+            "A PASS releases the gate. On a FLOOR-class change (auth/secrets/money/migration/"
+            "removed-guard) — where a plain skip is denied — `synthesize_coding` with the same "
+            "args is a cheaper option: a fast (~15-30s) review that mints a SYNTH_CONFIRM and "
+            "releases the gate IF the panel finds it low-risk (it's a real review, not a skip). "
+            "`deliberate_coding` is accepted too — prefer it only when the design is still open "
+            "(no concrete diff). Passing gate_context_id binds coverage to the gate's own hunks, "
+            "so a cosmetically-drifted diff still releases.\n"
             + g.skip_and_signal(classification, audit=False, area=area,
-                                gate_context_id=(resp or {}).get("gate_context_id"))
+                                gate_context_id=gcid)
         )
     if action == "allow_warn":
         g.emit_allow(detail)  # recent_pass escape valve
@@ -171,9 +191,11 @@ def main():
             g.emit_deny(
                 f"TruVerifAI flagged a borderline-consequential {cats} change — worth a "
                 "fast second opinion before building on it.\n"
-                "Run `synthesize_coding` with your question + relevant_code (a ~15-30s check), "
-                "OR record a one-line skip with a reason (`record_gate_skip`), AND pass:\n"
+                "Run `synthesize_coding` (a ~15-30s second opinion; on a FLOOR-class change a "
+                "passing SYNTH_CONFIRM releases the gate), OR `audit_coding` (a PASS releases any "
+                "change), OR record a one-line skip with a reason (`record_gate_skip`), AND pass:\n"
                 f'  gate_repo = "{repo}"\n'
+                "  gate_diff = the change you're about to write\n"
                 f'  gate_session_id = "{session_id or ""}"\n'
                 + gcid_line
                 # The synthesize soft-gate releases on an AREA skip (the write-gate key);
@@ -182,7 +204,8 @@ def main():
                 # json.dumps so a quote/backslash in the path can't malform the copy key.
                 + f"  area = {json.dumps(area)}\n"
                 + g.gate_signal_line(classification) + "\n"
-                "Then retry. (`synthesize_coding` is in your MCP tools.)"
+                "Then retry. (Both tools are in your MCP tools; passing gate_context_id binds "
+                "coverage to the gate's own hunks.)"
             )
         if b_action == "advise":
             # Option B (2026-06-19): make the nudge MODEL-visible so synthesize can

@@ -27,14 +27,17 @@ the judgment and external-trust codes (`false_positive_not_risky`, `trivial_chan
 call." Only the **path-verified** codes (`test_or_docs_only`, `generated_or_vendored_code`) can
 release a floor change, and only when the server confirms the path class from fire-time evidence.
 
-To release a floor change you have three real options (the gate's deny message spells them out):
+To release a floor change you have three real options (the gate's deny message spells them out).
+**This is identical at the commit gate and the write gate** — a `Write`/`Edit` is finished code, so
+`audit_coding` is its natural review, and a `SYNTH_CONFIRM` releases either gate. Always also pass
+the `gate_context_id` the gate printed (binds coverage to the gate's own hunks):
 
-1. **Genuine false positive →** run `synthesize_coding` with `gate_repo` + `gate_diff` (the
-   staged diff). If the panel agrees it's low-risk it mints a **SYNTH_CONFIRM** that releases the
-   gate — cheap (~15–30s), no full audit. This is the intended cheap exit for a floor-class FP.
-2. **Otherwise →** run `audit_coding` with your `proposed_action` + `gate_repo`/`gate_diff`; a
-   PASS releases it.
-3. **Review tool down + sustained outage →** the commit gate prompts a **human** to approve
+1. **Already decided (the usual case) →** run `audit_coding` with your `proposed_action` +
+   `gate_repo`/`gate_diff`/`gate_context_id`; a PASS releases it.
+2. **Genuine low-risk false positive →** run `synthesize_coding` with `gate_repo` + `gate_diff` +
+   `gate_context_id` (the diff you're committing or writing). If the panel agrees it's low-risk it
+   mints a **SYNTH_CONFIRM** that releases the gate — cheap (~15–30s), no full audit.
+3. **Review tool down + sustained outage →** the gate prompts a **human** to approve
    (`permissionDecision: "ask"`). You cannot skip a floor change past it, and you cannot approve
    your own prompt.
 

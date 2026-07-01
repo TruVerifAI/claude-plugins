@@ -535,6 +535,49 @@ def _classifier_meta(classification, session_id=None):
     return meta
 
 
+def _hunk_hashes(classification):
+    """The risky-hunk content hashes for a classification (empty list when none)."""
+    if not classification:
+        return []
+    return [h["content_hash"] for h in classification.get("hunks", [])
+            if h.get("content_hash")]
+
+
+def _hunk_evidence(classification):
+    """Per-hunk evidence fields the server stores on the gate-fire + uses for coverage and
+    skip verification: path-class (§4.B), category+confidence (§4.E floor + tightness),
+    normalized hash (Phase 9 drift-tolerant binding), and @@ structural ranges (Phase 9.1
+    coarse fallback). SHARED by the commit gate (check_audit_coverage) and the write gate
+    (check_deliberate_unlock) so both mint fires with identical, drift-tolerant hunk metadata
+    (Rule 8 — one builder, not two). Additive; an old server ignores every field."""
+    body = {}
+    if not classification:
+        return body
+    hunks = classification.get("hunks", [])
+    pcs = [{"content_hash": h["content_hash"], "path_class": h.get("path_class")}
+           for h in hunks if h.get("content_hash") and h.get("path_class")]
+    if pcs:
+        body["hunk_path_classes"] = pcs
+    cats = [{"content_hash": h["content_hash"], "category": h.get("category"),
+             "confidence": h.get("confidence")}
+            for h in hunks if h.get("content_hash") and h.get("category")]
+    if cats:
+        body["hunk_categories"] = cats
+    nhs = [{"content_hash": h["content_hash"], "normalized_hash": h.get("normalized_hash"),
+            "filetype": h.get("filetype")}
+           for h in hunks if h.get("content_hash") and h.get("normalized_hash")]
+    if nhs:
+        body["hunk_normalized"] = nhs
+        body["norm_version"] = NORM_VERSION
+    hst = [{"content_hash": h["content_hash"], "old_start": h["structural"]["old_start"],
+            "old_count": h["structural"]["old_count"], "new_start": h["structural"]["new_start"],
+            "new_count": h["structural"]["new_count"]}
+           for h in hunks if h.get("content_hash") and isinstance(h.get("structural"), dict)]
+    if hst:
+        body["hunk_structural"] = hst
+    return body
+
+
 def check_audit_coverage(cfg, repo, hunk_hashes, classification=None, session_id=None):
     body = {"repo": repo, "hunks": hunk_hashes}
     body.update(_classifier_meta(classification, session_id))
@@ -547,50 +590,9 @@ def check_audit_coverage(cfg, repo, hunk_hashes, classification=None, session_id
     tightness = cfg.get("gate_tightness") if isinstance(cfg, dict) else None
     if tightness:
         body["gate_tightness"] = tightness
-    # §4.B (Phase 3): send the per-hunk path-class tags so the server can verify a
-    # test_or_docs_only / generated_or_vendored_code skip against fire-time evidence (never
-    # raw paths — the classifier computed these client-side). Additive; old server ignores it.
-    if classification:
-        pcs = [{"content_hash": h["content_hash"], "path_class": h.get("path_class")}
-               for h in classification.get("hunks", [])
-               if h.get("content_hash") and h.get("path_class")]
-        if pcs:
-            body["hunk_path_classes"] = pcs
-        # §4.E (Phase 4): send the per-hunk classifier CATEGORY so the server can derive +
-        # store per-hunk FLOOR membership on the fire (the floor list is server-side; the
-        # client only reports the raw category — the same label class already in the aggregate
-        # risk_categories, never a path or source). Additive; an old server ignores it.
-        # GATE-TIGHTNESS: also send per-hunk `confidence` (high/low, already in the classifier
-        # output) so the server can reproduce the focused block/advise partition for fire
-        # labeling. Additive; an old server ignores the extra key.
-        cats = [{"content_hash": h["content_hash"], "category": h.get("category"),
-                 "confidence": h.get("confidence")}
-                for h in classification.get("hunks", [])
-                if h.get("content_hash") and h.get("category")]
-        if cats:
-            body["hunk_categories"] = cats
-        # Phase 9: send the per-hunk NORMALIZED hash + filetype so the server stores them on
-        # the fire — increment 3 binds coverage to the fire's STRICT hash when the agent's
-        # later review diff matches strict OR normalized (cosmetic-drift-tolerant). Additive;
-        # an old server ignores it. `norm_version` lets the server detect a stale normalizer.
-        nhs = [{"content_hash": h["content_hash"], "normalized_hash": h.get("normalized_hash"),
-                "filetype": h.get("filetype")}
-               for h in classification.get("hunks", [])
-               if h.get("content_hash") and h.get("normalized_hash")]
-        if nhs:
-            body["hunk_normalized"] = nhs
-            body["norm_version"] = NORM_VERSION
-        # Phase 9.1: send the per-hunk @@ line ranges so the server stores them on the fire — the
-        # coarse-structural coverage fallback matches these (a multiset of line ranges) when BOTH
-        # the strict AND normalized hashes miss (real mojibake / re-encoding drift the normalizer
-        # can't fold), then binds the fire's STORED strict hash. Additive; an old server ignores it.
-        hst = [{"content_hash": h["content_hash"], "old_start": h["structural"]["old_start"],
-                "old_count": h["structural"]["old_count"], "new_start": h["structural"]["new_start"],
-                "new_count": h["structural"]["new_count"]}
-               for h in classification.get("hunks", [])
-               if h.get("content_hash") and isinstance(h.get("structural"), dict)]
-        if hst:
-            body["hunk_structural"] = hst
+    # Per-hunk evidence (path-class / category+confidence / normalized / structural) — shared
+    # builder so the commit + write gates stay in lockstep.
+    body.update(_hunk_evidence(classification))
     return _post(cfg, "/api/mcp/receipts/check", body)
 
 
@@ -604,6 +606,19 @@ def check_deliberate_unlock(cfg, repo, area, session_id, classification=None,
     # the right gate_type. The server defaults to 'deliberate' on anything else.
     if gate_type in ("deliberate", "synthesize"):
         body["gate_type"] = gate_type
+    # Write-gate-deadlock fix: a Write/Edit is FINISHED code, so its natural review is
+    # `audit`. Send the risky-hunk hashes + the same per-hunk evidence the commit gate sends,
+    # so the server can (a) release the write gate on audit/SYNTH_CONFIRM hunk coverage and
+    # (b) mint a HUNK-bound fire (so a later gate_context_id-bound audit_coding/synthesize_coding
+    # resolves these hunks and its coverage releases the retry). Additive: an old server ignores
+    # these and runs the pure area-unlock path. The deliberate area-unlock stays valid too.
+    hh = _hunk_hashes(classification)
+    if hh:
+        body["hunk_hashes"] = hh
+        body.update(_hunk_evidence(classification))
+        tightness = cfg.get("gate_tightness") if isinstance(cfg, dict) else None
+        if tightness:
+            body["gate_tightness"] = tightness
     return _post(cfg, "/api/mcp/receipts/deliberate-check", body)
 
 
@@ -753,8 +768,21 @@ def deliberate_decision(classification, check_response, mode, force_risky=False)
         return ("allow", "no risky design change")
     if check_response is None:
         return ("allow", "unlock check unavailable; failing open")
-    if check_response.get("unlocked"):
-        return ("allow", "area already deliberated")
+    # Write-gate-deadlock fix: a Write/Edit is finished code, so its natural review is `audit`.
+    # `covered` means every risky hunk is covered by an audit-PASS (or, for a floor hunk, an
+    # audit-PASS / fresh SYNTH_CONFIRM) of THIS change — a first-class release, symmetric with
+    # the commit gate. Checked BEFORE the floor recent_pass scoping so an actually-reviewed floor
+    # write releases (it no longer depends on a `deliberate` area-unlock existing). This is what
+    # restores the "run the review -> release" invariant at the write gate and removes the
+    # deliberate-only deadlock.
+    if check_response.get("covered"):
+        return ("allow", "change reviewed (audit / SYNTH_CONFIRM covers every risky hunk)")
+    # The coarse `area` deliberate-unlock releases NON-floor hunks — but NOT an uncovered floor
+    # hunk (audit F-001): a floor hunk needs its own audit-PASS / SYNTH_CONFIRM (via `covered`),
+    # matching the commit gate. `is not True` (not `is False`) so a response that OMITS
+    # floor_uncovered (old server / non-floor) still releases on the area-unlock.
+    if check_response.get("unlocked") and check_response.get("floor_uncovered") is not True:
+        return ("allow", "area already deliberated (no uncovered floor hunk)")
     # Phase 9: same floor-scoping as audit_decision — a FLOOR write doesn't release on an
     # unrelated recent deliberation. The commit (audit) gate is the real ship-time enforcement,
     # but the write gate matches it for consistency. `floor_uncovered` is server-asserted on the

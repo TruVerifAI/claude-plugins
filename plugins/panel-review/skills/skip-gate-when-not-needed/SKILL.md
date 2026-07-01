@@ -88,12 +88,14 @@ judgment skip (`false_positive_not_risky`, `trivial_change`, `disagree_with_clas
 `generated_or_vendored_code` can release a floor change. A **recent unrelated review does NOT
 release a floor change** (the `recent_pass` valve is floor-scoped) — it needs its own review. To
 release one otherwise (always also pass the `gate_context_id` the gate printed — coverage then binds
-to the gate's own hunks, so a cosmetically drifted `gate_diff` still releases):
+to the gate's own hunks, so a cosmetically drifted `gate_diff` still releases). **This works the
+same at the commit gate and the write gate** — a `Write`/`Edit` is finished code, so `audit_coding`
+is its natural review (a PASS releases), and a `SYNTH_CONFIRM` releases either gate:
+- **Otherwise →** run `audit_coding` with `gate_repo` / `gate_diff` / `gate_context_id` (a PASS
+  releases it) — the default for a change that's already decided.
 - **Genuine false positive →** run `synthesize_coding` with `gate_repo` + `gate_diff` +
   `gate_context_id` (a ~15–30s check). If the panel agrees it's low-risk, it mints a
   **SYNTH_CONFIRM** that releases the gate — no full audit needed.
-- **Otherwise →** run `audit_coding` with `gate_repo` / `gate_diff` / `gate_context_id` (a PASS
-  releases it).
 - **Tool down + sustained outage →** the gate prompts a **human** to approve; you can't skip past
   it. The deny message names the exact path; follow it instead of retrying the skip.
 
