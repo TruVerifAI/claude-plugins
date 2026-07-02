@@ -164,6 +164,17 @@ def _git(args, cwd):
     try:
         out = subprocess.run(
             ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=5,
+            # Decode git's output as UTF-8 explicitly, NOT the platform locale. Without
+            # this, text=True decodes with locale.getpreferredencoding() (cp1252 on
+            # Windows, ASCII under a C/POSIX locale in CI/containers), which mojibakes any
+            # non-ASCII in the diff (em-dash, section sign, accented identifiers) BEFORE it
+            # is hashed. The commit gate tolerated that via the structural coverage tier
+            # (its fire and the agent's `git diff --staged` share hunk line-ranges), but a
+            # mojibaked fire hash is still wrong; git emits UTF-8 content by default, so
+            # utf-8 is the correct, locale-independent decode on every OS. errors="replace"
+            # never raises on a stray non-UTF-8 byte (matches _read_file_safe /
+            # repo_fingerprint), so a weird file cannot turn the diff into "" and fail open.
+            encoding="utf-8", errors="replace",
         )
         return out.stdout if out.returncode == 0 else ""
     except Exception:
@@ -1333,7 +1344,28 @@ def skip_and_signal(classification, audit, area=None, gate_context_id=None):
 
 
 def read_hook_input():
+    # Read the PreToolUse payload as UTF-8, NOT the platform locale. Claude Code always
+    # writes UTF-8 JSON to the hook's stdin, but text-mode sys.stdin.read() decodes with
+    # locale.getpreferredencoding() (cp1252 on Windows, ASCII under a C/POSIX locale in
+    # CI/containers) -> non-ASCII in an Edit's old_string/new_string (em-dash, section
+    # sign, accented identifiers) MOJIBAKES before build_change_diff hashes it, so the
+    # write-gate fire's hunk hash never matches a natural (correctly-UTF-8) agent gate_diff
+    # and a floor write deadlocks. Reading the raw byte buffer + decoding utf-8 is correct
+    # and locale-independent on every OS. Fall back to the text stream when there is no
+    # binary buffer (e.g. sys.stdin replaced by a TextIO in tests).
     try:
+        buf = getattr(sys.stdin, "buffer", None)
+        raw = buf.read() if buf is not None else None
+    except Exception:
+        raw = None
+    try:
+        if raw is not None:
+            # STRICT decode (not errors="replace"): the payload is structured JSON, and a
+            # replacement char inside a string value would yield VALID-but-corrupted JSON
+            # (audit F-001) rather than failing. A genuinely malformed payload should raise
+            # UnicodeDecodeError -> the except below returns {} -> the gate fails OPEN
+            # (allow), consistent with the module's posture — never silently mutate content.
+            return json.loads(raw.decode("utf-8") or "{}")
         return json.loads(sys.stdin.read() or "{}")
     except Exception:
         return {}

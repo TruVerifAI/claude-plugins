@@ -3,6 +3,21 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/panel-review/.claude-plugin/plugin.json`.
 
+## 0.9.1
+
+**Fix a non-ASCII write-gate deadlock (Windows / non-UTF-8 locales).** A floor-class
+Write/Edit whose diff contained a non-ASCII character (an em-dash, a section sign, an
+accented identifier) could still deadlock: the hook read its input with the platform
+locale (cp1252 on Windows, ASCII under a C/POSIX locale) instead of UTF-8, so the
+character was mangled before the change was hashed and a correctly-encoded review diff
+never matched the gate's own hunks. The hook now decodes its stdin payload AND git
+output as UTF-8 on every OS and locale, so the natural-diff (D) release path works for
+non-ASCII floor changes too.
+
+- Client-only; no server change. ASCII changes behave exactly as before.
+- The commit gate had the same latent decode flaw (it escaped the deadlock only via the
+  structural coverage tier); it is now correct at the source too.
+
 ## 0.9.0
 
 **Fix the floor write-gate deadlock (for real this time).** A floor-class Write/Edit
