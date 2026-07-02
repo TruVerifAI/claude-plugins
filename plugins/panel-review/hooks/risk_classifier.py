@@ -733,7 +733,10 @@ _PLACEHOLDER_RE = re.compile(
 
 # Don't scan pathological minified lines (audit F-005): a quote-dense line is O(n^2) for
 # the backtracking scan. Conservatively treat an over-long line as possibly-real (fires).
-_SECRET_LINE_SCAN_CAP = 2000
+# Raised 2000 -> 10000 (single-call redesign, 2026-07-02): the prior cap made long-but-legit
+# lines (minified vendor code, long data literals) fire spuriously; 10000 scans real source
+# lines properly while still short-circuiting truly pathological minified blobs.
+_SECRET_LINE_SCAN_CAP = 10000
 
 
 def _has_real_secret_value(line):

@@ -121,6 +121,9 @@ def main():
             "If this is a re-commit after fixing earlier audit findings, you can scope "
             "`audit_coding` to the changed hunks and any newly affected surrounding code — "
             "your prior PASS still covers the hunks you didn't touch.\n"
+            "After ONE review, if it returns findings you can apply them and call "
+            "`record_gate_skip(recommendations_applied, gate_context_id)` instead of re-auditing "
+            "(a FLOOR hunk still needs a real PASS at commit — it's the ship checkpoint).\n"
             + g.skip_and_signal(classification, audit=True,
                                 gate_context_id=(resp or {}).get("gate_context_id"))
         )

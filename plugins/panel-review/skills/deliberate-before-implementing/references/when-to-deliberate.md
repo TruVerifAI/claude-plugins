@@ -49,6 +49,6 @@ These don't warrant deliberation; just implement:
 
 ## Escalation from synthesize to deliberate
 
-If you ran `synthesize-quick-check` first and got `agreement_score < 0.7`, that's a signal to escalate to deliberate. The synthesize result told you the question is harder than it looked.
+If you ran `synthesize-quick-check` first and got an `answer_status` of `contested` or `unresolved` (a low `agreement_score` < 0.7 is a corroborating hint, not the trigger — agreement_score is telemetry only), that's a signal to escalate to deliberate. The synthesize result told you the question is harder than it looked.
 
 Don't repeat the synthesize call as a deliberate — the inputs are different. Deliberate wants `options_considered` enumerated; synthesize doesn't. Take what you learned from the synthesize result, structure the options, and call deliberate.

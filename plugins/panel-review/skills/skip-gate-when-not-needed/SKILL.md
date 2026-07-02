@@ -1,15 +1,17 @@
 ---
 name: skip-gate-when-not-needed
 description: >
-  Release a TruVerifAI proactive review gate WITHOUT running the review,
-  but only when the review is genuinely unnecessary. Use it when a gate
-  blocked your git commit (audit gate) or your Write/Edit (the write gate,
-  internally deliberate_gate, or the synthesize gate) and you judge it a false positive, an already-reviewed
-  change, a trivial/generated/test-or-docs change, or a true time-critical
-  hotfix. Calls the TruVerifAI record_gate_skip tool with a structured
-  reason_code (+ free-form text for judgment calls) to log the skip and let
-  the change proceed on retry. Free — no credits. DEFAULT to actually running
-  the suggested review; skipping is the exception, and every skip is logged.
+  Release a TruVerifAI proactive review gate WITHOUT running (another) review.
+  Use it when the commit gate (git commit) or the write gate (Write/Edit)
+  blocked your action and
+  EITHER (a) the review is genuinely unnecessary — a false positive, a
+  trivial/generated/test-or-docs change, or a true time-critical hotfix — OR
+  (b) you ran ONE review and want to proceed on its result: after applying its
+  findings use recommendations_applied, or use review_deferred_to_commit to
+  defer a batch of successive risky writes to the commit gate. Calls the
+  TruVerifAI record_gate_skip tool with a structured reason_code (+ free-form
+  text for judgment calls). Free — no credits. DEFAULT to actually running the
+  suggested review; every release is logged.
 ---
 
 # When to use this skill
@@ -39,8 +41,8 @@ much higher than ~15s–5min of review.
        It's a server-issued id proving the gate fired; pass it and the server uses its
        own recorded hunks/area, so you do NOT also need `hunk_hashes`/`area`.
      - Otherwise (an older gate that printed no id) the legacy key:
-       - audit / commit gate → a `hunk_hashes = [...]` list.
-       - write gate (internally `deliberate_gate`) / synthesize gate → an `area = "..."` directory path.
+       - commit gate → a `hunk_hashes = [...]` list.
+       - write gate → an `area = "..."` directory path.
    - `gate_session_id` (when the write gate provides one) and a `gate_signal` line
      (`classifier_version` / `score` / `risk_categories`).
 
@@ -49,20 +51,22 @@ much higher than ~15s–5min of review.
    - `reason_code` — the closest fit from the enum (see `references/reason-codes.md`):
      `false_positive_not_risky`, `trivial_change`, `reviewed_outside_truverifai`,
      `generated_or_vendored_code`, `test_or_docs_only`, `time_critical_hotfix`,
-     `disagree_with_classification`, `tool_unavailable`, `other`. (Not a skip:
-     `prior_pass_receipt_match` — a real prior audit PASS releases automatically; it's
-     denied as a skip reason. Don't use the deprecated `already_reviewed_this_session`.)
+     `disagree_with_classification`, `tool_unavailable`, `other` — plus the two
+     **single-call** outcomes: `recommendations_applied` (you ran ONE review and applied
+     its findings) and `review_deferred_to_commit` (defer a batch to the commit gate). See
+     "The single-call model" below. (Not a skip: `prior_pass_receipt_match` — a real prior
+     audit PASS releases automatically; it's denied as a skip reason. Don't use the
+     deprecated `already_reviewed_this_session`.)
    - `reason_text` — REQUIRED for `other` and `disagree_with_classification`, **and for the
      judgment codes (`false_positive_not_risky`, `trivial_change`,
-     `reviewed_outside_truverifai`, `time_critical_hotfix`) at the deliberate/audit gates**;
+     `reviewed_outside_truverifai`, `time_critical_hotfix`) at the write/commit gates**;
      a 1-sentence reason. General terms only — no secrets, file paths, or proprietary
      identifiers (same privacy rule as `record_outcome`).
    - `gate_context_id` — **preferred**, when the gate printed one. **Copy it verbatim.**
      When you pass it, omit `hunk_hashes`/`area` (the server uses its own recorded
      evidence). A `gate_context_id` is single-use and short-lived: if it's expired or
      already used, just re-run the original action so the gate issues a fresh one.
-   - `hunk_hashes` (audit/commit gate) **OR** `area` (write gate — internally
-     `deliberate_gate` — / synthesize gate) — only for an older gate that printed no
+   - `hunk_hashes` (commit gate) **OR** `area` (write gate) — only for an older gate that printed no
      `gate_context_id`. **Copy the value
      the gate printed**, verbatim; do NOT re-derive it. Plus `session_id` if the gate
      gave one, and the `gate_signal` fields if you have them.
@@ -70,9 +74,31 @@ much higher than ~15s–5min of review.
 3. **Retry the original action.** The gate sees your logged skip covering it (matched
    via the server-issued context, or the recomputed key on an older gate) and releases.
 
+## The single-call model (you reviewed — now proceed)
+
+Make at most **one** panel-review call per change. These two codes let you proceed on that
+one review without ever calling TruVerifAI again for the same change:
+
+- **`recommendations_applied`** — you ran ONE review (`audit_coding` / `deliberate_coding` /
+  `synthesize_coding`), applied its findings, and want to proceed. The server VERIFIES a real
+  review actually ran for this repo recently (it's an attestation, not a free skip). Also use it
+  when a **PASS-then-modify** re-fires the gate: after a PASS, ideally write exactly what you
+  reviewed — but if you tweak the content (even a comment), the gate re-fires on the changed
+  bytes, and `recommendations_applied` releases it with no second review. A floor hunk is still
+  re-audited at commit.
+- **`review_deferred_to_commit`** — defer ALL review to the commit gate. It releases this write
+  AND silences the write gate for the rest of the session/area (~1h). Use it **ONLY when you
+  expect a batch of successive risky/floor writes** and want to review them together at commit
+  (e.g. a multi-file migration). For a **one-off** change, don't defer — just review and proceed.
+  The commit gate re-classifies the whole staged diff and still requires a real PASS for every
+  floor hunk, so deferral never ships unreviewed floor code — you defer *up to* commit, never past it.
+
+Both take the `gate_context_id` the gate printed. Never re-supply the diff or recompute a hash.
+
 ## Legitimate reasons to skip (and the matching code)
 
 - It's a **false positive** — the flagged change isn't actually risky → `false_positive_not_risky`.
+- It's a genuinely **trivial** change — cosmetic / no-op / rename-only, no risk surface → `trivial_change`.
 - It was reviewed **outside** TruVerifAI (human review, another tool) → `reviewed_outside_truverifai`.
 - It's **generated or vendored** code, not hand-written risk → `generated_or_vendored_code`.
 - It's **test or docs** only → `test_or_docs_only`.
@@ -86,36 +112,34 @@ If the change touches a **floor class — auth / secrets / money / migration / r
 judgment skip (`false_positive_not_risky`, `trivial_change`, `disagree_with_classification`,
 `reviewed_outside_truverifai`, `time_critical_hotfix`, `tool_unavailable`, `other`) is **denied**
 (`gate_skip_reason_floor_denied`). Only the path-verified `test_or_docs_only` /
-`generated_or_vendored_code` can release a floor change. A **recent unrelated review does NOT
-release a floor change** (the `recent_pass` valve is floor-scoped) — it needs its own review. To
-release one otherwise (always also pass the `gate_context_id` the gate printed — coverage then binds
-to the gate's own hunks, so a cosmetically drifted `gate_diff` still releases; and on a **write gate**
-floor block, also pass the `target_hunk_hashes = [...]` line the gate printed — copy it verbatim so
-coverage binds *deterministically* to exactly those floor hunks). **This works the same at the commit
-gate and the write gate** (internally `deliberate_gate` for historical reasons) — a `Write`/`Edit` is
-finished code, so `audit_coding` is its natural review (a PASS releases), and a `SYNTH_CONFIRM`
-releases either gate. (`deliberate_coding` is for a still-open design or a non-floor write.)
-- **Otherwise →** run `audit_coding` with `gate_repo` / `gate_diff` / `gate_context_id` (+
-  `target_hunk_hashes` on a write-gate floor block; a PASS releases it) — the default for a change
-  that's already decided.
-- **Genuine false positive →** run `synthesize_coding` with `gate_repo` + `gate_diff` +
-  `gate_context_id` (+ `target_hunk_hashes` on a write-gate floor block; a ~15–30s check). If the
-  panel agrees it's low-risk, it mints a **SYNTH_CONFIRM** that releases the gate — no full audit
-  needed.
+`generated_or_vendored_code` can release a floor change on a judgment basis. The two single-call
+codes are **gate-dependent** on floor: `recommendations_applied` and `review_deferred_to_commit`
+DO release a floor change at the **write gate** (you reviewed / are deferring the batch), but at
+the **commit gate** they're denied — a shipping floor hunk needs a real PASS there. A **recent
+unrelated review does NOT release a floor change** (the `recent_pass` valve is floor-scoped) — it
+needs its own review.
+
+To release a floor change, run a real review and forward the `gate_context_id` the gate printed
+(coverage then binds to the gate's own hunks, so a cosmetically drifted `gate_diff` still releases);
+on a **write-gate floor block** also forward the `target_hunk_hashes = [...]` line so coverage binds
+deterministically to exactly those hunks. A `Write`/`Edit` is finished code, so `audit_coding` is
+its natural review; `deliberate_coding` is only for a still-open design.
+- **Already decided →** run `audit_coding` (`gate_repo` / `gate_diff` / `gate_context_id`, plus
+  `target_hunk_hashes` on a write-gate floor block); a PASS releases it.
+- **Genuine false positive →** run `synthesize_coding` (same args; ~15–30s). If the panel agrees
+  it's low-risk it mints a **SYNTH_CONFIRM** that releases the floor gate — no full audit.
 - **Tool down + sustained outage →** the gate prompts a **human** to approve; you can't skip past
-  it. The deny message names the exact path; follow it instead of retrying the skip.
+  it. Follow the path the deny message names instead of retrying the skip.
 
-A **purely inert** gate-self edit (comment/whitespace only) to a non-core gate file releases
-automatically (no review needed); a change to the gate's core (the classifier, decision logic,
-hooks, or plugin config) always requires a real review even when inert.
-
-A reason code can also be **suspended** for a repo (Phase 5 calibration, off by default) if its
-skips keep preceding real findings — a suspended skip is denied and you run the review.
+A reason code can also be **suspended** for a repo (calibration, off by default) if its skips keep
+preceding real findings — a suspended skip is denied and you run the review.
 
 If you **already audited this exact code**, you don't need a skip at all — the gate
-releases automatically because a matching PASS receipt covers the hunks. If the gate still
-fired, the code changed since that review: re-run `audit_coding` (scope it to the changed
-hunks; your prior PASS still covers the rest). "Already reviewed" is **not** a skip reason.
+releases automatically because a matching PASS receipt covers the hunks. If the gate re-fired
+because you **modified the code after the review** (even a comment changed the bytes), use
+`recommendations_applied` — you already reviewed, so no second review is needed. "Already
+reviewed" of *unchanged* code is **not** a skip reason (it auto-releases); a prior-pass *claim*
+is denied.
 
 ## When NOT to use
 

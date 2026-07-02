@@ -104,15 +104,15 @@ def main():
                 "this write edits the review gate's own settings (risk_signals.json / "
                 "risk_classifier.py / gate_lib.py / hooks.json / .claude-plugin), the "
                 "highest-stakes area, so the review can't be skipped.\n"
-                "Run `deliberate_coding` (or `audit_coding`) with your question + "
-                "options_considered, AND pass:\n"
+                "This is finished code, so run `audit_coding` with your proposed_action + "
+                "relevant_code, AND pass:\n"
                 f'  gate_repo = "{repo}"\n'
                 "  gate_diff = a unified diff ADDING the file's new contents "
                 "(the change you're about to write)\n"
-                f'  gate_session_id = "{session_id or ""}"\n'
                 "TruVerifAI records the result and the write proceeds on retry. "
-                "(Gate-self changes need a real review of THIS change — they can't be "
-                "skipped, and an unrelated recent review won't release them.)"
+                "(`deliberate_coding` is accepted if it's still an open design. Gate-self "
+                "changes need a real review of THIS change — they can't be skipped, and an "
+                "unrelated recent review won't release them.)"
             )
         g.emit_allow(gs_detail)  # covered / fail-open
 
@@ -172,20 +172,38 @@ def main():
                 + hh_line +
                 "Copy the `target_hunk_hashes` line above verbatim — it binds the review to this "
                 "change so the write proceeds on retry.\n"
+                "After that ONE review you can, instead of a fresh review: apply its findings and "
+                "call `record_gate_skip(recommendations_applied, gate_context_id)`, or "
+                "`record_gate_skip(review_deferred_to_commit, gate_context_id)` to defer to commit "
+                "— both release this floor WRITE, and the commit gate re-audits the floor hunk on "
+                "the real staged bytes before it ships.\n"
                 + g.gate_signal_line(classification)
             )
+        # F2 (single-call model): emit the deterministic hash token on EVERY deny (the floor
+        # branch above already does). ALL risky-hunk content hashes — the agent forwards them to
+        # a review (or carries them into a later record_gate_skip) so coverage binds by hash, not
+        # by diff shape. Empty -> nothing to bind (line dropped).
+        all_hashes = [h["content_hash"] for h in classification.get("hunks", [])
+                      if h.get("content_hash")]
+        thh_line = ("  target_hunk_hashes = %s\n" % json.dumps(all_hashes)) if all_hashes else ""
         g.emit_deny(
             f"TruVerifAI flagged a {cats} change worth a review before it ships.\n"
-            "This is finished code, so the natural review is `audit_coding` — run it with your "
+            "This is finished code, so the natural review is `audit_coding` — run it ONCE with your "
             "proposed_action, AND pass:\n"
             f'  gate_repo = "{repo}"\n'
             "  gate_diff = the change you're about to write\n"
-            f'  gate_session_id = "{session_id or ""}"\n'
-            + gcid_line +
-            "A PASS releases the gate. `deliberate_coding` is accepted if the design is still open "
-            "(no concrete diff); `synthesize_coding` is a fast second opinion. You may also record a "
-            "one-line skip with a reason (`record_gate_skip`). Passing gate_context_id binds "
-            "coverage to the gate's own hunks, so a cosmetically-drifted diff still releases.\n"
+            + gcid_line
+            + thh_line +
+            "A PASS releases the gate. After that ONE review you never need a second: if it "
+            "returns findings, apply them and call "
+            "`record_gate_skip(recommendations_applied, gate_context_id)` to proceed; or "
+            "`record_gate_skip(review_deferred_to_commit, gate_context_id)` to defer ALL review to "
+            "the commit gate (releases this and the rest of the session). Passing gate_context_id "
+            "(or the target_hunk_hashes above) binds coverage to the gate's own hunks, so a "
+            "cosmetically-drifted diff still releases. (If the design is still open, "
+            f'`deliberate_coding` is accepted — pass gate_session_id = "{session_id or ""}". A '
+            "`synthesize_coding` is a fast second opinion but does NOT release a non-floor gate — "
+            "use `audit_coding` to release.)\n"
             + g.skip_and_signal(classification, audit=False, area=area,
                                 gate_context_id=gcid)
         )

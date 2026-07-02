@@ -3,6 +3,26 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/panel-review/.claude-plugin/plugin.json`.
 
+## 0.10.0
+
+**Single-call review model.** You never have to call TruVerifAI more than once per change, and you
+can defer a batch of edits to the commit gate.
+
+- **`recommendations_applied`** — after ONE review, apply its findings (or release a
+  PASS-then-modify re-fire) and proceed. Server-verified against a real review receipt, not a free
+  skip; a floor hunk is still re-audited at commit.
+- **`review_deferred_to_commit`** — defer all review to the commit gate; releases the write gate
+  for the rest of the session (~1h) and re-reviews the batch at commit. For successive risky edits
+  (e.g. a multi-file migration); a one-off change should just be reviewed.
+- **Floor guarantee preserved** — both release a floor change at the write gate but are denied at
+  the commit gate, which re-audits every floor hunk on the real staged bytes before it ships.
+- Deny messages, skills, and README updated to the single-call flow; the two outcomes show as their
+  own rows (separate from skips) on the dashboards. Raised three internal caps so large-but-legit
+  inputs classify instead of being silently skipped.
+
+Additive and backward-compatible (an older plugin keeps working). Requires the matching server
+deploy for the two new reasons.
+
 ## 0.9.1
 
 **Fix a non-ASCII write-gate deadlock (Windows / non-UTF-8 locales).** A floor-class

@@ -66,11 +66,10 @@ This is a free call (no credits charged). The user sees the aggregate on their T
 
 ## Releasing a review gate
 
-If a TruVerifAI **commit gate** (or the **write gate** — the PreToolUse gate on Write/Edit,
-internally `deliberate_gate` for historical reasons) routed you here, pass the gate context the
-block message printed so a PASS writes a releasing receipt bound to the flagged hunks. `audit_coding`
-is the natural review for a finished Write/Edit, and a PASS releases the write gate — including on a
-**floor** change:
+If a TruVerifAI **commit gate** (git commit) or **write gate** (Write/Edit) routed you here, pass
+the gate context the block message printed so a PASS writes a releasing receipt bound to the flagged
+hunks. `audit_coding` is the natural review for a finished Write/Edit, and a PASS releases the write
+gate — including on a **floor** change:
 
 - **`gate_repo`** — from the gate message.
 - **`gate_diff`** — the staged diff being committed (or the content being written).
@@ -81,12 +80,20 @@ is the natural review for a finished Write/Edit, and a PASS releases the write g
   `target_hunk_hashes = [...]` line. **Copy it verbatim.** Coverage then binds *deterministically* to
   exactly those floor hunks, so the change releases even when the write gate's diff shape differs from
   your `gate_diff`. (Optional; only present on a floor write-gate block.)
-- **`gate_session_id`** — when the gate provided one.
 
-A PASS verdict (`approve` / `approve_with_caveats`) releases the gate on retry. On a **floor class**
-(auth / secrets / money / migration / removed-guard) a judgment `record_gate_skip` is **denied** —
-so the only releases are this audit, a `synthesize_coding` SYNTH_CONFIRM (for a genuine false
-positive — cheaper, ~15–30s), or, under a sustained review-tool outage, a human approval prompt.
+(`audit_coding` takes `gate_repo` / `gate_diff` / `gate_context_id` / `target_hunk_hashes` — it does
+**not** take a `gate_session_id`.)
+
+A **PASS-level action** (`proceed` / `proceed_with_caveats` — i.e. a verdict of `approve` /
+`approve_with_caveats` with no finding that tightened the action) releases the gate on retry. (A
+critical finding can floor an `approve` verdict to `escalate_to_human`, which does not release.) On a
+**floor class**
+(auth / secrets / money / migration / removed-guard) a judgment `record_gate_skip` is **denied**, so
+the only **review-based** releases are this audit or a `synthesize_coding` SYNTH_CONFIRM (for a
+genuine false positive — cheaper, ~15–30s); under a sustained review-tool outage the gate asks a
+human. (After you run ONE review, `record_gate_skip(recommendations_applied)` — findings applied — or
+`review_deferred_to_commit` — a batch — also release a floor **write**, but the floor is re-audited
+at commit.)
 
 ## Worked examples
 

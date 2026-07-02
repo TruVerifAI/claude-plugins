@@ -31,7 +31,7 @@ Lower stakes than the deliberate or audit skills — the answer is for a decisio
 
 3. **Call `synthesize_coding`** (it may appear as `mcp__truverifai__synthesize_coding` depending on your client — use whichever is available) with `question` and optional `context`. Faster than the other two primitives (~15-30 seconds).
 
-4. **Read the response.** Read `answer_status` first — it's the synthesized verdict (`settled` / `qualified` / `contested` / `unresolved`). The `answer` field carries the synthesized answer itself; `findings[]` lists the caveats and gaps, each tagged `critical` / `major` / `minor` / `preference`. `action` is also emitted but is **advisory** — synthesize never gates anything. `agreement_score` (0-1) is auxiliary convergence context: it does NOT drive the verdict, but it's a useful secondary hint for whether to escalate. The real escalate signal is an `answer_status` of `contested` or `unresolved`; an `agreement_score < 0.7` is a corroborating cue. When either fires, consider escalating to `deliberate-before-implementing` for a more thorough look — see `references/quick-vs-deliberate.md` for the decision boundary.
+4. **Read the response.** Read `answer_status` first — it's the synthesized verdict (`settled` / `qualified` / `contested` / `unresolved`). The `answer` field carries the synthesized answer itself; `findings[]` lists the caveats and gaps, each tagged `critical` / `major` / `minor` / `preference`. `action` is also emitted but is **advisory** — synthesize's own action never *blocks* (though a gate-routed synthesize on a **floor** change can still mint a SYNTH_CONFIRM that *releases* a gate — see below). `agreement_score` (0-1) is auxiliary convergence telemetry: it does NOT drive the verdict or action. The escalate signal is an `answer_status` of `contested` or `unresolved` (a low `agreement_score` — the profile treats **< 0.6** as real disagreement — is only a corroborating cue). When the status fires, consider escalating to `deliberate-before-implementing` for a more thorough look — see `references/quick-vs-deliberate.md` for the decision boundary.
 
 5. **Apply the answer.** For low-stakes decisions this is usually the end of the loop. If the synthesize result raises questions you didn't expect, escalate to deliberate.
 
@@ -65,18 +65,21 @@ with a judgment code is denied. Pass the gate context the block message printed:
 - **`gate_diff`** — the change being gated (the staged diff, or the content being written).
 - **`gate_context_id`** — the `gc_…` the gate printed. **Pass it** — the SYNTH_CONFIRM then binds to
   the gate's OWN recorded floor hunks, so a cosmetically drifted `gate_diff` still releases.
-- **`target_hunk_hashes`** — when the **write gate** (the PreToolUse gate on Write/Edit, internally
-  `deliberate_gate`) blocked a **floor** change it also printed a `target_hunk_hashes = [...]` line.
-  **Copy it verbatim.** The SYNTH_CONFIRM then binds *deterministically* to exactly those floor hunks
-  and releases even when the write gate's diff shape differs from your `gate_diff`. (Optional; only
-  present on a floor write-gate block.)
+- **`target_hunk_hashes`** — when the **write gate** (Write/Edit) blocked a **floor** change it also
+  printed a `target_hunk_hashes = [...]` line. **Copy it verbatim.** The SYNTH_CONFIRM then binds
+  *deterministically* to exactly those floor hunks and releases even when the write gate's diff shape
+  differs from your `gate_diff`. (Optional; only present on a floor write-gate block.)
 - **`gate_session_id`** — when the gate provided one.
 
 If the panel agrees the change is low-risk, the server mints a **SYNTH_CONFIRM** bound to the
 flagged hunks and the gate **releases on retry** — ~15–30s, no full `audit_coding`. This is the
 intended cheap path to release a **floor-class** write gate (which `deliberate_coding` cannot
-release). If the panel surfaces real risk instead, run `audit_coding`. Ordinary synthesize calls (no
-gate context) never write a receipt; this only applies when a gate routed you here.
+release). If the panel surfaces real risk instead, run `audit_coding`.
+
+**Important — synthesize only releases a FLOOR gate.** SYNTH_CONFIRM is minted only on a floor
+change; on a **non-floor** gate `synthesize_coding` writes **no receipt**, so it does not release
+the gate — there, run `audit_coding` (a PASS releases) or `record_gate_skip`. (Ordinary synthesize
+calls with no gate context also never write a receipt.)
 
 ## When NOT to use
 

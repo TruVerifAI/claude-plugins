@@ -152,6 +152,12 @@ SKIP_REASON_CODES = (
     "disagree_with_classification",
     "tool_unavailable",
     "other",
+    # Single-call review model (2026-07-02): the two non-PASS branches of ONE panel-review call.
+    # recommendations_applied = ran a review, applied its findings, moving on (server-verified
+    # against a real review receipt). review_deferred_to_commit = defer ALL review to the commit
+    # gate (session/area-scoped write-gate release; the batch is re-reviewed at commit).
+    "recommendations_applied",
+    "review_deferred_to_commit",
     "already_reviewed_this_session",  # DEPRECATED alias of prior_pass_receipt_match (no longer emitted)
 )
 
@@ -163,7 +169,7 @@ SKIP_REASON_CODES = (
 def _git(args, cwd):
     try:
         out = subprocess.run(
-            ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=5,
+            ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=20,
             # Decode git's output as UTF-8 explicitly, NOT the platform locale. Without
             # this, text=True decodes with locale.getpreferredencoding() (cp1252 on
             # Windows, ASCII under a C/POSIX locale in CI/containers), which mojibakes any
@@ -277,8 +283,11 @@ def staged_diff(cwd, command=""):
 
 # Max bytes we'll read from an untracked file to synthesize a diff. Large/binary
 # files are skipped — the gate is for source-shaped changes, and we never want a
-# blocking hook to choke on a multi-MB artifact.
-_UNTRACKED_MAX_BYTES = 200_000
+# blocking hook to choke on a multi-MB artifact. Raised 200KB -> 1MB (single-call
+# redesign, 2026-07-02): the prior cap silently skipped large-but-legit new source
+# files, so a floor change in one wouldn't fire. 1MB covers real source; genuine
+# multi-MB artifacts are still skipped.
+_UNTRACKED_MAX_BYTES = 1_000_000
 
 # Sentinel: a `git add .` / `-A` / `--all` stages every untracked file.
 _ADD_ALL = "ALL"
@@ -1451,7 +1460,7 @@ def version_suffix():
 # changed from a hook; this softens the surrounding message, not that prefix.
 _DENY_SYSTEM_MESSAGE = (
     "TruVerifAI flagged a high-risk change for a quick review — run the "
-    "suggested check (or log a one-line skip) and it proceeds."
+    "suggested check to proceed (some changes also allow a one-line skip)."
 )
 
 
