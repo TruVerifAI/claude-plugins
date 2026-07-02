@@ -3,6 +3,30 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/panel-review/.claude-plugin/plugin.json`.
 
+## 0.9.0
+
+**Fix the floor write-gate deadlock (for real this time).** A floor-class Write/Edit
+(auth, secrets, money, migrations, removed guards) now reliably releases after you run
+the review. The write gate classifies the *real* change (a delta), so a natural
+`gate_diff` you pass to `audit_coding` matches the gate's own hunks and releases it —
+just like the commit gate. And the floor block now prints a `target_hunk_hashes` line:
+pass it (verbatim) to `audit_coding` / `synthesize_coding` and coverage binds
+deterministically even if your diff's shape differs from the gate's.
+
+- **Floor writes release via `audit_coding` (a PASS) or `synthesize_coding` (a
+  SYNTH_CONFIRM).** `deliberate_coding` is for non-floor writes and still-open designs.
+- The block message is now prescriptive — it tells you exactly what to run and what to
+  pass, and prints `gate_context_id` + `target_hunk_hashes`.
+- The floor per-hunk rule is unchanged: a coarse area-unlock or an unrelated recent
+  review still can't wave a floor change through — only a review of *that* change does.
+
+## 0.8.0
+
+**The write gate releases on a review.** A risky Write/Edit is finished code, so its
+natural review is `audit_coding` (a PASS releases it) or a `synthesize_coding`
+SYNTH_CONFIRM — the write gate now reads those receipts, matching the commit gate, so
+"I reviewed it but it's still blocked" no longer happens.
+
 ## 0.7.0
 
 **Focus the gate on major decisions, not code review.** A new `gate_tightness` setting

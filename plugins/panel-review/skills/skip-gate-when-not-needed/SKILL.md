@@ -3,8 +3,8 @@ name: skip-gate-when-not-needed
 description: >
   Release a TruVerifAI proactive review gate WITHOUT running the review,
   but only when the review is genuinely unnecessary. Use it when a gate
-  blocked your git commit (audit gate) or your Write/Edit (deliberate or
-  synthesize gate) and you judge it a false positive, an already-reviewed
+  blocked your git commit (audit gate) or your Write/Edit (the write gate,
+  internally deliberate_gate, or the synthesize gate) and you judge it a false positive, an already-reviewed
   change, a trivial/generated/test-or-docs change, or a true time-critical
   hotfix. Calls the TruVerifAI record_gate_skip tool with a structured
   reason_code (+ free-form text for judgment calls) to log the skip and let
@@ -40,7 +40,7 @@ much higher than ~15s–5min of review.
        own recorded hunks/area, so you do NOT also need `hunk_hashes`/`area`.
      - Otherwise (an older gate that printed no id) the legacy key:
        - audit / commit gate → a `hunk_hashes = [...]` list.
-       - deliberate / synthesize write gate → an `area = "..."` directory path.
+       - write gate (internally `deliberate_gate`) / synthesize gate → an `area = "..."` directory path.
    - `gate_session_id` (when the write gate provides one) and a `gate_signal` line
      (`classifier_version` / `score` / `risk_categories`).
 
@@ -61,8 +61,9 @@ much higher than ~15s–5min of review.
      When you pass it, omit `hunk_hashes`/`area` (the server uses its own recorded
      evidence). A `gate_context_id` is single-use and short-lived: if it's expired or
      already used, just re-run the original action so the gate issues a fresh one.
-   - `hunk_hashes` (audit/commit gate) **OR** `area` (deliberate/synthesize write
-     gate) — only for an older gate that printed no `gate_context_id`. **Copy the value
+   - `hunk_hashes` (audit/commit gate) **OR** `area` (write gate — internally
+     `deliberate_gate` — / synthesize gate) — only for an older gate that printed no
+     `gate_context_id`. **Copy the value
      the gate printed**, verbatim; do NOT re-derive it. Plus `session_id` if the gate
      gave one, and the `gate_signal` fields if you have them.
 
@@ -88,14 +89,19 @@ judgment skip (`false_positive_not_risky`, `trivial_change`, `disagree_with_clas
 `generated_or_vendored_code` can release a floor change. A **recent unrelated review does NOT
 release a floor change** (the `recent_pass` valve is floor-scoped) — it needs its own review. To
 release one otherwise (always also pass the `gate_context_id` the gate printed — coverage then binds
-to the gate's own hunks, so a cosmetically drifted `gate_diff` still releases). **This works the
-same at the commit gate and the write gate** — a `Write`/`Edit` is finished code, so `audit_coding`
-is its natural review (a PASS releases), and a `SYNTH_CONFIRM` releases either gate:
-- **Otherwise →** run `audit_coding` with `gate_repo` / `gate_diff` / `gate_context_id` (a PASS
-  releases it) — the default for a change that's already decided.
+to the gate's own hunks, so a cosmetically drifted `gate_diff` still releases; and on a **write gate**
+floor block, also pass the `target_hunk_hashes = [...]` line the gate printed — copy it verbatim so
+coverage binds *deterministically* to exactly those floor hunks). **This works the same at the commit
+gate and the write gate** (internally `deliberate_gate` for historical reasons) — a `Write`/`Edit` is
+finished code, so `audit_coding` is its natural review (a PASS releases), and a `SYNTH_CONFIRM`
+releases either gate. (`deliberate_coding` is for a still-open design or a non-floor write.)
+- **Otherwise →** run `audit_coding` with `gate_repo` / `gate_diff` / `gate_context_id` (+
+  `target_hunk_hashes` on a write-gate floor block; a PASS releases it) — the default for a change
+  that's already decided.
 - **Genuine false positive →** run `synthesize_coding` with `gate_repo` + `gate_diff` +
-  `gate_context_id` (a ~15–30s check). If the panel agrees it's low-risk, it mints a
-  **SYNTH_CONFIRM** that releases the gate — no full audit needed.
+  `gate_context_id` (+ `target_hunk_hashes` on a write-gate floor block; a ~15–30s check). If the
+  panel agrees it's low-risk, it mints a **SYNTH_CONFIRM** that releases the gate — no full audit
+  needed.
 - **Tool down + sustained outage →** the gate prompts a **human** to approve; you can't skip past
   it. The deny message names the exact path; follow it instead of retrying the skip.
 

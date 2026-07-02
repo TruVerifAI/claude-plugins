@@ -1,7 +1,7 @@
 {
   "name": "panel-review",
   "displayName": "AI Panel Review",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Multi-model second-opinion deliberation for high-stakes coding and financial decisions. Eight skills across two profiles — coding and financial (audit / deliberate / synthesize per profile), plus shared record-outcome and skip-gate — route to the TruVerifAI MCP server, where four frontier models reason independently and conflict-target each other's positions to produce decision-grade output. Outcome reporting closes the loop — the dashboard shows what % of MCP calls actually changed the agent's decision.",
   "author": {
     "name": "TruVerifAI",
@@ -35,7 +35,7 @@
     "enable_gates": {
       "type": "boolean",
       "title": "Enable the proactive review gates",
-      "description": "When enabled, a PreToolUse gate runs before a risky git commit (audit) or a risky design write (deliberate). A local classifier scores the change across many domains (auth, billing, migrations, secrets, infra-as-code, and more — including risky DELETIONS like a removed permission check) and sends TruVerifAI only a repo fingerprint + hunk content hashes — never source, paths, or diffs. If the change isn't already covered the gate asks the agent to call audit_coding / deliberate_coding first, OR to record a one-line skip-with-reason. Fails open on any error and never deadlocks. Set to false to disable the gates entirely. Default true. To change it, type true or false.",
+      "description": "When enabled, a PreToolUse gate runs before a risky git commit (the commit/audit gate) or a risky design write (the write gate, internally deliberate_gate for historical reasons). A local classifier scores the change across many domains (auth, billing, migrations, secrets, infra-as-code, and more — including risky DELETIONS like a removed permission check) and sends TruVerifAI only a repo fingerprint + hunk content hashes — never source, paths, or diffs. If the change isn't already covered the gate asks the agent to call audit_coding / deliberate_coding first, OR to record a one-line skip-with-reason. Fails open on any error and never deadlocks. Set to false to disable the gates entirely. Default true. To change it, type true or false.",
       "default": true
     },
     "gate_tightness": {
@@ -46,8 +46,8 @@
     },
     "deliberate_mode": {
       "type": "string",
-      "title": "Deliberate gate strictness",
-      "description": "'tiered' (default) blocks only high-confidence/irreversible design forks (schema, migrations, auth, dependencies, IaC exposure) and routes lower-confidence borderline changes via borderline_mode (below); 'block' blocks every risky design write; 'advisory' never blocks (surfaces a suggestion only). A blocked write is finished code, so its natural review is audit_coding (a PASS releases it) — or a synthesize_coding SYNTH_CONFIRM for a low-risk check; deliberate_coding is also accepted (prefer it for a still-open design); or call record_gate_skip. The audit gate (pre-commit) is unaffected. To change it, type one of: tiered, block, or advisory.",
+      "title": "Write gate strictness (internally deliberate_gate)",
+      "description": "Controls the write gate (the PreToolUse gate on Write/Edit, internally deliberate_gate for historical reasons). 'tiered' (default) blocks only high-confidence/irreversible design forks (schema, migrations, auth, dependencies, IaC exposure) and routes lower-confidence borderline changes via borderline_mode (below); 'block' blocks every risky design write; 'advisory' never blocks (surfaces a suggestion only). A blocked write is finished code, so its natural review is audit_coding (a PASS releases it) — or a synthesize_coding SYNTH_CONFIRM for a low-risk check; deliberate_coding is for a still-open design or a non-floor write. A floor-class write (auth/secrets/money/migration/removed-guard) releases via audit_coding or a SYNTH_CONFIRM (a judgment record_gate_skip is denied on the floor). When the gate blocks a floor change it prints a target_hunk_hashes line — pass it (and gate_context_id) verbatim to audit_coding / synthesize_coding so coverage binds deterministically to exactly those floor hunks. The commit/audit gate (pre-commit) is unaffected. To change it, type one of: tiered, block, or advisory.",
       "default": "tiered"
     },
     "borderline_mode": {

@@ -20,7 +20,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gate_lib as g
-from risk_classifier import classify_diff
+from risk_classifier import classify_diff, is_hard_floor
 
 
 def _content_and_path(inp):
@@ -50,8 +50,11 @@ def main():
     if not content.strip():
         g.emit_allow()
 
+    # Write-gate-deadlock-fix-v2 (Option D): classify a REAL delta (not the all-adds
+    # synth_write_diff) so the fire's per-hunk content hashes match what a natural agent
+    # gate_diff produces — the root-cause fix for the floor write-gate deadlock.
     classification = classify_diff(
-        g.synth_write_diff(path, content), trigger_threshold=g.effective_threshold(cfg))
+        g.build_change_diff(inp, path, content), trigger_threshold=g.effective_threshold(cfg))
     cwd = inp.get("cwd") or os.getcwd()
 
     # P6.3 (repo-scope suppression): a write whose target resolves OUTSIDE the working repo
@@ -147,6 +150,30 @@ def main():
     if action == "deny":
         gcid = (resp or {}).get("gate_context_id")
         gcid_line = ("  gate_context_id = %s\n" % json.dumps(gcid)) if gcid else ""
+        # Write-gate-deadlock-fix-v2: FLOOR-aware release paths. A floor hunk is released ONLY by a
+        # diff-level review (audit PASS or a synthesize SYNTH_CONFIRM) — a `deliberate` area-unlock
+        # can't cover a floor hunk (server F-001/F-006), so the floor message does NOT offer it.
+        # It forwards the fire's floor hunk hashes as `target_hunk_hashes` (Option B) so coverage
+        # binds deterministically even if the write gate's diff shape differs from the agent's.
+        floor_hashes = [h["content_hash"] for h in classification.get("hunks", [])
+                        if h.get("content_hash") and is_hard_floor(h.get("category"))]
+        if floor_hashes:
+            hh_line = "  target_hunk_hashes = %s\n" % json.dumps(floor_hashes)
+            g.emit_deny(
+                f"TruVerifAI flagged a {cats} change (a floor class: auth / secrets / money / "
+                "migration / removed-guard). Run a quick review to release the gate — either:\n"
+                "  • `audit_coding` — a PASS releases it, or\n"
+                "  • `synthesize_coding` — a passing SYNTH_CONFIRM releases it (a fast ~15-30s check).\n"
+                "Pass to whichever you run:\n"
+                f'  gate_repo = "{repo}"\n'
+                "  gate_diff = the change you're about to write\n"
+                f'  gate_session_id = "{session_id or ""}"\n'
+                + gcid_line
+                + hh_line +
+                "Copy the `target_hunk_hashes` line above verbatim — it binds the review to this "
+                "change so the write proceeds on retry.\n"
+                + g.gate_signal_line(classification)
+            )
         g.emit_deny(
             f"TruVerifAI flagged a {cats} change worth a review before it ships.\n"
             "This is finished code, so the natural review is `audit_coding` — run it with your "
@@ -155,13 +182,10 @@ def main():
             "  gate_diff = the change you're about to write\n"
             f'  gate_session_id = "{session_id or ""}"\n'
             + gcid_line +
-            "A PASS releases the gate. On a FLOOR-class change (auth/secrets/money/migration/"
-            "removed-guard) — where a plain skip is denied — `synthesize_coding` with the same "
-            "args is a cheaper option: a fast (~15-30s) review that mints a SYNTH_CONFIRM and "
-            "releases the gate IF the panel finds it low-risk (it's a real review, not a skip). "
-            "`deliberate_coding` is accepted too — prefer it only when the design is still open "
-            "(no concrete diff). Passing gate_context_id binds coverage to the gate's own hunks, "
-            "so a cosmetically-drifted diff still releases.\n"
+            "A PASS releases the gate. `deliberate_coding` is accepted if the design is still open "
+            "(no concrete diff); `synthesize_coding` is a fast second opinion. You may also record a "
+            "one-line skip with a reason (`record_gate_skip`). Passing gate_context_id binds "
+            "coverage to the gate's own hunks, so a cosmetically-drifted diff still releases.\n"
             + g.skip_and_signal(classification, audit=False, area=area,
                                 gate_context_id=gcid)
         )

@@ -63,8 +63,9 @@ Skip it for: choices with one sensible answer, refactors where any reasonable ap
 
 ## Releasing a review gate
 
-If a TruVerifAI **deliberate write gate** routed you here (a risky design Write/Edit), pass the
-gate context the block message printed so a PASS writes a releasing receipt for the area:
+If a TruVerifAI **write gate** (the PreToolUse gate on Write/Edit, internally `deliberate_gate` for
+historical reasons) routed you here for a risky design write, pass the gate context the block message
+printed so a PASS writes a releasing receipt for the area:
 
 - **`gate_repo`** — from the gate message.
 - **`gate_diff`** — the change you're about to write.
@@ -72,10 +73,13 @@ gate context the block message printed so a PASS writes a releasing receipt for 
   own hunks so a cosmetically drifted diff still releases).
 - **`gate_session_id`** — when the gate provided one.
 
-A PASS (`proceed` / `proceed_with_caveats`) releases the gate on retry. If the write touches a
-**floor class** (auth / secrets / money / migration / removed-guard), a judgment
-`record_gate_skip` is **denied** — release it with this deliberation, an `audit_coding` PASS, or a
-`synthesize_coding` SYNTH_CONFIRM for a genuine false positive.
+A PASS (`proceed` / `proceed_with_caveats`) releases the gate on retry **for a non-floor design
+write**. For a **floor-class** write (auth / secrets / money / migration / removed-guard),
+release it with an
+`audit_coding` PASS or a `synthesize_coding` SYNTH_CONFIRM (both accept the `target_hunk_hashes`
+line the gate printed — copy it verbatim so coverage binds to exactly those floor hunks); a judgment
+`record_gate_skip` is also **denied** on the floor. Reserve `deliberate_coding` for a still-open
+design (no concrete diff) or a non-floor write.
 
 ## After acting on the response
 

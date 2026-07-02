@@ -14,6 +14,7 @@ Design (docs/MCP/adoption solve/proactive-invocation-v2-hybrid.md):
   a PreToolUse output.
 """
 
+import difflib
 import hashlib
 import json
 import os
@@ -469,7 +470,11 @@ def _untracked_diff(cwd, command=""):
 
 def synth_write_diff(path, added_text):
     """Synthesize a unified diff for a Write/Edit so the classifier (which speaks
-    unified-diff) can score the content being written."""
+    unified-diff) can score the content being written. All-adds shape (`@@ -0,0
+    +1,N @@`). CORRECT for a brand-new file (a new file's natural diff IS all-adds);
+    for an EDIT it over-marks unchanged context as added — see build_change_diff, which
+    computes a real delta so the fire's hunk hashes match a natural agent gate_diff
+    (write-gate-deadlock-fix-v2, Option D)."""
     if not path:
         path = "unknown"
     lines = (added_text or "").splitlines()
@@ -479,6 +484,70 @@ def synth_write_diff(path, added_text):
         f"--- /dev/null\n+++ b/{path}\n"
         f"@@ -0,0 +1,{len(lines)} @@\n{body}\n"
     )
+
+
+def _read_file_safe(path, cwd):
+    """The current on-disk contents of `path` (resolved against `cwd`), or None if it
+    doesn't exist / isn't readable. Used to compute a real delta for an OVERWRITE Write.
+    The write is BLOCKED (PreToolUse), so this baseline is stable between the deny and the
+    retry; if it shifts, the delta hash changes and coverage misses → re-review (fail
+    CLOSED), never a false release."""
+    try:
+        p = path if os.path.isabs(path) else os.path.join(cwd or os.getcwd(), path)
+        if os.path.isfile(p):
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                return f.read()
+    except Exception:
+        pass
+    return None
+
+
+def _unified_delta(path, old_text, new_text):
+    """A real unified diff of old_text -> new_text (only genuinely-changed lines are +/-),
+    so the classifier's per-hunk content_hash is over the SAME added-line set a natural
+    agent gate_diff produces. Falls back to all-adds when there's no computable delta."""
+    diff = difflib.unified_diff(
+        (old_text or "").splitlines(), (new_text or "").splitlines(),
+        fromfile="a/" + (path or "unknown"), tofile="b/" + (path or "unknown"), lineterm="")
+    text = "\n".join(diff)
+    # An empty/degenerate delta (identical texts, or difflib produced no @@) → all-adds so
+    # the content still classifies (the empty-content guard already ran upstream).
+    return text if (text.strip() and "@@" in text) else synth_write_diff(path, new_text)
+
+
+def build_change_diff(inp, path, content):
+    """Write-gate-deadlock-fix-v2 (Option D): synthesize the diff the classifier scores so
+    its hunk hashes MATCH what a natural agent gate_diff produces — the root-cause fix for
+    the floor write-gate deadlock (the old synth_write_diff all-adds shape never matched a
+    delta the agent could author). Reuses the commit gate's principle: classify the REAL
+    change, not a synthetic all-adds block.
+      - Edit:      difflib(old_string -> new_string)  (both are in tool_input)
+      - MultiEdit: per-edit difflib, concatenated (one hunk per edit)
+      - Write:     overwrite -> difflib(on-disk -> content); new file -> all-adds (correct)
+    Fails safe to synth_write_diff(path, content) on any error (never raises)."""
+    ti = inp.get("tool_input") or {}
+    tool = inp.get("tool_name")
+    cwd = inp.get("cwd")
+    try:
+        if tool == "Edit":
+            return _unified_delta(path, ti.get("old_string", "") or "", content)
+        if tool == "MultiEdit":
+            parts = []
+            for e in (ti.get("edits") or []):
+                o = e.get("old_string", "") or ""
+                n = e.get("new_string", "") or ""
+                if n.strip() or o.strip():
+                    parts.append(_unified_delta(path, o, n))
+            joined = "\n".join(p for p in parts if p)
+            return joined if ("@@" in joined) else synth_write_diff(path, content)
+        if tool == "Write":
+            old = _read_file_safe(path, cwd)
+            if old is not None:
+                return _unified_delta(path, old, content)   # overwrite → real delta
+            return synth_write_diff(path, content)           # new file → all-adds is correct
+    except Exception:
+        pass
+    return synth_write_diff(path, content)
 
 
 # ---------------------------------------------------------------------------

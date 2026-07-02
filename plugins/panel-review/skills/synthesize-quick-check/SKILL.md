@@ -65,12 +65,18 @@ with a judgment code is denied. Pass the gate context the block message printed:
 - **`gate_diff`** — the change being gated (the staged diff, or the content being written).
 - **`gate_context_id`** — the `gc_…` the gate printed. **Pass it** — the SYNTH_CONFIRM then binds to
   the gate's OWN recorded floor hunks, so a cosmetically drifted `gate_diff` still releases.
+- **`target_hunk_hashes`** — when the **write gate** (the PreToolUse gate on Write/Edit, internally
+  `deliberate_gate`) blocked a **floor** change it also printed a `target_hunk_hashes = [...]` line.
+  **Copy it verbatim.** The SYNTH_CONFIRM then binds *deterministically* to exactly those floor hunks
+  and releases even when the write gate's diff shape differs from your `gate_diff`. (Optional; only
+  present on a floor write-gate block.)
 - **`gate_session_id`** — when the gate provided one.
 
 If the panel agrees the change is low-risk, the server mints a **SYNTH_CONFIRM** bound to the
-flagged hunks and the gate **releases on retry** — ~15–30s, no full `audit_coding`. If the panel
-surfaces real risk instead, run `audit_coding`. Ordinary synthesize calls (no gate context) never
-write a receipt; this only applies when a gate routed you here.
+flagged hunks and the gate **releases on retry** — ~15–30s, no full `audit_coding`. This is the
+intended cheap path to release a **floor-class** write gate (which `deliberate_coding` cannot
+release). If the panel surfaces real risk instead, run `audit_coding`. Ordinary synthesize calls (no
+gate context) never write a receipt; this only applies when a gate routed you here.
 
 ## When NOT to use
 

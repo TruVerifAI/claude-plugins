@@ -28,15 +28,21 @@ call." Only the **path-verified** codes (`test_or_docs_only`, `generated_or_vend
 release a floor change, and only when the server confirms the path class from fire-time evidence.
 
 To release a floor change you have three real options (the gate's deny message spells them out).
-**This is identical at the commit gate and the write gate** — a `Write`/`Edit` is finished code, so
-`audit_coding` is its natural review, and a `SYNTH_CONFIRM` releases either gate. Always also pass
-the `gate_context_id` the gate printed (binds coverage to the gate's own hunks):
+**This is identical at the commit gate and the write gate** (the PreToolUse gate on Write/Edit,
+internally `deliberate_gate` for historical reasons) — a `Write`/`Edit` is finished code, so
+`audit_coding` is its natural review, and a `SYNTH_CONFIRM` releases either gate. (`deliberate_coding`
+is for a still-open design or a non-floor write.) Always also pass
+the `gate_context_id` the gate printed (binds coverage to the gate's own hunks); and on a **write gate**
+floor block, also pass the `target_hunk_hashes = [...]` line the gate printed — copy it verbatim so
+coverage binds *deterministically* to exactly those floor hunks:
 
 1. **Already decided (the usual case) →** run `audit_coding` with your `proposed_action` +
-   `gate_repo`/`gate_diff`/`gate_context_id`; a PASS releases it.
+   `gate_repo`/`gate_diff`/`gate_context_id` (+ `target_hunk_hashes` on a write-gate floor block);
+   a PASS releases it.
 2. **Genuine low-risk false positive →** run `synthesize_coding` with `gate_repo` + `gate_diff` +
-   `gate_context_id` (the diff you're committing or writing). If the panel agrees it's low-risk it
-   mints a **SYNTH_CONFIRM** that releases the gate — cheap (~15–30s), no full audit.
+   `gate_context_id` (+ `target_hunk_hashes` on a write-gate floor block; the diff you're committing
+   or writing). If the panel agrees it's low-risk it mints a **SYNTH_CONFIRM** that releases the gate
+   — cheap (~15–30s), no full audit.
 3. **Review tool down + sustained outage →** the gate prompts a **human** to approve
    (`permissionDecision: "ask"`). You cannot skip a floor change past it, and you cannot approve
    your own prompt.

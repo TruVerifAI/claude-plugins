@@ -66,14 +66,21 @@ This is a free call (no credits charged). The user sees the aggregate on their T
 
 ## Releasing a review gate
 
-If a TruVerifAI **commit gate** (or the deliberate write gate) routed you here, pass the gate
-context the block message printed so a PASS writes a releasing receipt bound to the flagged hunks:
+If a TruVerifAI **commit gate** (or the **write gate** — the PreToolUse gate on Write/Edit,
+internally `deliberate_gate` for historical reasons) routed you here, pass the gate context the
+block message printed so a PASS writes a releasing receipt bound to the flagged hunks. `audit_coding`
+is the natural review for a finished Write/Edit, and a PASS releases the write gate — including on a
+**floor** change:
 
 - **`gate_repo`** — from the gate message.
 - **`gate_diff`** — the staged diff being committed (or the content being written).
 - **`gate_context_id`** — the `gc_…` the gate printed. **Pass it** — coverage then binds to the
   gate's OWN recorded hunks, so a cosmetically drifted `gate_diff` (a smart-quote, an em-dash) still
   releases the change instead of silently missing coverage.
+- **`target_hunk_hashes`** — when the **write gate** blocked a **floor** change it also printed a
+  `target_hunk_hashes = [...]` line. **Copy it verbatim.** Coverage then binds *deterministically* to
+  exactly those floor hunks, so the change releases even when the write gate's diff shape differs from
+  your `gate_diff`. (Optional; only present on a floor write-gate block.)
 - **`gate_session_id`** — when the gate provided one.
 
 A PASS verdict (`approve` / `approve_with_caveats`) releases the gate on retry. On a **floor class**
