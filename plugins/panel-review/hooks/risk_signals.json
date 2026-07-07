@@ -1,6 +1,6 @@
 {
   "_comment": "SINGLE SOURCE OF TRUTH for the two-channel risk classifier (docs/MCP/Classifier/risk-trigger-classifier-design.md). Canonical: mcp_server/risk_signals.json; vendored byte-identical copy: plugin/hooks/risk_signals.json (synced by scripts/sync_risk_classifier.py, enforced by tests/test_classifier_sync.py). Edit signals/weights/thresholds HERE only.",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "thresholds": { "trigger": 25, "borderline_low": 5 },
   "large_hunk_added_lines": 50,
   "large_hunk_weight": 10,
@@ -81,7 +81,8 @@
     { "name": "concurrency", "class": "primitive", "category": "concurrency", "weight": 8, "match": "added",
       "patterns": [ "\\b(threading\\.|ThreadPoolExecutor|asyncio\\.|multiprocessing\\.)", "\\b(Lock|Semaphore|Mutex|RwLock)\\s*\\(", "\\bgo\\s+func\\b|<-", "\\basync\\s+def\\b" ] },
     { "name": "reflection_dynamic", "class": "primitive", "category": "dynamic_code", "weight": 8, "match": "added",
-      "patterns": [ "\\bgetattr\\s*\\(|\\bsetattr\\s*\\(", "\\b__import__\\s*\\(", "\\breflect\\.", "\\.getDeclaredMethod\\b|Class\\.forName" ] },
+      "_comment": "Fix 4 P-c (A4): getattr/setattr fire ONLY when the attribute arg is NON-CONSTANT (a variable/expr), not a string literal. getattr(o, 'x')/setattr(o, 'x', v) are plain, safe attribute access — the reproduced A4 false positive. getattr(o, name)/setattr(o, field, v) and f-strings (getattr(o, f'x{n}')) stay dynamic. Deferred imports and ORM .update never matched here (verified). This is a LEXICAL heuristic on a NON-floor advisory category, so a few accepted blind spots (audit mcp_1242df66): (1) a dynamic expr that BEGINS with a string literal — getattr(o, 'p_' + f) — is suppressed [recall gap]; (2) matching is line-by-line, so a MULTILINE call whose comma sits on a separate line fires nothing [minor recall loss, no spurious fire]; (3) r/b-string attrs (getattr(o, r'x')) still fire [residual noise]. All tolerated because dynamic_code never floors.",
+      "patterns": [ "\\bgetattr\\s*\\([^,]+?,(?!\\s*['\"])|\\bsetattr\\s*\\([^,]+?,(?!\\s*['\"])", "\\b__import__\\s*\\(", "\\breflect\\.", "\\.getDeclaredMethod\\b|Class\\.forName" ] },
     { "name": "network_egress", "class": "primitive", "category": "network_egress", "weight": 8, "match": "added",
       "patterns": [ "\\bsocket\\.socket\\s*\\(", "\\.listen\\s*\\(|\\.bind\\s*\\(" ] },
     { "name": "swallowed_error", "class": "primitive", "category": "swallowed_error", "weight": 6, "match": "added",

@@ -57,9 +57,12 @@ This is a free call (no credits charged). The user sees the aggregate on their T
 ## Releasing a review gate — including a floor-class false positive
 
 When a TruVerifAI review gate blocks a change you judge a **genuine false positive**,
-`synthesize_coding` is the cheap way to clear it — and it's the *intended* path on a **floor
+`synthesize_coding` is a cheap way to clear it — an *intended* path on a **floor
 class** (auth / secrets / money / migration / removed-guard), where a one-line `record_gate_skip`
-with a judgment code is denied. Pass the gate context the block message printed:
+with a judgment code is denied. (Even cheaper: **`confirm_floor`** — a FREE one-budget-model check
+that mints the same SYNTH_CONFIRM if it agrees the floor change is token-shape noise. Reach for it
+first on a suspected false floor; escalate to `synthesize_coding`'s panel for a broader read.) Pass
+the gate context the block message printed — the same fields either tool takes:
 
 - **`gate_repo`** — copied from the gate message.
 - **`gate_diff`** — the change being gated (the staged diff, or the content being written).

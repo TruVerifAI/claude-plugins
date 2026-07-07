@@ -3,6 +3,32 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/panel-review/.claude-plugin/plugin.json`.
 
+## 0.11.0
+
+**Keep the gate installed.** This release accepts a few false positives in exchange for making a
+false *floor* block cheap and honest to clear — so there's no reason to disable the gate. A real
+auth / secret / money / migration / removed-guard change still never ships un-reviewed.
+
+- **`confirm_floor` (new, FREE)** — clear a *suspected false* floor block with one cheap budget-model
+  call. Fail-closed: only an explicit low-risk verdict releases (mints a `synth_floor_confirm`
+  receipt); material / uncertain / gate-self / unbound coverage all release nothing. No credits.
+- **`accept_risk_no_review` (new skip reason)** — the last-resort, accountable floor override: ships
+  the change un-reviewed, requires a substantive pre-mortem, expires in minutes, and lands a distinct
+  override row for the human. Generic judgment skips stay denied on the floor.
+- **Situation-first floor-release guidance** — the deny messages and skills now say which path to
+  use when: `audit_coding` for a genuine floor change (recommended), `confirm_floor` /
+  `synthesize_coding` for a suspected false positive, `accept_risk_no_review` only as a last resort.
+- **Honest override logging** — when a sustained review-tool outage prompts a human, the raw
+  permission mode is recorded so a non-interactive auto-proceed is labeled truthfully, not as a
+  human decision.
+- **Fewer false floors** — an auth change under `tests/` is advisory (a real secret there still
+  floors); `dynamic_code` only fires on a non-const `getattr`/`setattr`.
+- **Write gate matches the commit gate** — both now block the same per-hunk floor set and share one
+  `gate_tightness` setting. The `deliberate_mode` write-gate option is **retired**
+  (`deliberate_mode=block` maps to `thorough`, otherwise `focused`).
+
+Additive and backward-compatible. Requires the matching server deploy.
+
 ## 0.10.0
 
 **Single-call review model.** You never have to call TruVerifAI more than once per change, and you

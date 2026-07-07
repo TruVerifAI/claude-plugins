@@ -74,6 +74,12 @@ FLOOR_CATEGORIES = frozenset({
 # FLOOR_CATEGORIES, which would have weakened thorough-mode guard-removal protection (F-002 closed).
 SOFT_FLOOR = frozenset({"removed_conditional"})
 
+# Categories whose matched span IS a secret value — the Fix 2A transparency line reports the
+# category + line number for these but NEVER echoes the matched token (it would print the secret
+# to the agent's console). Every other category echoes the matched identifier/keyword, which is
+# the whole point of transparency. Client-side only.
+_SECRET_CATS = frozenset({"hardcoded_secret", "secret_material"})
+
 # Valid gate_tightness levels + the default. 'focused' = fire only on major decisions
 # (floor + high-confidence non-floor); 'thorough' = block any risky change (legacy behavior).
 GATE_TIGHTNESS_VALUES = frozenset({"focused", "thorough"})
@@ -87,7 +93,32 @@ def is_hard_floor(category) -> bool:
     return category in FLOOR_CATEGORIES and category not in SOFT_FLOOR
 
 
-def hunk_blocks_under_tightness(category, confidence, tightness) -> bool:
+# Fix 4 P-a: on a TEST or DOCS path, the non-secret token-shape floor classes are DOWNGRADED to
+# non-floor (a fixtures/spec/doc file can't be an auth/billing/migration/removed-guard regression
+# — it doesn't ship as prod logic). Secrets are NOT exempt: a real secret VALUE fires via
+# auto-trigger regardless of path (the value_filter already discounts fakes), so hardcoded_secret
+# and secret_material stay floor even in a test file (F-003 stage ordering: secret before path).
+#
+# EXPLICIT ALLOWLIST (audit F-001): listed literally, NOT derived as `FLOOR_CATEGORIES - secrets`.
+# A NEW floor category added to FLOOR_CATEGORIES is therefore NOT silently exempt on test/docs —
+# it must be added here deliberately (the conservative direction: a new floor class keeps full
+# enforcement until someone opts it into the exemption). Enforced ⊆ FLOOR_CATEGORIES and
+# secret-free by test_pa_path_floor.
+_FLOOR_EXEMPT_TEST_DOCS = frozenset({
+    "auth_security", "billing", "migration_schema", "migration_path",
+    "removed_guard", "removed_conditional",
+})
+
+
+def floor_exempt(category, path_class) -> bool:
+    """True when `category` is a floor class EXEMPT from floor enforcement because the hunk lives
+    in a test/docs path (Fix 4 P-a). Applied by BOTH gates and the server floor derivation so the
+    exemption is coherent everywhere; secrets are never exempt. `path_class` is the conservative
+    bucket from classify_path_class (None → not exempt)."""
+    return path_class == PATH_CLASS_TEST_OR_DOCS and category in _FLOOR_EXEMPT_TEST_DOCS
+
+
+def hunk_blocks_under_tightness(category, confidence, tightness, path_class=None) -> bool:
     """Does an uncovered risky hunk BLOCK the commit under the given `gate_tightness`?
 
     'thorough' (and any unrecognized value → fail safe to blocking): every risky hunk blocks —
@@ -103,7 +134,9 @@ def hunk_blocks_under_tightness(category, confidence, tightness) -> bool:
     # confidence field.
     if not category or confidence not in (LOW, HIGH):
         return True
-    if is_hard_floor(category):
+    # Fix 4 P-a: a test/docs-path non-secret floor hunk is NOT a hard floor (advisory under
+    # 'focused'); it still blocks under 'thorough' via the fall-through below.
+    if is_hard_floor(category) and not floor_exempt(category, path_class):
         return True
     if tightness == "focused":
         return confidence == HIGH
@@ -125,7 +158,7 @@ _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "risk_si
 # So `_classify_hunk` restricts a prose hunk's scan to path + auto-trigger signals rather
 # than returning None outright. `.txt` is included here BECAUSE the dependency PATH signal
 # still catches `requirements.txt` (so adding `.txt` loses no recall).
-_PROSE_PATHS = re.compile(r"\.(md|markdown|mdx|rst|adoc|asciidoc|txt)$", re.IGNORECASE)
+_PROSE_PATHS = re.compile(r"\.(md|markdown|mdx|rst|adoc|asciidoc|txt|html|htm)$", re.IGNORECASE)
 
 
 def _compile_config(cfg):
@@ -883,6 +916,35 @@ def _signal_hit(patterns, skeleton_idx, value_filter_idx, raw_lines, sk_lines):
     return False
 
 
+def _signal_first_match(signal, path, added, removed, sk_added, sk_removed):
+    """Return (token, line_no) for the first pattern of `signal` that fires — the matched
+    substring and the 1-based line index within the hunk side (line_no is None for a
+    path-match signal). CLIENT-SIDE TRANSPARENCY ONLY (Fix 2A): this returns source text used
+    to build the LOCAL deny message; it is NEVER added to the coverage POST (_hunk_evidence
+    sends hashes only). Mirrors _signal_hit's skeleton/value-filter logic so the reported span
+    is the one that actually fired."""
+    m = signal["match"]
+    if m == "path":
+        for pat in signal["patterns"]:
+            hit = pat.search(path or "")
+            if hit:
+                return (hit.group(0), None)
+        return (None, None)
+    raw, sk = (removed, sk_removed) if m == "removed" else (added, sk_added)
+    skmatch = signal["skeleton_match"]
+    vfilter = signal["value_filter_patterns"]
+    for i, pat in enumerate(signal["patterns"]):
+        targets = sk if (skmatch and i in skmatch) else raw
+        vf = bool(vfilter) and i in vfilter
+        for idx, ln in enumerate(targets):
+            hit = pat.search(ln)
+            if hit:
+                if vf and not _has_real_secret_value(ln):
+                    continue
+                return (hit.group(0), idx + 1)
+    return (None, None)
+
+
 def _classify_hunk(path, added, removed, trigger_threshold=None):
     """Return a per-hunk verdict dict, or None if not risky.
 
@@ -970,24 +1032,28 @@ def _classify_hunk(path, added, removed, trigger_threshold=None):
         # POLICY (audit F-001): an auto-trigger signal (e.g. a hardcoded secret) is ALWAYS
         # HIGH, bypassing suppressors by design — a leaked key in a test fixture is still a
         # leaked key. auto is compile-enforced to trigger-class only.
-        confidence, cat = HIGH, auto[0]["category"]
-        reason = "auto_trigger:" + auto[0]["name"]
-        score = auto[0]["weight"]
+        deciding_signal = auto[0]
+        confidence, cat = HIGH, deciding_signal["category"]
+        reason = "auto_trigger:" + deciding_signal["name"]
+        score = deciding_signal["weight"]
     elif trigger_score >= threshold:
         confidence = HIGH
-        cat = max(trigger_fired, key=lambda s: s["weight"])["category"]
+        deciding_signal = max(trigger_fired, key=lambda s: s["weight"])
+        cat = deciding_signal["category"]
         reason = "trigger_score_%d" % trigger_score
         score = trigger_score
     elif trigger_fired:
         # F-007 lower bound: a trigger-class signal present floors the band at BORDERLINE.
         # Suppressors demoted it below the threshold; they cannot silence it to PASS.
         confidence = LOW
-        cat = max(trigger_fired, key=lambda s: s["weight"])["category"]
+        deciding_signal = max(trigger_fired, key=lambda s: s["weight"])
+        cat = deciding_signal["category"]
         reason = "trigger_near_miss_%d" % trigger_score
         score = trigger_score
     elif (borderline_score + supp_weight) >= _CFG["borderline_low"]:
         confidence = LOW
-        cat = max(borderline_fired, key=lambda s: s["weight"])["category"] if borderline_fired else "significance"
+        deciding_signal = max(borderline_fired, key=lambda s: s["weight"]) if borderline_fired else None
+        cat = deciding_signal["category"] if deciding_signal else "significance"
         reason = "borderline_score_%d" % borderline_score
         score = borderline_score + supp_weight
     else:
@@ -1000,6 +1066,19 @@ def _classify_hunk(path, added, removed, trigger_threshold=None):
     has_sig = is_large_hunk or any(s["cls"] == "significance" for s in borderline_fired)
     has_dom = any(s["cls"] == "domain" for s in borderline_fired)
     signal_names = sorted({s["name"] for s in fired} | ({"large_hunk"} if is_large_hunk else set()))
+    # Fix 2A transparency: the matched span of the DECIDING signal (the identifier/keyword that
+    # fired + its 1-based line within the hunk) for the LOCAL deny message and the cheap-confirm
+    # input. A secret VALUE is never echoed (see _SECRET_CATS — report the line + category only).
+    # Client-side only: not added to _hunk_evidence, so it never leaves the machine at fire time.
+    matched = None
+    if deciding_signal is not None:
+        mtoken, mline = _signal_first_match(
+            deciding_signal, path, added, removed, sk_added, sk_removed)
+        if cat in _SECRET_CATS:
+            mtoken = None
+        if mtoken or mline:
+            matched = {"signal": deciding_signal["name"],
+                       "token": (mtoken[:80] if mtoken else None), "line": mline}
     return {
         "category": cat,
         "confidence": confidence,
@@ -1016,6 +1095,9 @@ def _classify_hunk(path, added, removed, trigger_threshold=None):
         # added-bearing hunk keeps its v1 hash). Pure-deletion hunks (new in v2) fall back
         # to the removed lines so they get a distinct, stable hash.
         "content_basis": added if added else removed,
+        # Fix 2A transparency (client-side only; see _signal_first_match) — None or
+        # {signal, token, line}. Never sent to the server (privacy: only hashes leave).
+        "matched": matched,
     }
 
 
@@ -1070,6 +1152,9 @@ def classify_diff(diff_text, trigger_threshold=None):
             # coverage POST so the server can verify a test_or_docs_only / generated_or_
             # vendored_code skip claim against fire-time evidence (never raw paths).
             "path_class": classify_path_class(path, "\n".join(added)),
+            # Fix 2A: matched span for the LOCAL deny message (client-side; never POSTed —
+            # _hunk_evidence sends hashes only).
+            "matched": verdict.get("matched"),
         })
         if verdict["spike"]:
             any_spike = True

@@ -76,9 +76,9 @@ def main():
                 "Run `audit_coding` with your proposed_action + relevant_code, AND pass:\n"
                 f'  gate_repo = "{repo}"\n'
                 "  gate_diff = the staged diff (run: git diff --staged)\n"
-                "TruVerifAI records the result and the commit proceeds on retry. "
-                "(Gate-self changes need a real audit of THIS change — they can't be "
-                "skipped, and an unrelated recent audit won't release them.)"
+                "A PASS lets the commit proceed on retry. (`deliberate_coding` is accepted if the "
+                "design is still open. Gate-self changes need a real audit/deliberate PASS of THIS "
+                "change — they can't be skipped, and an unrelated recent review won't release them.)"
             )
         g.emit_allow(detail if action == "allow_warn" else None)
 
@@ -100,30 +100,37 @@ def main():
         # the normal deny below runs. Fails open by construction (None `resp` → our
         # gate-server down → returns → normal deny) and robust (any internal failure → returns
         # → normal deny, never crashes / never auto-allows). Debounced per repo+hunkset.
-        g.maybe_human_override(cfg, classification, resp, session_id, repo)
+        g.maybe_human_override(cfg, classification, resp, session_id, repo,
+                               permission_mode=inp.get("permission_mode"))
         gcid = (resp or {}).get("gate_context_id")
         # Phase 9: pass the gate_context_id to audit_coding so coverage binds to the gate's OWN
         # recorded hunks — a cosmetically-drifted gate_diff (a smart-quote, an em-dash an LLM
         # courier mangled) then still releases the change instead of silently missing coverage.
         gcid_line = f'  gate_context_id = "{gcid}"  (binds coverage to THIS change)\n' if gcid else ""
         g.emit_deny(
-            f"TruVerifAI flagged a potential high-risk change for a quick review before "
-            f"it ships — this commit touches {cats}.\n"
+            f"TruVerifAI flagged a high-risk change worth a review before it ships — this commit "
+            f"touches {cats}.\n"
+            + g.transparency_block(classification, resp) +
             "Run `audit_coding` with your proposed_action + relevant_code, AND pass:\n"
             f'  gate_repo = "{repo}"\n'
             "  gate_diff = the staged diff (run: git diff --staged)\n"
             + gcid_line +
-            "TruVerifAI records the result and the commit proceeds on retry. "
-            "(`audit_coding` is in your MCP tools.)\n"
-            # §4.I diff-delta: re-committing after addressing earlier audit findings only
-            # needs the CHANGED code re-audited — a prior audit PASS still covers the hunks
-            # you didn't touch, and the two compose. Keeps the mandatory re-review cheap.
-            "If this is a re-commit after fixing earlier audit findings, you can scope "
-            "`audit_coding` to the changed hunks and any newly affected surrounding code — "
-            "your prior PASS still covers the hunks you didn't touch.\n"
-            "After ONE review, if it returns findings you can apply them and call "
+            "A PASS releases the commit on retry. Re-committing after fixing earlier findings? "
+            # §4.I diff-delta: a prior audit PASS still covers the hunks you didn't touch.
+            "Scope `audit_coding` to the changed hunks — your prior PASS still covers the rest.\n"
+            "On a FLOOR class (auth / secrets / money / migrations / removed-guard) you believe is "
+            "a false positive, release cheaper: `confirm_floor` (FREE, one model), then "
+            "`synthesize_coding` (~15-30s) — a passing verdict releases the commit (forward "
+            "gate_repo + gate_diff + the gate_context_id above). On a non-floor change these "
+            "release nothing — use `audit_coding`.\n"
+            "After ONE review, apply its findings and call "
             "`record_gate_skip(recommendations_applied, gate_context_id)` instead of re-auditing "
             "(a FLOOR hunk still needs a real PASS at commit — it's the ship checkpoint).\n"
+            "LAST RESORT on a FLOOR change — only after the paths above genuinely don't fit (the "
+            "gate mis-fired, you're deadlocked, or you're consciously shipping un-reviewed): "
+            "`record_gate_skip(accept_risk_no_review, gate_context_id, reason_text=<pre-mortem>)` "
+            "ships it un-reviewed as a logged OVERRIDE to the human, not a review; needs a "
+            "substantive pre-mortem and expires in minutes.\n"
             + g.skip_and_signal(classification, audit=True,
                                 gate_context_id=(resp or {}).get("gate_context_id"))
         )
@@ -145,7 +152,7 @@ def main():
         g.emit_allow_advisory(
             "TruVerifAI (focused tightness): this commit touches " + cats + " — lower-confidence, "
             "non-floor changes, so the gate is NOT blocking (floor classes — auth / secrets / money / "
-            "migrations / removed guards — and high-confidence security changes still block). If any of "
+            "migrations / removed-guard — and high-confidence security changes still block). If any of "
             "this is genuinely consequential, consider running `audit_coding` before you rely on it. "
             "To block on every risky change instead, set the plugin's gate_tightness=thorough."
         )

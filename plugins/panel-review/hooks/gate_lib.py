@@ -60,10 +60,6 @@ def config():
         "token": os.environ.get("CLAUDE_PLUGIN_OPTION_API_TOKEN", ""),
         "enabled": os.environ.get("CLAUDE_PLUGIN_OPTION_ENABLE_GATES", "true") == "true",
         "base_url": os.environ.get("CLAUDE_PLUGIN_OPTION_API_BASE_URL", DEFAULT_BASE_URL).rstrip("/"),
-        # Per-confidence demotion (v2-hybrid §11.1): 'tiered' (block high-confidence,
-        # advisory low — the default), 'block' (block all risky), or 'advisory'
-        # (never block deliberate).
-        "deliberate_mode": os.environ.get("CLAUDE_PLUGIN_OPTION_DELIBERATE_MODE", "tiered"),
         # Borderline (low-confidence) tier routing to synthesize (design §6.5):
         # 'synthesize_gate' (soft-gate Borderline-Heavy -> synthesize_coding),
         # 'advisory' (surface a suggestion only — the default until the F-001
@@ -82,13 +78,41 @@ def config():
             os.environ.get("CLAUDE_PLUGIN_OPTION_BORDERLINE_SAMPLING_RATE", ""), 0.5),
         "borderline_session_budget": _parse_int(
             os.environ.get("CLAUDE_PLUGIN_OPTION_BORDERLINE_SESSION_BUDGET", ""), 3),
-        # Commit-gate tightness (fatigue lever, GATE-TIGHTNESS-DESIGN.md): 'focused' (default)
-        # blocks only floor + high-confidence non-floor and downgrades non-floor low-confidence
-        # changes to a non-blocking advisory; 'thorough' blocks every risky change (legacy).
-        # The floor always blocks at both levels. Invalid → default (fail safe: not looser).
-        "gate_tightness": _parse_tightness(
-            os.environ.get("CLAUDE_PLUGIN_OPTION_GATE_TIGHTNESS", "")),
+        # Gate tightness (fatigue lever, GATE-TIGHTNESS-DESIGN.md) — governs BOTH gates now
+        # (Inc 8, Fix 5: the retired deliberate_mode is subsumed here). 'focused' (default) blocks
+        # only floor + high-confidence non-floor and downgrades non-floor low-confidence changes to
+        # a non-blocking advisory; 'thorough' blocks every risky change (legacy). The floor always
+        # blocks at both levels. Invalid → default (fail safe: not looser).
+        "gate_tightness": _resolve_gate_tightness(),
     }
+
+
+def _resolve_gate_tightness():
+    """The active gate_tightness for BOTH gates (Inc 8, Fix 5). Read from its own env var; if that
+    is unset, MIGRATE from the retired `deliberate_mode` so an install that still sets the old env
+    var keeps an equivalent posture until it updates its config. An explicit gate_tightness always
+    wins. Mapping (design §Fix-5 — load-bearing):
+      - tiered (the OLD default) → focused (the NEW default) — the write-gate posture is UNCHANGED;
+      - block                    → thorough (block every risky change);
+      - advisory / unset / unknown → focused — there is no 'never-block' tightness (the floor always
+        blocks under both levels), so the always-advisory mode maps to the least-strict tightness.
+    Mapping tiered→focused (NOT thorough) is the load-bearing bit: it keeps the default unchanged so
+    Fix 5 doesn't silently make the default stricter (it only adds floor-awareness — a hard-floor
+    hunk now blocks the write at ANY confidence, matching the commit gate)."""
+    raw = os.environ.get("CLAUDE_PLUGIN_OPTION_GATE_TIGHTNESS", "")
+    if raw.strip():
+        return _parse_tightness(raw)
+    legacy = os.environ.get("CLAUDE_PLUGIN_OPTION_DELIBERATE_MODE", "").strip().lower()
+    if legacy:
+        # audit F-004: the deliberate_mode userConfig is retired. If the option was dropped from
+        # plugin.json but a stale saved value is still exported (Claude Code behavior varies), tell
+        # the user their old setting is being migrated so a lost 'block' posture is never silent.
+        mapped = "thorough" if legacy == "block" else DEFAULT_GATE_TIGHTNESS
+        sys.stderr.write(
+            "TruVerifAI: 'deliberate_mode' is retired — migrating deliberate_mode=%r to "
+            "gate_tightness=%r. Set gate_tightness directly to silence this.\n" % (legacy, mapped))
+        return mapped
+    return DEFAULT_GATE_TIGHTNESS  # unset → the default
 
 
 def _parse_tightness(val):
@@ -158,6 +182,10 @@ SKIP_REASON_CODES = (
     # gate (session/area-scoped write-gate release; the batch is re-reviewed at commit).
     "recommendations_applied",
     "review_deferred_to_commit",
+    # Inc 7 (Fix 2B): the last-rung FLOOR escape — ships a floor change un-reviewed, logged +
+    # accountable (distinct ACCEPT_RISK receipt, substantive pre-mortem, minutes TTL). Byte-identity
+    # with mcp_server/gate_skip.REASON_CODES + the record_gate_skip tool Literal (Rule 9).
+    "accept_risk_no_review",
     "already_reviewed_this_session",  # DEPRECATED alias of prior_pass_receipt_match (no longer emitted)
 )
 
@@ -667,6 +695,47 @@ def _hunk_evidence(classification):
     return body
 
 
+def transparency_block(classification, check_response, max_items=8):
+    """Fix 2A: a short, LOCAL itemization of what fired vs. what's already reviewed, for the
+    deny message. Uses the client-side `matched` span (identifier/keyword + 1-based line; secret
+    VALUES were redacted to category+line by the classifier). The agent reasons about the minimal
+    NEW surface instead of re-litigating covered code. Purely local — `matched` is never sent to
+    the server (`_hunk_evidence` posts hashes only). Returns "" when there's nothing to show.
+
+    When the server told us which hunks are `uncovered`, itemize those (the ones that actually
+    need review) and note the covered count; otherwise list every fired hunk."""
+    if not isinstance(classification, dict):
+        return ""
+    hunks = classification.get("hunks") or []
+    if not hunks:
+        return ""
+    uncovered_set = None
+    if isinstance(check_response, dict) and isinstance(check_response.get("uncovered"), list):
+        uncovered_set = set(check_response["uncovered"])
+    if uncovered_set is not None:
+        target = [h for h in hunks if h.get("content_hash") in uncovered_set]
+        covered_n = len(hunks) - len(target)
+        header = ("What fired (%d hunk%s; %d already reviewed, %d need review):\n"
+                  % (len(hunks), "" if len(hunks) == 1 else "s", covered_n, len(target)))
+    else:
+        target = hunks
+        header = "What fired (%d hunk%s):\n" % (len(hunks), "" if len(hunks) == 1 else "s")
+    lines = []
+    for h in target[:max_items]:
+        cat = h.get("category") or "risk"
+        path = h.get("path") or "?"
+        m = h.get("matched") or {}
+        ln = m.get("line")
+        tok = m.get("token")
+        loc = "%s:%s" % (path, ln) if ln else path
+        lines.append(("  - %s - matched `%s` at %s" % (cat, tok, loc)) if tok
+                     else ("  - %s at %s" % (cat, loc)))
+    extra = len(target) - max_items
+    if extra > 0:
+        lines.append("  - ... +%d more" % extra)
+    return (header + "\n".join(lines) + "\n") if lines else ""
+
+
 def check_audit_coverage(cfg, repo, hunk_hashes, classification=None, session_id=None):
     body = {"repo": repo, "hunks": hunk_hashes}
     body.update(_classifier_meta(classification, session_id))
@@ -798,7 +867,8 @@ def audit_decision(classification, check_response, force_risky=False, tightness=
         # `coverage_known` (audit F-A/F-B): if the coverage state is ambiguous (server omitted the
         # `uncovered` set), do NOT downgrade — fall through to deny (block on ambiguity).
         if coverage_known and uncovered and not gate_self_hunk and not any(
-            hunk_blocks_under_tightness(h.get("category"), h.get("confidence"), "focused")
+            hunk_blocks_under_tightness(h.get("category"), h.get("confidence"), "focused",
+                                        h.get("path_class"))
             for h in uncovered
         ):
             return ("advise", "focused: only non-floor low-confidence changes are uncovered "
@@ -842,16 +912,27 @@ def audit_decision_gate_self(check_response):
     return ("deny", "uncovered")
 
 
-def deliberate_decision(classification, check_response, mode, force_risky=False):
+def deliberate_decision(classification, check_response, *, force_risky=False, tightness=None):
     """Return (action, detail). action ∈ {'allow', 'allow_warn', 'advise', 'deny'}.
 
-    Per-confidence tiering (mode='tiered'): high-confidence forks block, low ones
-    are advisory. mode='block' blocks all risky; mode='advisory' never blocks.
+    (audit F-001) force_risky/tightness are KEYWORD-ONLY: Fix 5 reordered them (the 3rd param used
+    to be a `mode` string), so a stale positional caller `deliberate_decision(c, r, "x")` must fail
+    LOUDLY (TypeError) rather than silently pass "x" into force_risky and bypass the gate.
 
-    `force_risky` (gate self-mutation): the change touches the gate's own
-    config/hooks — ALWAYS block until reviewed, regardless of mode/confidence
-    (privilege-escalation risk), but RELEASABLE via unlock / recent_pass /
-    fail-open (not the old unconditional deny).
+    Fix 5 (Inc 8): the WRITE gate now blocks on the SAME per-hunk predicate as the commit gate —
+    `hunk_blocks_under_tightness(...)` under `gate_tightness` — replacing the legacy
+    whole-classification `max_confidence` / `deliberate_mode` tiering. The per-hunk predicate is
+    strictly better: **floor-aware** (a hard-floor hunk blocks at ANY confidence — which
+    `max_confidence` could not express, so a low-confidence floor write used to slip through as
+    advisory) and it evaluates only the **uncovered** hunks. `deliberate_mode` is retired; both
+    gates read `gate_tightness` (focused/thorough). Mirrors `audit_decision`, plus the write-gate-
+    only `proactive_consulted` downgrade.
+
+    `force_risky` (gate self-mutation): the change touches the gate's own config/hooks — ALWAYS
+    block until reviewed regardless of tightness (privilege-escalation risk), but RELEASABLE via
+    unlock / recent_pass / fail-open (not the old unconditional deny). (In practice the write hook
+    routes gate-self through `audit_decision_gate_self`, so this path sees force_risky=False; the
+    guard stays as defense-in-depth.)
     """
     if not classification.get("risky") and not force_risky:
         return ("allow", "no risky design change")
@@ -884,22 +965,36 @@ def deliberate_decision(classification, check_response, mode, force_risky=False)
     if check_response.get("recent_pass") and check_response.get("floor_uncovered") is not True:
         return ("allow_warn", "a recent deliberation passed; area unverified — allowing")
 
-    conf = classification.get("max_confidence")
-    if force_risky:
-        blocking = True  # gate-self blocks in every mode until reviewed
-    elif mode == "advisory":
-        blocking = False
-    elif mode == "block":
-        blocking = True
-    else:  # 'tiered' (default): only high-confidence forks block
-        blocking = (conf == "high")
-    if not blocking:
-        return ("advise", "uncovered (low confidence)")
-    # Advisory-downgrade (2026-06-23 deliberation): a PROACTIVE deliberation covered
-    # this area this session — a real review ran before the gate fired — so soften the
-    # block to an advisory nudge instead of denying. Deliberately NOT applied to a
-    # gate-self change (force_risky): that path returned above already blocking=True and
-    # must keep its full strength (proactive area receipts can't release gate-self).
+    # Fix 5 (Inc 8): per-hunk `gate_tightness` predicate — the SAME floor-aware
+    # `hunk_blocks_under_tightness` the commit gate uses, replacing the legacy max_confidence tiering.
+    # A hunk BLOCKS the deliberate (write) tier iff it blocks under the active tightness: a hard-floor
+    # hunk (ANY confidence — the key floor-awareness fix, which max_confidence couldn't express), a
+    # non-floor HIGH hunk under 'focused', or any risky hunk under 'thorough'. If NOTHING blocks, the
+    # deliberate tier is not this change's concern → 'advise', which lets a non-floor LOW-confidence
+    # change flow to the BORDERLINE (synthesize) tier below (its own soft-gate) exactly as before.
+    #
+    # WRITE-GATE-SPECIFIC (vs audit_decision): we do NOT hard-block on AMBIGUOUS coverage (an old
+    # server that omits `uncovered`). _uncovered_risky_hunks returns ALL hunks in that case, so a
+    # floor / non-floor-HIGH change still denies (its hunk blocks), but a non-floor LOW change still
+    # advises → the borderline tier handles it. This preserves the pre-Fix-5 write-gate routing (the
+    # deliberate tier never blocked low-confidence changes) and is safe because the COMMIT gate is the
+    # authoritative ship-time checkpoint (it DOES block on ambiguity). Never downgrades a gate-self
+    # change (force_risky); the gself-hash guard is belt-and-suspenders.
+    if not force_risky:
+        uncovered, _coverage_known = _uncovered_risky_hunks(classification, check_response)
+        gate_self_hunk = any(
+            (h.get("content_hash") or "").startswith(GATE_SELF_HASH_PREFIX) for h in uncovered)
+        if uncovered and not gate_self_hunk and not any(
+            hunk_blocks_under_tightness(h.get("category"), h.get("confidence"), tightness,
+                                        h.get("path_class"))
+            for h in uncovered
+        ):
+            return ("advise", "%s: no blocking-class hunk uncovered — advisory, not blocking"
+                              % (tightness or "focused"))
+    # A blocking-class uncovered hunk remains (a floor hunk, a non-floor HIGH hunk, 'thorough', or
+    # gate-self). Advisory-downgrade (2026-06-23 deliberation): a PROACTIVE deliberation covered
+    # this area this session — a real review ran before the gate fired — so soften the block to an
+    # advisory nudge. NOT for a gate-self change (proactive area receipts can't release gate-self).
     if not force_risky and check_response.get("proactive_consulted"):
         return ("advise", "proactive deliberation this session; downgraded to advisory")
     return ("deny", "uncovered")
@@ -1183,11 +1278,15 @@ def mark_override_prompted(session_id, repo, hunk_hashes, now=None):
 
 
 def post_override_event(cfg, repo, *, reason_code="floor_review_tool_outage", gate_context_id=None,
-                        server_reason=None, review_tool_health=None, hunk_hashes=None):
+                        server_reason=None, review_tool_health=None, hunk_hashes=None,
+                        permission_mode=None):
     """POST the §4.E human-override PROMPT event (observability — the human-prompt-rate
     metric; NEVER a releasing receipt). `reason_code` is the cell-accurate code (Inc 3): the
     server stores it verbatim, so the dashboard distinguishes a real outage from a coverage-drift
-    deadlock. Best-effort via _post (returns None on any error); the prompt fires regardless."""
+    deadlock. `permission_mode` (Fix 3, Inc 9) is the RAW PreToolUse mode — sent verbatim so the
+    server can DERIVE (at query time) whether a human actually decided the `ask` or it auto-proceeded
+    in a non-interactive context; only sent when a real string is present. Best-effort via _post
+    (returns None on any error); the prompt fires regardless."""
     body = {"repo": repo, "outcome": "prompted", "reason_code": reason_code}
     if gate_context_id:
         body["gate_context_id"] = gate_context_id
@@ -1197,6 +1296,8 @@ def post_override_event(cfg, repo, *, reason_code="floor_review_tool_outage", ga
         body["review_tool_health"] = review_tool_health
     if hunk_hashes:
         body["hunk_hashes"] = hunk_hashes
+    if isinstance(permission_mode, str) and permission_mode:
+        body["permission_mode"] = permission_mode
     return _post(cfg, "/api/mcp/receipts/override", body)
 
 
@@ -1225,10 +1326,15 @@ def override_ask_message(classification, cell=CELL_SUSTAINED_OUTAGE):
     return head + body
 
 
-def maybe_human_override(cfg, classification, check_response, session_id, repo):
+def maybe_human_override(cfg, classification, check_response, session_id, repo,
+                         permission_mode=None):
     """§4.E human override. If the floor × SUSTAINED-outage cell applies, prompt a HUMAN via
     emit_ask (which PRINTS the `ask` and EXITS the process) and never returns; otherwise
     return so the caller proceeds to the normal deny.
+
+    `permission_mode` (Fix 3, Inc 9) is the RAW Claude Code PreToolUse mode, forwarded to the
+    override event so the server can honestly label whether a human actually decided this `ask` or
+    it auto-proceeded in a non-interactive context (bypassPermissions/dontAsk/headless).
 
     ROBUST by construction (audit F-001/F-004/F-007): every step is inside a try/except that
     falls through (returns) to the caller's normal deny on ANY failure — a malformed
@@ -1278,6 +1384,7 @@ def maybe_human_override(cfg, classification, check_response, session_id, repo):
             server_reason=server_reason,
             review_tool_health=(check_response or {}).get("review_tool_health"),
             hunk_hashes=hunk_hashes,
+            permission_mode=permission_mode,
         )
         emit_ask(override_ask_message(classification, cell), system_message=sys_msg)
     except Exception:
@@ -1345,9 +1452,9 @@ def skip_and_signal(classification, audit, area=None, gate_context_id=None):
         lines.append("  (no area available — run the suggested review instead of skipping)")
     lines.append(gate_signal_line(classification))
     return (
-        "Or, if this genuinely does NOT need review, call `record_gate_skip` (free) "
-        "with a reason_code, gate_repo, and the gate context below (copy it verbatim), "
-        "then retry:\n"
+        "Or, if this is NOT a floor class and genuinely does not need review, call "
+        "`record_gate_skip` (free) with a reason_code, gate_repo, and the gate context below "
+        "(copy it verbatim), then retry:\n"
         + "\n".join(lines)
     )
 

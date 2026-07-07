@@ -1,7 +1,7 @@
 {
   "name": "panel-review",
   "displayName": "AI Panel Review",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Multi-model second-opinion deliberation for high-stakes coding and financial decisions. Eight skills across two profiles — coding and financial (audit / deliberate / synthesize per profile), plus shared record-outcome and skip-gate — route to the TruVerifAI MCP server, where four frontier models reason independently and conflict-target each other's positions to produce decision-grade output. Outcome reporting closes the loop — the dashboard shows what % of MCP calls actually changed the agent's decision.",
   "author": {
     "name": "TruVerifAI",
@@ -40,15 +40,9 @@
     },
     "gate_tightness": {
       "type": "string",
-      "title": "Commit gate tightness (how often it blocks)",
-      "description": "Controls which changes the commit (audit) gate BLOCKS. 'focused' (default) blocks only the highest-stakes changes: the floor classes (auth, secrets, billing, migrations, a removed safety check) and high-confidence security signals (crypto, unsafe exec, deserialization, dependency changes, IaC exposure, SQL) — lower-confidence 'code-review' changes (API routes, concurrency, network calls, large refactors, error handling) become a non-blocking advisory instead. 'thorough' blocks the commit on ANY risky change that isn't covered by a review. The floor always blocks at BOTH levels — you cannot disable it this way (use enable_gates=false for that). To change it, type one of: focused, or thorough.",
+      "title": "Gate tightness (how often the gates block)",
+      "description": "Controls which changes BOTH gates BLOCK — the commit (audit) gate and the write (Write/Edit) gate, which now share this single setting. 'focused' (default) blocks only the highest-stakes changes: the floor classes (auth, secrets, billing, migrations, a removed safety check — blocked at ANY confidence) and high-confidence security signals (crypto, unsafe exec, deserialization, dependency changes, IaC exposure, SQL) — lower-confidence 'code-review' changes (API routes, concurrency, network calls, large refactors, error handling) become a non-blocking advisory instead. 'thorough' blocks on ANY risky change that isn't covered by a review. The floor always blocks at BOTH levels — you cannot disable it this way (use enable_gates=false for that). (This replaces the retired 'deliberate_mode' write-gate setting; an old 'deliberate_mode=block' maps to 'thorough', otherwise 'focused'.) To change it, type one of: focused, or thorough.",
       "default": "focused"
-    },
-    "deliberate_mode": {
-      "type": "string",
-      "title": "Write gate strictness",
-      "description": "Controls the write gate (the PreToolUse gate on Write/Edit). 'tiered' (default) blocks only high-confidence/irreversible changes (schema, migrations, auth, dependencies, IaC exposure) and routes lower-confidence borderline changes via borderline_mode (below); 'block' blocks every risky Write/Edit; 'advisory' never blocks (surfaces a suggestion only). A blocked write is finished code, so its natural review is audit_coding (a PASS releases it); deliberate_coding is for a still-open design. A floor-class write (auth/secrets/money/migration/removed-guard) releases via audit_coding or a synthesize_coding SYNTH_CONFIRM (a judgment record_gate_skip is denied on the floor). After ONE review, record_gate_skip with recommendations_applied (findings applied) or review_deferred_to_commit (defer a batch) also release a floor WRITE here — but the floor is re-audited at commit. When the gate blocks a floor change it prints a target_hunk_hashes line — forward it (and gate_context_id) verbatim to audit_coding / synthesize_coding so coverage binds deterministically to exactly those floor hunks. The commit gate (pre-commit) is unaffected. To change it, type one of: tiered, block, or advisory.",
-      "default": "tiered"
     },
     "borderline_mode": {
       "type": "string",

@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """PreToolUse gate — TruVerifAI deliberate-before-implementing (Layer 1).
 
-Fires before a Write / Edit / MultiEdit and routes by confidence:
-- HIGH-confidence design fork (schema / migration / dependency / auth / IaC) -> the
-  deliberate gate (TIERED default: block + route to `deliberate_coding`; mode
-  `tiered` | `block` | `advisory`, the §11.1 demotion flag).
+Fires before a Write / Edit / MultiEdit and blocks on the same per-hunk `gate_tightness`
+predicate as the commit gate (Inc 8, Fix 5 — the legacy `deliberate_mode` knob is retired;
+both gates now read `gate_tightness`, `focused` default / `thorough`):
+- A blocking-class hunk (a floor hunk at any confidence, or a non-floor HIGH hunk under
+  `focused`; any risky hunk under `thorough`) -> block + route to `audit_coding` (a Write is
+  finished code); `deliberate_coding` is accepted for a still-open design.
 - LOW-confidence borderline change -> the synthesize tier (§6.5), governed by
   `borderline_mode` (`advisory` default | `synthesize_gate` | `off`): a Heavy spike may
-  soft-gate to `synthesize_coding` (or a one-line skip); else an advisory nudge.
+  soft-gate (get a `synthesize_coding` second opinion, then release with a one-line skip);
+  else an advisory nudge.
 
 Fails OPEN on anything; the `recent_pass` escape valve prevents area-misalignment
 deadlock. A Write already contains finished code, so this is pre-PERSISTENCE
@@ -20,7 +23,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gate_lib as g
-from risk_classifier import classify_diff, is_hard_floor
+from risk_classifier import classify_diff, is_hard_floor, floor_exempt
 
 
 def _content_and_path(inp):
@@ -140,10 +143,12 @@ def main():
     if resp and resp.get("covered"):
         g.emit_allow("change reviewed — audit / SYNTH_CONFIRM covers every risky hunk")
 
-    action, detail = g.deliberate_decision(classification, resp, cfg["deliberate_mode"])
+    action, detail = g.deliberate_decision(classification, resp,
+                                           tightness=cfg["gate_tightness"])
     cats = ", ".join(sorted({h["category"] for h in classification["hunks"]}))
 
-    # 1. High-confidence change -> block in tiered/block mode. This is FINISHED code, so the
+    # 1. Blocking-class change (a floor hunk at any confidence, or a non-floor HIGH hunk under
+    #    'focused'; any risky hunk under 'thorough') -> deny. This is FINISHED code, so the
     #    natural review is `audit_coding`; `synthesize_coding` (SYNTH_CONFIRM) also releases a
     #    low-risk floor; `deliberate_coding` is accepted for a still-open design. All three write
     #    a receipt the server now reads at the write gate (covered / unlocked).
@@ -156,14 +161,20 @@ def main():
         # It forwards the fire's floor hunk hashes as `target_hunk_hashes` (Option B) so coverage
         # binds deterministically even if the write gate's diff shape differs from the agent's.
         floor_hashes = [h["content_hash"] for h in classification.get("hunks", [])
-                        if h.get("content_hash") and is_hard_floor(h.get("category"))]
+                        if h.get("content_hash") and is_hard_floor(h.get("category"))
+                        and not floor_exempt(h.get("category"), h.get("path_class"))]
         if floor_hashes:
             hh_line = "  target_hunk_hashes = %s\n" % json.dumps(floor_hashes)
             g.emit_deny(
                 f"TruVerifAI flagged a {cats} change (a floor class: auth / secrets / money / "
-                "migration / removed-guard). Run a quick review to release the gate — either:\n"
-                "  • `audit_coding` — a PASS releases it, or\n"
-                "  • `synthesize_coding` — a passing SYNTH_CONFIRM releases it (a fast ~15-30s check).\n"
+                "migrations / removed-guard).\n"
+                + g.transparency_block(classification, resp) +
+                "Match the tool to your situation to release the gate:\n"
+                "  • A GENUINE floor change you want reviewed → `audit_coding` — a PASS releases it "
+                "(the recommended review), or\n"
+                "  • You believe the gate MIS-FIRED (a false positive) → `confirm_floor` (a FREE "
+                "one-model check) or `synthesize_coding` (~15-30s) — each releases the gate only if "
+                "it agrees the change isn't actually risky.\n"
                 "Pass to whichever you run:\n"
                 f'  gate_repo = "{repo}"\n'
                 "  gate_diff = the change you're about to write\n"
@@ -177,6 +188,12 @@ def main():
                 "`record_gate_skip(review_deferred_to_commit, gate_context_id)` to defer to commit "
                 "— both release this floor WRITE, and the commit gate re-audits the floor hunk on "
                 "the real staged bytes before it ships.\n"
+                "LAST RESORT — only after the paths above genuinely don't fit (the gate mis-fired, "
+                "you're deadlocked, or you're consciously shipping un-reviewed): "
+                "`record_gate_skip(accept_risk_no_review, gate_context_id, reason_text=<pre-mortem>)`. "
+                "It ships this UN-reviewed and logs an accountable OVERRIDE "
+                "to the human (NOT a review); it needs a substantive pre-mortem (assume it IS a real "
+                "issue — name the failure, who it affects, why it's acceptable) and expires in minutes.\n"
                 + g.gate_signal_line(classification)
             )
         # F2 (single-call model): emit the deterministic hash token on EVERY deny (the floor
@@ -188,6 +205,7 @@ def main():
         thh_line = ("  target_hunk_hashes = %s\n" % json.dumps(all_hashes)) if all_hashes else ""
         g.emit_deny(
             f"TruVerifAI flagged a {cats} change worth a review before it ships.\n"
+            + g.transparency_block(classification, resp) +
             "This is finished code, so the natural review is `audit_coding` — run it ONCE with your "
             "proposed_action, AND pass:\n"
             f'  gate_repo = "{repo}"\n'
@@ -233,9 +251,10 @@ def main():
             g.emit_deny(
                 f"TruVerifAI flagged a borderline-consequential {cats} change — worth a "
                 "fast second opinion before building on it.\n"
-                "Run `synthesize_coding` (a ~15-30s second opinion; on a FLOOR-class change a "
-                "passing SYNTH_CONFIRM releases the gate), OR `audit_coding` (a PASS releases any "
-                "change), OR record a one-line skip with a reason (`record_gate_skip`), AND pass:\n"
+                + g.transparency_block(classification, resp) +
+                "Get a fast second opinion with `synthesize_coding` (~15-30s), then release by "
+                "recording a one-line skip (`record_gate_skip`). Or run `audit_coding` — a PASS "
+                "releases the gate directly. Pass:\n"
                 f'  gate_repo = "{repo}"\n'
                 "  gate_diff = the change you're about to write\n"
                 f'  gate_session_id = "{session_id or ""}"\n'
@@ -279,7 +298,8 @@ def main():
             )
         g.emit_allow()
 
-    # 3. High-confidence but non-blocking (deliberate_mode=advisory) -> deliberate nudge.
+    # 3. Non-blocking under the active gate_tightness (a non-floor low-confidence change under
+    #    'focused', or a proactive-consulted downgrade) -> deliberate nudge.
     if action == "advise":
         g.emit_allow(
             f"consider `deliberate_coding` for this {cats} change (advisory — not blocking)."

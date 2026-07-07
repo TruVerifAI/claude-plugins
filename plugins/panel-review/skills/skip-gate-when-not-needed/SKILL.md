@@ -53,15 +53,17 @@ much higher than ~15s–5min of review.
      `generated_or_vendored_code`, `test_or_docs_only`, `time_critical_hotfix`,
      `disagree_with_classification`, `tool_unavailable`, `other` — plus the two
      **single-call** outcomes: `recommendations_applied` (you ran ONE review and applied
-     its findings) and `review_deferred_to_commit` (defer a batch to the commit gate). See
-     "The single-call model" below. (Not a skip: `prior_pass_receipt_match` — a real prior
-     audit PASS releases automatically; it's denied as a skip reason. Don't use the
-     deprecated `already_reviewed_this_session`.)
-   - `reason_text` — REQUIRED for `other` and `disagree_with_classification`, **and for the
-     judgment codes (`false_positive_not_risky`, `trivial_change`,
-     `reviewed_outside_truverifai`, `time_critical_hotfix`) at the write/commit gates**;
-     a 1-sentence reason. General terms only — no secrets, file paths, or proprietary
-     identifiers (same privacy rule as `record_outcome`).
+     its findings) and `review_deferred_to_commit` (defer a batch to the commit gate) — and
+     `accept_risk_no_review`, the last-resort floor override (ships the change un-reviewed;
+     see "Floor classes" below). See "The single-call model" below. (Not a skip:
+     `prior_pass_receipt_match` — a real prior audit PASS releases automatically; it's denied
+     as a skip reason. Don't use the deprecated `already_reviewed_this_session`.)
+   - `reason_text` — REQUIRED for `other`, `disagree_with_classification`, and
+     `accept_risk_no_review` (a substantive pre-mortem), **and for the judgment codes
+     (`false_positive_not_risky`, `trivial_change`, `reviewed_outside_truverifai`,
+     `time_critical_hotfix`) at the write/commit gates**; a 1-sentence reason. General terms
+     only — no secrets, file paths, or proprietary identifiers (same privacy rule as
+     `record_outcome`).
    - `gate_context_id` — **preferred**, when the gate printed one. **Copy it verbatim.**
      When you pass it, omit `hunk_hashes`/`area` (the server uses its own recorded
      evidence). A `gate_context_id` is single-use and short-lived: if it's expired or
@@ -119,17 +121,31 @@ the **commit gate** they're denied — a shipping floor hunk needs a real PASS t
 unrelated review does NOT release a floor change** (the `recent_pass` valve is floor-scoped) — it
 needs its own review.
 
-To release a floor change, run a real review and forward the `gate_context_id` the gate printed
-(coverage then binds to the gate's own hunks, so a cosmetically drifted `gate_diff` still releases);
-on a **write-gate floor block** also forward the `target_hunk_hashes = [...]` line so coverage binds
-deterministically to exactly those hunks. A `Write`/`Edit` is finished code, so `audit_coding` is
-its natural review; `deliberate_coding` is only for a still-open design.
-- **Already decided →** run `audit_coding` (`gate_repo` / `gate_diff` / `gate_context_id`, plus
-  `target_hunk_hashes` on a write-gate floor block); a PASS releases it.
-- **Genuine false positive →** run `synthesize_coding` (same args; ~15–30s). If the panel agrees
-  it's low-risk it mints a **SYNTH_CONFIRM** that releases the floor gate — no full audit.
+To release a floor change, **match the tool to your situation** and forward the `gate_context_id` the
+gate printed (coverage then binds to the gate's own hunks, so a cosmetically drifted `gate_diff` still
+releases); on a **write-gate floor block** also forward the `target_hunk_hashes = [...]` line so
+coverage binds deterministically to exactly those hunks.
+- **A genuine floor change you want reviewed → `audit_coding`** (same args); a PASS releases it. This
+  is the **recommended** path for a real auth/secrets/money/migration/guard change. (`deliberate_coding`
+  is only for a still-open design; it does not release a floor change.)
+- **You believe the gate mis-fired (a false positive — an auth word in a comment, a rename, a test
+  fixture) → `confirm_floor` (FREE).** Run `confirm_floor` (`gate_repo` / `gate_diff` /
+  `gate_context_id`, plus `target_hunk_hashes` on a write-gate floor block). It runs ONE cheap model;
+  if it agrees the change is token-shape noise it releases the gate. Material / uncertain / gate-self /
+  non-floor → it releases nothing (run `audit_coding`). For a broader multi-model read, run
+  `synthesize_coding` (same args; ~15–30s) — it releases only if the panel agrees it's low-risk.
 - **Tool down + sustained outage →** the gate prompts a **human** to approve; you can't skip past
-  it. Follow the path the deny message names instead of retrying the skip.
+  it. Follow the path the deny message names instead of retrying the skip. (Best-effort in
+  automation: in a non-interactive context — `bypassPermissions` / `dontAsk` / headless `-p` —
+  Claude Code auto-proceeds the prompt with no human; every prompt is logged with the raw
+  `permission_mode` so the dashboard labels it honestly.)
+- **Last resort — only after the real paths above genuinely don't fit** (the gate mis-fired, you're deadlocked, or you're consciously shipping un-reviewed) **→** `record_gate_skip(accept_risk_no_review,
+  gate_context_id, reason_text=<pre-mortem>)`. The one judgment-style code that releases a floor
+  block — but it's an accountable **override**, not a review: it ships the floor hunk un-reviewed,
+  releases at **both** gates, requires a **substantive pre-mortem** (assume it IS a real issue: name
+  the failure, who it affects, why it's acceptable), is bound to this one fire and expires in
+  minutes, and lands a distinct override row for the human + feeds calibration. Never releases
+  gate-self. Use it only when none of the real paths above fit — not to save time on a genuine change.
 
 A reason code can also be **suspended** for a repo (calibration, off by default) if its skips keep
 preceding real findings — a suspended skip is denied and you run the review.
@@ -147,6 +163,10 @@ is denied.
   and hasn't been reviewed → **run `audit_coding` / `deliberate_coding` instead.**
 - You're skipping to save time or because you feel confident → not a valid reason.
 - No gate fired → there's nothing to release.
+
+**`git commit --no-verify` won't help** — these gates are Claude Code **PreToolUse** hooks, not git
+`pre-commit` hooks, so `--no-verify` never reaches them. Release the gate the real way (a review or
+`record_gate_skip`), not with `--no-verify`.
 
 ## Why this matters
 

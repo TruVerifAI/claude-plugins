@@ -88,10 +88,11 @@ A **PASS-level action** (`proceed` / `proceed_with_caveats` — i.e. a verdict o
 `approve_with_caveats` with no finding that tightened the action) releases the gate on retry. (A
 critical finding can floor an `approve` verdict to `escalate_to_human`, which does not release.) On a
 **floor class**
-(auth / secrets / money / migration / removed-guard) a judgment `record_gate_skip` is **denied**, so
-the only **review-based** releases are this audit or a `synthesize_coding` SYNTH_CONFIRM (for a
-genuine false positive — cheaper, ~15–30s); under a sustained review-tool outage the gate asks a
-human. (After you run ONE review, `record_gate_skip(recommendations_applied)` — findings applied — or
+(auth / secrets / money / migrations / removed-guard) a judgment `record_gate_skip` is **denied**.
+For a genuine floor change, this `audit_coding` PASS is the recommended release. If you instead
+believe the gate mis-fired, a free `confirm_floor` (or a `synthesize_coding` SYNTH_CONFIRM, ~15–30s)
+clears it — but only if the model agrees the change isn't actually risky. Under a sustained
+review-tool outage the gate asks a human. (After you run ONE review, `record_gate_skip(recommendations_applied)` — findings applied — or
 `review_deferred_to_commit` — a batch — also release a floor **write**, but the floor is re-audited
 at commit.)
 
@@ -103,6 +104,6 @@ at commit.)
 
 ## Do not skip
 
-The "small diff" / "the contract is specified" / "I'm confident" framings are the failure mode this skill exists to prevent. Empirically, multi-model audits catch ship-blocking issues precisely on the diffs that feel obvious — the project that built this MCP server has multiple commit-shipped regressions caught only by retroactive audit_coding calls.
+The "small diff" / "the contract is specified" / "I'm confident" framings are the failure mode this skill exists to prevent. Empirically, multi-model audits catch ship-blocking issues precisely on the diffs that feel obvious — on the project that built this MCP server, retroactive audit_coding calls caught multiple regressions that had already shipped in commits.
 
 Cost of being wrong: a customer-facing regression you have to ship a hotfix for. Run the audit even when you think it won't add value.

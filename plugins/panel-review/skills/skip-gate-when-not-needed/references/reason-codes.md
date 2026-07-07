@@ -1,10 +1,9 @@
 # `record_gate_skip` reason codes
 
-Pick the closest single fit. `reason_text` is required for `other` and
-`disagree_with_classification` — **and for the judgment codes (`false_positive_not_risky`,
-`trivial_change`, `reviewed_outside_truverifai`, `time_critical_hotfix`) at the
-write and commit gates** (the fast borderline/synthesize tier is exempt). It's welcome on any code.
-All skips are logged.
+Pick the closest single fit. `reason_text` is required for `other`,
+`disagree_with_classification`, and `accept_risk_no_review` (a substantive pre-mortem) — **and for
+the judgment codes (`false_positive_not_risky`, `trivial_change`, `reviewed_outside_truverifai`,
+`time_critical_hotfix`) at the write and commit gates.** It's welcome on any code. All skips are logged.
 
 | reason_code | Use when | reason_text |
 |---|---|---|
@@ -19,6 +18,7 @@ All skips are logged.
 | `other` | None of the above. | **required** |
 | `recommendations_applied` | You ran ONE review, applied its findings (or a PASS-then-modify re-fired the gate) and want to proceed. Server-verified against a real review. | optional |
 | `review_deferred_to_commit` | Defer a batch of successive risky writes to the commit gate; releases this write + silences the write gate for the session (~1h). | optional |
+| `accept_risk_no_review` | **LAST RESORT on a FLOOR block only** — you've decided to ship the floor change un-reviewed. Logged as an accountable override to the human, not a review; bound to this one fire, expires in minutes. | **required** — a substantive pre-mortem |
 
 ## Floor classes — a judgment skip is **denied**; run a real check
 
@@ -36,24 +36,45 @@ deferring the batch) but are **denied at the commit gate**, where a shipping flo
 real PASS. So a floor change can be applied/deferred while you work, and the commit gate audits it
 on the real staged bytes before it ships — defer *up to* commit, never past it.
 
-To release a floor change you have three real options (the gate's deny message spells them out).
-**This is identical at the commit gate and the write gate** — a `Write`/`Edit` is finished code, so
-`audit_coding` is its natural review, and a `SYNTH_CONFIRM` releases either gate. (`deliberate_coding`
-is only for a still-open design.) Always also pass
-the `gate_context_id` the gate printed (binds coverage to the gate's own hunks); and on a **write gate**
-floor block, also pass the `target_hunk_hashes = [...]` line the gate printed — copy it verbatim so
-coverage binds *deterministically* to exactly those floor hunks:
+### `accept_risk_no_review` — the last-rung floor override
 
-1. **Already decided (the usual case) →** run `audit_coding` with your `proposed_action` +
-   `gate_repo`/`gate_diff`/`gate_context_id` (+ `target_hunk_hashes` on a write-gate floor block);
-   a PASS releases it.
-2. **Genuine low-risk false positive →** run `synthesize_coding` with `gate_repo` + `gate_diff` +
-   `gate_context_id` (+ `target_hunk_hashes` on a write-gate floor block; the diff you're committing
-   or writing). If the panel agrees it's low-risk it mints a **SYNTH_CONFIRM** that releases the gate
-   — cheap (~15–30s), no full audit.
-3. **Review tool down + sustained outage →** the gate prompts a **human** to approve
+`accept_risk_no_review` is the **only judgment-style code that releases a floor block**, and it is
+**not a review** — it's an accountable, logged *override*: you are shipping the floor change
+un-reviewed and accepting responsibility. It is a **genuine last resort** — reach for it only after
+the real paths (`audit_coding`, or `confirm_floor` / `synthesize_coding` for a false positive)
+genuinely don't fit: the gate mis-fired, you're deadlocked, or you're consciously choosing to ship
+un-reviewed. It:
+
+- releases the floor at **both** the write and commit gate (unlike apply/defer, which are write-only),
+- requires a **substantive pre-mortem** `reason_text` (assume it IS a real issue: name the failure,
+  who it affects, why shipping it un-reviewed is acceptable — a one-word "fine" is rejected),
+- is **bound to that one gate fire's floor hunks** and expires in **minutes** (a later edit re-fires
+  the gate and needs a fresh accept-risk),
+- lands a **distinct override row** on the admin dashboard (repo, hunks, your pre-mortem, timestamp)
+  and feeds the skip→incident calibration loop,
+- can **never** release a **gate-self** change (the gate's own files always need a real audit).
+
+To release a floor change *without* accepting un-reviewed risk, **match the tool to your situation**
+(the gate's deny message spells this out). **It works the same at the commit gate and the write gate.**
+Always pass the `gate_context_id` the gate printed (it binds coverage to the gate's own hunks); on a
+**write-gate** floor block, also copy the `target_hunk_hashes = [...]` line verbatim so coverage binds
+*deterministically* to exactly those floor hunks:
+
+- **A genuine floor change you want reviewed →** run `audit_coding` with your `proposed_action` +
+  `gate_repo`/`gate_diff`/`gate_context_id`; a PASS releases it. This is the **recommended** path for a
+  real auth/secrets/money/migration/guard change. (`deliberate_coding` is only for a still-open design;
+  it does **not** release a floor change.)
+- **You believe the gate mis-fired (a false positive — an auth word in a comment, a rename, a test
+  fixture) →** run `confirm_floor` (free, one model) with `gate_repo` + `gate_diff` + `gate_context_id`,
+  or `synthesize_coding` (same args; ~15–30s) for a broader multi-model read. Each releases the gate
+  **only if it agrees the change isn't actually risky**; if it finds the change material, run
+  `audit_coding`.
+- **Review tool down + sustained outage →** the gate prompts a **human** to approve
    (`permissionDecision: "ask"`). You cannot skip a floor change past it, and you cannot approve
-   your own prompt.
+   your own prompt. (This human gate is **best-effort in automation**: in a non-interactive context
+   — `bypassPermissions` / `dontAsk` / headless `-p` — Claude Code auto-proceeds the prompt with no
+   human present. Every prompt is logged with the raw `permission_mode` so the dashboard labels it
+   honestly rather than claiming a human always decided.)
 
 ## A reason code can be **suspended** (Phase 5 calibration)
 
@@ -66,7 +87,7 @@ see it; when you do, it's not an error to report — just run the review.
 
 ## `time_critical_hotfix` records a deferred-review obligation
 
-A `time_critical_hotfix` skip is honored immediately, but it logs an **open obligation** to
+A `time_critical_hotfix` skip proceeds immediately but logs an **open obligation** to
 review the change later. A subsequent `record_gate_skip` in the same repo may surface a
 non-blocking `advisory` reminding you the hotfix still needs a real review; it resolves once a
 later `audit_coding` covers the same hunks. The skip isn't blocked — this is a reminder, not a gate.
