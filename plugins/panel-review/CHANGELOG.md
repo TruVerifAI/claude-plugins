@@ -3,6 +3,27 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/panel-review/.claude-plugin/plugin.json`.
 
+## 0.12.0
+
+**Post-commit backstop.** Catches a floor change (auth / secrets / money / migration /
+removed-guard) that is **created and committed in one shell command** — which slips past both
+pre-commit gates (the write gate only sees Write/Edit tools; the commit gate can't classify a file
+that isn't on disk yet).
+
+- **Post-commit backstop hook (new, non-blocking)** — after a commit, classifies the real committed
+  diff and, on an uncovered floor hunk that shipped without a review, surfaces a non-blocking
+  advisory and logs a dashboard row. It never blocks (it runs after the tool) and never nags twice
+  for the same commit. Registered on both `PostToolUse` and `PostToolUseFailure`, so it also catches
+  a fused commit whose command exits non-zero (e.g. a rejected `git push`).
+- **Isolated pre-commit stash hook (new)** — records the pre-command HEAD so the backstop covers
+  every commit a single command made, with fail-safe guards that degrade to the tip commit when it
+  can't prove ownership. It emits no decision and always exits 0 — it cannot affect the gates.
+- **Dashboards** — an "Unreviewed floor commits" view appears both on your own MCP Usage tab (your
+  rows) and the admin surface (fleet-wide). Privacy: repo fingerprint + floor category labels + hunk
+  count + a pushed flag only — never diffs, paths, command text, or commit SHAs.
+
+No change to the existing commit/write gates.
+
 ## 0.11.0
 
 **Keep the gate installed.** This release accepts a few false positives in exchange for making a

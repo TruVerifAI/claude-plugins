@@ -87,6 +87,17 @@ def config():
     }
 
 
+def precommit_stash_path(session_id):
+    """Session-scoped temp file where the PreToolUse stash hook records the pre-command
+    HEAD, and the post-commit backstop reads it (multi-commit handshake). SINGLE source of
+    the path so both hooks agree by construction. Sanitized session id; overwritten each
+    commit command (self-healing, no accumulation)."""
+    import tempfile
+    safe = "".join(c for c in str(session_id or "nosession") if c.isalnum() or c in "-_")[:80] \
+        or "nosession"
+    return os.path.join(tempfile.gettempdir(), "truverifai_precommit_" + safe)
+
+
 def _resolve_gate_tightness():
     """The active gate_tightness for BOTH gates (Inc 8, Fix 5). Read from its own env var; if that
     is unset, MIGRATE from the retired `deliberate_mode` so an install that still sets the old env
