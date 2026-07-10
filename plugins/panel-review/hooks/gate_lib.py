@@ -21,6 +21,7 @@ import os
 import random
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -517,6 +518,49 @@ def _untracked_diff(cwd, command=""):
             continue  # binary / unreadable / vanished — skip (fail open)
         out.append(synth_write_diff(rel, content))
     return "".join(out)
+
+
+_M1_FETCH_MAX_BYTES = 1_000_000  # M1 two-stage: don't read a pathological file for a co-signal check
+
+
+def file_content_fetcher(cwd):
+    """Return a callable `path -> str | None` for classify_diff's Mechanism-M1 two-stage
+    co-occurrence (e.g. the CI pwn-request floor confirming a pre-existing `pull_request_target`
+    trigger that lives OUTSIDE the diff). The callable reads the file's CURRENT on-disk content
+    relative to `cwd` and returns it, or None on ANY failure (missing / too large / non-UTF-8 /
+    permission / vanished) so the classifier's fail-safe FIRES the floor rather than silently
+    missing it — a failed read must NEVER be mistaken for 'co-signal absent'. Best-effort; the
+    callable never raises. Mirrors the untracked-file read above (Rule 8 — one read pattern).
+
+    Hardening (audit mcp_3aa59d3a): reads are CONFINED to the repo root (realpath + commonpath —
+    a `../` traversal or a symlink that escapes cwd resolves outside base -> None -> fail-safe, never
+    reads e.g. /etc/passwd); only REGULAR files are opened (a named pipe / device -> None, so the
+    PreToolUse hook can't hang on a blocking read); size-capped. `errors="strict"` is tied to the
+    CI-YAML scope this fetcher serves (a non-UTF-8 byte in a workflow is corruption/adversarial ->
+    None -> fail-safe); revisit if the fetched scope ever expands to arbitrary source files (it would
+    then risk fail-safe fatigue). Commit-gate note: reads the WORKING-TREE file, not the staged blob —
+    for a pre-existing unchanged co-signal they're equal; a stage-then-worktree-revert divergence is a
+    documented residual (the backstop compensates). See docs/MCP/Classifier/PHASE3-M1-DESIGN.md."""
+    base = os.path.realpath(cwd or ".")  # realpath (not abspath) so a symlinked cwd stays consistent
+
+    def _fetch(path):
+        try:
+            full = os.path.realpath(os.path.join(base, str(path).replace("/", os.sep)))
+            # Confine to the repo root: a ../ traversal or symlink escape -> outside base -> fail-safe.
+            # commonpath raises on different drives (Windows) -> caught below -> None -> fail-safe.
+            if os.path.commonpath([full, base]) != base:
+                return None
+            st = os.stat(full)
+            if not stat.S_ISREG(st.st_mode):
+                return None  # named pipe / device / directory -> don't open (avoid a blocking read)
+            if st.st_size > _M1_FETCH_MAX_BYTES:
+                return None
+            with open(full, "r", encoding="utf-8", errors="strict") as fh:
+                return fh.read()
+        except Exception:
+            return None  # missing / binary / unreadable / vanished / off-repo -> None -> fail-safe
+
+    return _fetch
 
 
 # Gate self-mutation detection (`is_gate_self_mutation` / `diff_touches_gate_self`)

@@ -56,23 +56,56 @@ FLOOR_CATEGORIES = frozenset({
     "auth_security",       # auth
     "hardcoded_secret",    # secrets
     "secret_material",     # secrets
-    "billing",             # money
-    "migration_schema",    # migration
-    "migration_path",      # migration
+    "billing",             # money — NAMED-SDK ONLY post-Phase-4 (B3): the ambiguous money nouns
+                           #   (charge/invoice/…) moved to the non-floor `financial_custom` advisory;
+                           #   webhook-sig / idempotency-key REMOVAL is added to this floor via the
+                           #   `billing_control_removed` signal. (Fixes the actions/checkout FP.)
     "removed_guard",       # removed-guard
-    "removed_conditional", # removed-guard (SOFT_FLOOR — see below)
+    # --- Phase 2 coverage-expansion floors (v2.7.0). Each is a NEW, distinct category (never an
+    # existing one) so it adds floor surface without re-classifying any current signal:
+    "ci_secret_echo",           # CI secret echoed to logs (echo/printf `${{ secrets.* }}`) — leak
+    "unsafe_deserialization_ml", # ML model deser RCE — joblib.load (CWE-502); torch.load stays advisory (see risk_signals.json)
+    # --- Phase 3 coverage-expansion floors (v2.8.0, Mechanism M1 co-occurrence):
+    "ci_pwn_request",           # GH Actions pwn-request: pull_request_target + untrusted-head checkout
+    "pii_redaction_removed",    # PII masking/redaction call removed and not re-added (refactor-safe)
+    # --- Phase 4 coverage-expansion RE-CATEGORIZATIONS (v2.9.0, Batch B — the one phase that changes
+    # existing floor contracts; deliberated mcp_4b23ca82 + owner sign-off 2026-07-09, PHASE4-DESIGN.md):
+    "migration_destructive",    # B2: DESTRUCTIVE-only migration (DROP TABLE/COLUMN, TRUNCATE, DROP
+                                #   INDEX, FK/constraint drop, downgrade() removal, proto required-field
+                                #   removal). ADDITIVE migrations → the non-floor `migration_additive`
+                                #   advisory; migration_path DROPPED to non-floor. Replaces the old
+                                #   all-migrations `migration_schema` / `migration_path` floor.
+    "iac_exposure",             # B4: sharp public-exposure IaC literals (0.0.0.0/0, Action/Principal:*,
+                                #   public-read, privileged:true, runAsUser:0) PROMOTED non-floor→floor.
+    # --- Phase 5a coverage-expansion floor (v2.10.0, Mechanism M2; deliberated mcp_98973ec2 + owner
+    # sign-off 2026-07-09, PHASE5A-M2-DESIGN.md):
+    "memory_safety",            # self-precise C memory-corruption sinks (gets/strcpy/strcat — gets was
+                                #   removed from C11 for having no safe use). PATH-UNCONDITIONAL BY
+                                #   INVARIANT: a floor is NEVER path-gated (the loader forbids it) — the
+                                #   self-precise patterns barely FP cross-language, and path-gating a
+                                #   floor would be a silent bypass. M2 arms only the non-floor C-memory
+                                #   ADVISORY (ffi_unsafe_c_memory); the floor fires everywhere.
+    # --- Phase 5b coverage-expansion floor (v2.11.0; deliberated mcp_c2e4e9cd + owner sign-off 2026-07-09):
+    "tls_pinning_removed",      # C4: TLS cert-pinning removed / arbitrary-loads bypass added — SELF-PRECISE
+                                #   vendor tokens ONLY (CertificatePinner, NSAllowsArbitraryLoads,
+                                #   TrustAllHostnameVerifier, ...), PATH-UNCONDITIONAL. Bare `pinning`/
+                                #   `sslPinning` (which collide with UI/version/thread pinning) are EXCLUDED
+                                #   from the floor. Directional: fire on enforcer-REMOVAL or bypass-ADDITION.
 })
 
-# SOFT_FLOOR: a floor category that can only fire at LOW confidence — `removed_conditional` is
-# produced solely by the weight-10 borderline signal `removed_generic_conditional`, so it can
-# NEVER reach HIGH. It STAYS a floor class (it's the weak-signal guard-removal defense-in-depth;
-# `removed_guard` is the strong signal): under gate_tightness 'thorough' it blocks + needs a real
-# review, and its full floor enforcement (no recent_pass / judgment-skip release) is preserved.
-# But "floor always blocks at LOW" would be incoherent under 'focused' (a generic conditional
-# removal is usually noise), so SOFT_FLOOR makes it ADVISORY under 'focused' only. This is the
-# PERMANENT solution — the owner (2026-07-01) chose to KEEP it here rather than demote it out of
-# FLOOR_CATEGORIES, which would have weakened thorough-mode guard-removal protection (F-002 closed).
-SOFT_FLOOR = frozenset({"removed_conditional"})
+# SOFT_FLOOR: a floor category that can only fire at LOW confidence — blocks under 'thorough' with
+# full floor enforcement (no recent_pass / judgment-skip release), ADVISORY under 'focused'.
+#
+# As of Phase 4 (v2.9.0, Batch B / B1) the sole former member `removed_conditional` was FOLDED OUT of
+# the floor set entirely (deliberated mcp_4b23ca82 + owner sign-off 2026-07-09): a bare removed
+# conditional is now a plain non-floor advisory (still surfaced via `removed_generic_conditional`), and
+# the sink-ADJACENT guard-removal case is covered by the (Phase-4-BROADENED) strong `removed_safety_control`
+# signal (category `removed_guard`, now matching payment/secret/critical-state sinks on the removed `if`
+# line, not just auth). This SUPERSEDES the 2026-07-01 gate-tightness decision that KEPT it here — the
+# broadened strong signal gives more comprehensive sink-adjacent protection than the blunt soft-floor did,
+# while a bare generic conditional removal no longer floors under thorough. SOFT_FLOOR is retained as an
+# (empty) mechanism so the soft-floor code paths stay available for a future member.
+SOFT_FLOOR = frozenset()
 
 # Categories whose matched span IS a secret value — the Fix 2A transparency line reports the
 # category + line number for these but NEVER echoes the matched token (it would print the secret
@@ -105,8 +138,29 @@ def is_hard_floor(category) -> bool:
 # enforcement until someone opts it into the exemption). Enforced ⊆ FLOOR_CATEGORIES and
 # secret-free by test_pa_path_floor.
 _FLOOR_EXEMPT_TEST_DOCS = frozenset({
-    "auth_security", "billing", "migration_schema", "migration_path",
-    "removed_guard", "removed_conditional",
+    "auth_security", "billing",
+    "removed_guard",
+    # Phase 2 (v2.7.0): a joblib.load in a tests/ fixture load is not a prod regression — exempt
+    # (owner ruling 2026-07-08). NOTE ci_secret_echo is deliberately NOT here: .github/workflows/*
+    # classifies as test_or_docs, so exempting it would defeat the floor in the files it targets
+    # (advisor 2026-07-08) — it follows the secrets precedent and stays a hard floor everywhere.
+    "unsafe_deserialization_ml",
+    # Phase 3 (v2.8.0): a masking-call removal in a test fixture is not a prod PII leak — exempt
+    # (like auth/billing/unsafe_deser; NOT secret-adjacent). ci_pwn_request is deliberately NOT
+    # here (same reason as ci_secret_echo: .github/workflows/* is test_or_docs — exempting defeats it).
+    "pii_redaction_removed",
+    # Phase 4 (v2.9.0, Batch B): migration_schema/migration_path REPLACED by migration_destructive —
+    # a DROP TABLE in a test fixture is test scaffolding, not a prod regression, so it stays exempt like
+    # the old migration floor did; removed_conditional dropped (no longer a floor). iac_exposure exempt
+    # (B4, unanimous deliberation mcp_4b23ca82): a K8s/Terraform misconfig in a test FIXTURE is not
+    # shipped infra — same logic as auth/billing. (A `0.0.0.0/0` in a README doesn't fire at all — the
+    # prose exclusion already skips non-auto content signals on .md/.rst/.txt, so no exempt entry needed.)
+    "migration_destructive",
+    "iac_exposure",
+    # Phase 5a (v2.10.0): a gets/strcpy/strcat in a test FIXTURE is scaffolding, not shipped C — exempt
+    # like auth/billing/migration (the test_path suppressor also demotes it). The floor still fires
+    # everywhere on a SOURCE path (path-unconditional); exemption is a path_class check, not a path_gate.
+    "memory_safety",
 })
 
 
@@ -173,6 +227,72 @@ def _compile_config(cfg):
             warnings.warn("risk_classifier: auto_trigger ignored on non-trigger signal %r "
                           "(class=%r)" % (s.get("name"), s.get("class")))
             auto = False
+        # --- Mechanism M1 (co-occurrence). A signal may carry AT MOST ONE of:
+        #   all_of        : [[pat,...], [pat,...]] — AND-of-pattern-groups (OR within a group);
+        #                   the signal fires only when EVERY group matches (partial => 0 weight).
+        #                   Two-stage: if the diff satisfies some groups, the rest are checked
+        #                   against the whole file via an injected file_content_fetcher.
+        #   and_not_added : true (only on match:"removed") — fires when a removed line matches
+        #                   `patterns` AND no added line ANYWHERE in the same file re-adds it.
+        # These are resolved by the file-aware _resolve_m1_signals pass, NOT the per-hunk loop,
+        # so legacy per-hunk scoring is byte-identical. Loader assertions below hard-fail a
+        # misconfig (caught by the module-level fail-open wrapper -> loud warning + empty config).
+        all_of_raw = s.get("all_of")
+        and_not_added = bool(s.get("and_not_added", False))
+        if all_of_raw is not None:
+            if s.get("skeleton_match") or s.get("value_filter_patterns"):
+                raise ValueError(
+                    "risk_classifier: signal %r: all_of is incompatible with skeleton_match / "
+                    "value_filter_patterns (index-based modifiers don't map onto all_of groups)"
+                    % s.get("name"))
+            if s.get("patterns"):
+                raise ValueError(
+                    "risk_classifier: signal %r: all_of replaces patterns[]; do not set both"
+                    % s.get("name"))
+            if not all_of_raw or not all(g for g in all_of_raw):
+                raise ValueError(
+                    "risk_classifier: signal %r: all_of must be a non-empty list of non-empty "
+                    "pattern groups" % s.get("name"))
+        if and_not_added:
+            if all_of_raw is not None:
+                raise ValueError("risk_classifier: signal %r: and_not_added and all_of are "
+                                 "mutually exclusive" % s.get("name"))
+            if s.get("match") != "removed":
+                raise ValueError("risk_classifier: signal %r: and_not_added is only valid on a "
+                                 "match:\"removed\" signal" % s.get("name"))
+        # --- Mechanism M2 (path-gate). A content signal may carry `path_gate: [regex, ...]` — an
+        # ALLOW-LIST matched against the hunk's file PATH (via _path_match, forward-slash-normalized).
+        # The signal's patterns then score ONLY on a hunk whose path matches >=1 gate; absent =>
+        # path-unconditional (byte-identical to today). M2's job is FP-management for ADVISORIES only.
+        # THREE loader assertions (deliberated mcp_98973ec2 + owner sign-off 2026-07-09):
+        #   (a) path_gate is incoherent on a match:"path" signal (it already matches on the path);
+        #   (b) *** THE HARD INVARIANT: a FLOOR-category signal may NEVER carry path_gate ***. Path-
+        #       gating a floor is a silent bypass — the same `strcpy(` in a file the gate doesn't
+        #       recognize (.inc/.go.tmpl/extensionless) wouldn't floor. Self-precise patterns floor
+        #       UNCONDITIONALLY; only advisories get path-gated. If a floor is too noisy to fire
+        #       unconditionally, the fix is DEMOTE-to-advisory (a FLOOR_CATEGORIES edit), not path-gate.
+        #   (c) path_gate is scoped OUT of the M1 primitives (all_of/and_not_added) for v1 — the
+        #       interaction isn't needed yet (the M1 pass is file-aware; revisit when a signal requires it).
+        # NOTE on authoring: a path_gate regex MUST be END-OF-STRING anchored (`\.c$`, not `\.c` which
+        # also matches `.css`/`.c.orig`) — enforced by tests (multi-dot / Windows / extensionless), not
+        # the loader (a generic "is anchored" check isn't reliable).
+        path_gate_raw = s.get("path_gate")
+        if path_gate_raw is not None:
+            if s.get("match", "added") == "path":
+                raise ValueError("risk_classifier: signal %r: path_gate is incoherent on a "
+                                 "match:\"path\" signal (it already matches on the path)"
+                                 % s.get("name"))
+            if s["category"] in FLOOR_CATEGORIES:
+                raise ValueError(
+                    "risk_classifier: signal %r: path_gate is FORBIDDEN on a FLOOR category (%r) — "
+                    "floors must be path-unconditional (a path-gated floor is a silent bypass). "
+                    "Demote to a non-floor category if it must be path-scoped." % (s.get("name"), s["category"]))
+            if all_of_raw is not None or and_not_added:
+                raise ValueError("risk_classifier: signal %r: path_gate is not supported with the M1 "
+                                 "primitives (all_of / and_not_added) in v1" % s.get("name"))
+            if not path_gate_raw or not all(isinstance(p, str) for p in path_gate_raw):
+                raise ValueError("risk_classifier: signal %r: path_gate must be a non-empty list of "
+                                 "regex strings" % s.get("name"))
         signals.append({
             "name": s["name"],
             "cls": s["class"],
@@ -180,7 +300,17 @@ def _compile_config(cfg):
             "weight": int(s["weight"]),
             "auto": auto,
             "match": s.get("match", "added"),
-            "patterns": [re.compile(p) for p in s["patterns"]],
+            "patterns": [re.compile(p) for p in s.get("patterns", [])],
+            # M1 co-occurrence groups (each group = list of compiled patterns), or [] for a
+            # legacy signal. `and_not_added` is the removed-and-not-re-added flag. `is_m1` marks
+            # a signal handled by the file-aware pass and SKIPPED by the legacy per-hunk loop.
+            "all_of": [[re.compile(p) for p in group] for group in (all_of_raw or [])],
+            "and_not_added": and_not_added,
+            "is_m1": bool(all_of_raw is not None or and_not_added),
+            # M2 path-gate: compiled allow-list of path regexes, or [] for a path-unconditional
+            # signal. A non-empty list arms the signal ONLY on a matching hunk path (checked via
+            # _path_match in _classify_hunk before the signal's patterns run).
+            "path_gate": [re.compile(p) for p in (path_gate_raw or [])],
             # Pattern indices that match against the comment/string-stripped "code
             # skeleton" of a line instead of the raw line (design §4 precision pass):
             # a bare keyword inside prose / JSX text / a string literal / a comment is
@@ -210,6 +340,12 @@ def _compile_config(cfg):
         # hot path skip the (regex-heavy) skeleton build entirely when no signal
         # needs it (and keeps the fail-open empty config zero-cost).
         "has_skeleton": any(sig["skeleton_match"] for sig in signals),
+        # True iff any signal is an M1 co-occurrence signal — lets classify_diff skip the
+        # file-aware M1 pass entirely when none exist (zero cost; regression stays byte-identical).
+        "has_m1": any(sig["is_m1"] for sig in signals),
+        # True iff any signal carries an M2 path_gate — lets _classify_hunk skip the per-signal
+        # path-gate check entirely when none exist (zero cost; regression stays byte-identical).
+        "has_path_gate": any(sig["path_gate"] for sig in signals),
         "trigger": int(th["trigger"]),
         "borderline_low": int(th["borderline_low"]),
         "version": cfg.get("version", "2"),
@@ -899,6 +1035,17 @@ def _skeletonize(lines, is_jsx):
     return out
 
 
+def _any_match_lines(compiled_patterns, lines):
+    """True if any compiled pattern matches any line. M1 helper — M1 signals (all_of /
+    and_not_added) match RAW lines only (the loader forbids skeleton_match/value_filter on them),
+    so this is a plain OR scan with no skeleton/value-filter branch."""
+    for pat in compiled_patterns:
+        for ln in lines:
+            if pat.search(ln):
+                return True
+    return False
+
+
 def _signal_hit(patterns, skeleton_idx, value_filter_idx, raw_lines, sk_lines):
     """True if any of `patterns` matches. A pattern whose index is in
     `skeleton_idx` matches against `sk_lines` (the code skeleton); all others
@@ -923,6 +1070,20 @@ def _signal_first_match(signal, path, added, removed, sk_added, sk_removed):
     to build the LOCAL deny message; it is NEVER added to the coverage POST (_hunk_evidence
     sends hashes only). Mirrors _signal_hit's skeleton/value-filter logic so the reported span
     is the one that actually fired."""
+    # M1 signals (all_of / and_not_added) fire via the file-aware pass, not patterns[]/skeleton —
+    # report the first co-occurrence match on the signal's match side so the deny line points at
+    # real code (Rule 8: mirror the firing logic). all_of => first match of any group; and_not_added
+    # => first match of the removed alternation (which lives in patterns[]).
+    if signal.get("is_m1"):
+        lines = removed if signal["match"] == "removed" else added
+        groups = signal["all_of"] if signal["all_of"] else [signal["patterns"]]
+        for group in groups:
+            for pat in group:
+                for idx, ln in enumerate(lines):
+                    hit = pat.search(ln)
+                    if hit:
+                        return (hit.group(0), idx + 1)
+        return (None, None)
     m = signal["match"]
     if m == "path":
         for pat in signal["patterns"]:
@@ -945,8 +1106,111 @@ def _signal_first_match(signal, path, added, removed, sk_added, sk_removed):
     return (None, None)
 
 
-def _classify_hunk(path, added, removed, trigger_threshold=None):
+def _resolve_m1_signals(parsed_hunks, file_content_fetcher=None):
+    """Mechanism-M1 file-aware pass. Determines which M1 signals (all_of / and_not_added) fire and
+    on WHICH hunk index. Returns (fires, failsafe_names) where fires = {hunk_index: [signal, ...]}.
+    The returned fires are merged into that hunk's verdict as ordinary trigger-class signals, so
+    scoring / hashing / floor-derivation all reuse the existing per-hunk path.
+
+    `parsed_hunks` is the materialized list of (path, added, removed, structural) tuples.
+
+    - **and_not_added** (match:"removed"): fires on a hunk whose REMOVED lines match `patterns`,
+      UNLESS an equivalent is re-added anywhere in the SAME FILE's added lines (patch-wide union
+      across all the file's hunks — zero extra I/O). Closes the cross-hunk mask-MOVE false-floor.
+    - **all_of**: fires when EVERY group matches across (the file's diff match-side lines) ∪ (the
+      fetched file), AND the DIFF itself contributes >=1 group. The diff-contribution requirement
+      is load-bearing: without it, editing an UNRELATED line in a file that already contains a
+      pre-existing co-occurrence (e.g. a workflow that already has both a pwn trigger and an
+      untrusted checkout) would falsely floor. If some groups are satisfied only OUTSIDE the diff
+      and a `file_content_fetcher` is provided, the file is fetched ONCE per path to confirm. If no
+      fetcher is available and the diff alone can't confirm, the signal FIRES conservatively
+      (fail-safe — never silently drop a floor) and its name is returned in failsafe_names.
+      Attribution: the first hunk whose match-side lines match a diff-satisfied group.
+    """
+    m1_signals = [s for s in _CFG["signals"] if s.get("is_m1")]
+    if not m1_signals:
+        return {}, []
+    fires = {}
+    failsafe_names = []
+    by_path = {}
+    for i, (path, _a, _r, _hr) in enumerate(parsed_hunks):
+        by_path.setdefault(path, []).append(i)
+
+    for path, idxs in by_path.items():
+        file_added = [ln for i in idxs for ln in parsed_hunks[i][1]]
+        file_removed = [ln for i in idxs for ln in parsed_hunks[i][2]]
+        fetched = None       # None = not fetched yet; a list once a read SUCCEEDS (may be empty)
+        fetch_failed = False  # True once a read raised or returned None -> route to fail-safe
+
+        for s in m1_signals:
+            if s["and_not_added"]:
+                pats = s["patterns"]
+                if _any_match_lines(pats, file_added):
+                    continue  # equivalent re-added somewhere in the file -> refactor, not removal
+                for i in idxs:
+                    if _any_match_lines(pats, parsed_hunks[i][2]):
+                        fires.setdefault(i, []).append(s)
+                continue
+
+            groups = s["all_of"]
+            match_added = (s["match"] != "removed")
+            diff_corpus = file_added if match_added else file_removed
+            diff_hits = [_any_match_lines(g, diff_corpus) for g in groups]
+            if not any(diff_hits):
+                continue  # the change contributes none of the groups
+            # EVERY hunk that contributed a diff-satisfied group carries the floor (audit F-001).
+            # Attribution binds receipt/release by content_hash, so attaching to ALL contributors
+            # (not just the first) means any contributing hunk's review covers the floor and both
+            # halves of a split co-occurrence stay reviewable — the least-surprising, auditable rule.
+            contributors = [
+                i for i in idxs
+                if any(diff_hits[gi] and _any_match_lines(
+                        groups[gi], parsed_hunks[i][1] if match_added else parsed_hunks[i][2])
+                       for gi in range(len(groups)))]
+            if not contributors:
+                continue  # defensive (any(diff_hits) implies >=1 contributor)
+            if all(diff_hits):
+                for i in contributors:  # fully satisfied by the diff
+                    fires.setdefault(i, []).append(s)
+                continue
+            missing = [g for g, hit in zip(groups, diff_hits) if not hit]
+            # Lazily read the file ONCE per path (cache scoped to THIS classify_diff call — audit
+            # F-006). The fetcher contract (audit F-002): return the file's CURRENT on-disk content
+            # (a str, possibly "") on SUCCESS, or None / raise on FAILURE — never a stale/cached
+            # version. A clean read that simply lacks the co-signal is a genuine "not a
+            # co-occurrence" -> no fire. A FAILED read must NOT be mistaken for that (else a floor
+            # silently vanishes on a file we couldn't read — the dangerous direction) -> it routes
+            # to the fail-safe below, same as no fetcher.
+            if file_content_fetcher is not None and fetched is None and not fetch_failed:
+                try:
+                    raw = file_content_fetcher(path)
+                except Exception:
+                    raw = None
+                if raw is None:
+                    fetch_failed = True
+                else:
+                    fetched = raw.splitlines()
+            if file_content_fetcher is not None and not fetch_failed:
+                if all(_any_match_lines(g, fetched) for g in missing):
+                    for i in contributors:
+                        fires.setdefault(i, []).append(s)
+                # clean read, co-signal genuinely absent -> not a real co-occurrence -> no fire
+            else:
+                # FAIL-SAFE (owner-approved): no fetcher, OR the read failed -> can't confirm ->
+                # fire conservatively (never silently drop a floor) and surface the name.
+                for i in contributors:
+                    fires.setdefault(i, []).append(s)
+                failsafe_names.append(s["name"])
+    return fires, failsafe_names
+
+
+def _classify_hunk(path, added, removed, trigger_threshold=None, extra_fired=None):
     """Return a per-hunk verdict dict, or None if not risky.
+
+    `extra_fired` (Mechanism M1): trigger-class signals resolved by the file-aware
+    _resolve_m1_signals pass that fire on THIS hunk. Merged into `fired` after the legacy per-hunk
+    loop, so they score/hash/floor via the same path. None/empty => byte-identical to the pre-M1
+    engine (the regression invariant). M1 signals are SKIPPED by the legacy loop below.
 
     `trigger_threshold` overrides _CFG["trigger"] for this call (the floor-bounded
     user override, F-011 — clamped by the caller in gate_lib; the engine just honors
@@ -976,10 +1240,21 @@ def _classify_hunk(path, added, removed, trigger_threshold=None):
 
     fired = []
     for s in _CFG["signals"]:
+        # M1 signals (all_of / and_not_added) are resolved by the file-aware _resolve_m1_signals
+        # pass and merged via `extra_fired` below — never by this per-hunk loop. Skipping them here
+        # is what keeps legacy scoring byte-identical.
+        if s.get("is_m1"):
+            continue
         # Prose path: skip CONTENT-keyword signals; keep path-role + auto-trigger (secret
         # value) signals so requirements.txt still fires (dependency) and a leaked key in a
         # README still fires (auto_trigger), but "the docs mention auth" does not.
         if prose and s["match"] != "path" and not s["auto"]:
+            continue
+        # M2 path-gate: a signal armed with path_gate scores ONLY on a hunk whose path matches the
+        # allow-list. A None/unmatched path skips it (safe — path_gate is only on ADVISORIES by the
+        # loader's floor-forbid invariant, so a skipped path-gated signal can never silence a floor).
+        # Inert when no signal carries path_gate (has_path_gate False).
+        if s["path_gate"] and not _path_match(s["path_gate"], path):
             continue
         m = s["match"]
         if m == "path":
@@ -992,6 +1267,12 @@ def _classify_hunk(path, added, removed, trigger_threshold=None):
                               s["value_filter_patterns"], added, sk_added)
         if hit:
             fired.append(s)
+
+    # Merge Mechanism-M1 fires (from the file-aware _resolve_m1_signals pass) into this hunk's
+    # fired set — they then score/hash/floor via the same path below. M1 signals are content
+    # signals, so on a prose path they're dropped, consistent with the prose exclusion above.
+    if extra_fired and not prose:
+        fired.extend(extra_fired)
 
     fired_names = {s["name"] for s in fired}
     # Double-count guard (design §4.1): a removed line that matches a real risk pattern is
@@ -1101,7 +1382,7 @@ def _classify_hunk(path, added, removed, trigger_threshold=None):
     }
 
 
-def classify_diff(diff_text, trigger_threshold=None):
+def classify_diff(diff_text, trigger_threshold=None, file_content_fetcher=None):
     """Classify a unified diff. Returns:
 
         {
@@ -1122,13 +1403,27 @@ def classify_diff(diff_text, trigger_threshold=None):
     fields (`score`, `trigger_reason`, `risk_categories`, `suppressed_by`,
     `classifier_version`) feed telemetry + the skip-log training signal (design §4.4, §5.3).
     `trigger_threshold` is the floor-bounded user override (F-011), None = config default.
+    `file_content_fetcher` (Mechanism M1): optional callable path->str returning the target file's
+    content, used by two-stage `all_of` co-occurrence to confirm a co-signal that lives OUTSIDE the
+    diff (e.g. a pre-existing CI trigger). None => two-stage falls back to the fail-safe (an
+    unconfirmable all_of FLOOR fires conservatively; its name lands in the `m1_failsafe` list).
     """
     hunks = []
     verdicts = []
     any_spike = False
 
-    for path, added, removed, hrange in _iter_file_hunks(diff_text or ""):
-        verdict = _classify_hunk(path, added, removed, trigger_threshold=trigger_threshold)
+    # Materialize hunks once so the Mechanism-M1 file-aware pass can look ACROSS a file's hunks
+    # (and, via file_content_fetcher, the whole file) before per-hunk scoring. M1 fires are merged
+    # into the owning hunk's verdict as ordinary trigger-class signals. When no M1 signal exists
+    # (has_m1 False) this is inert and the per-hunk path stays byte-identical to the pre-M1 engine.
+    parsed = list(_iter_file_hunks(diff_text or ""))
+    m1_by_hunk, m1_failsafe = ({}, [])
+    if _CFG.get("has_m1"):
+        m1_by_hunk, m1_failsafe = _resolve_m1_signals(parsed, file_content_fetcher)
+
+    for hidx, (path, added, removed, hrange) in enumerate(parsed):
+        verdict = _classify_hunk(path, added, removed, trigger_threshold=trigger_threshold,
+                                 extra_fired=m1_by_hunk.get(hidx))
         if verdict is None:
             continue
         verdicts.append(verdict)
@@ -1189,12 +1484,34 @@ def classify_diff(diff_text, trigger_threshold=None):
         "classifier_version": _CFG.get("version", "0"),
         "borderline_tier": borderline_tier,
         "hunks": hunks,
+        # Mechanism M1: names of all_of FLOOR signals that fired via the fail-safe (no fetcher +
+        # unconfirmable from the diff alone). Empty on the normal path; a non-empty list tells the
+        # gate a floor fired CONSERVATIVELY so it can surface a capability note. Additive field.
+        "m1_failsafe": sorted(set(m1_failsafe)),
     }
+
+
+def _cli_file_fetcher(path):
+    """M1 two-stage fetcher for the CLI/diagnostic path: read the file relative to CWD, or None on
+    any failure (-> classifier fail-safe). Keeps `python -m mcp_server.risk_classifier` behaving
+    like the real gates (which wire gate_lib.file_content_fetcher) instead of fail-safe-firing every
+    two-stage floor. NOTE the SERVER's own classify_diff calls (receipt_writer / floor_confirm)
+    pass NO fetcher BY DESIGN — the server never reads user files (privacy: only hashes leave the
+    client). There, an M1 two-stage floor fail-safe over-fires, which is SAFE: those are
+    coverage/overlap computations over the reviewed diff, so over-firing over-covers the fire's own
+    hunks (never a false block; it's what lets a client-fetched edit-case pwn floor be released —
+    prevents a coverage deadlock). See docs/MCP/Classifier/PHASE3-M1-DESIGN.md."""
+    try:
+        with open(os.path.join(os.getcwd(), str(path).replace("/", os.sep)),
+                  "r", encoding="utf-8", errors="strict") as fh:
+            return fh.read()
+    except Exception:
+        return None
 
 
 def _main(argv):
     diff_text = sys.stdin.read()
-    print(json.dumps(classify_diff(diff_text), indent=2))
+    print(json.dumps(classify_diff(diff_text, file_content_fetcher=_cli_file_fetcher), indent=2))
     return 0
 
 

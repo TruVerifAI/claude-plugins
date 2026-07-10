@@ -87,7 +87,8 @@ def evaluate(g, cfg, inp, cwd):
     if len(diff) > MAX_DIFF_BYTES:
         return None  # F-010: best-effort — don't churn the classifier on a giant diff
 
-    classification = classify_diff(diff, trigger_threshold=g.effective_threshold(cfg))
+    classification = classify_diff(diff, trigger_threshold=g.effective_threshold(cfg),
+                                   file_content_fetcher=g.file_content_fetcher(cwd))
     if not classification.get("risky"):
         return None
 

@@ -3,6 +3,26 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/panel-review/.claude-plugin/plugin.json`.
 
+## 0.13.0
+
+**Risk-classifier coverage expansion (classifier 2.5.0 -> 2.12.0).** Broadens what the local gate
+classifier recognizes, well beyond the Python/JS SaaS shapes it started with, at unchanged precision
+(100% recall / 0% false positives across the calibration corpus). No change to the tools, gates,
+config options, or response shape - only *what* the classifier detects. Still privacy-preserving:
+only a repo fingerprint + hunk content hashes ever leave the machine.
+
+- **New floor classes** (un-skippable blocks): memory-safety sinks (C `strcpy`/`gets`/`strcat`),
+  TLS-pinning removal / cert-validation bypass, secret-material paths (`.env`, `.pem`, `secrets/`),
+  destructive schema migrations (DROP/TRUNCATE + ORM deletes + removed `downgrade`), CI secret-echo,
+  CI pwn-request (`pull_request_target` + untrusted checkout), unsafe ML deserialization
+  (`joblib.load`), and PII-redaction removal.
+- **Polyglot breadth** - memory-safety, mobile (WebView / App-Transport-Security), embedded, and
+  IaC-exposure signals across C/C++/Go/Ruby/PHP/Kotlin/Swift/C#, each with per-language
+  false-positive guards (e.g. Ruby `gets`, a role string-literal, a `.free()` method call).
+- **Two engine mechanisms** - M1 same-file co-occurrence (catches a guard removed here and re-added
+  elsewhere without false-flooring a refactor) and M2 path-gating (a noisy signal scores only on the
+  file types where it's real; floors are never path-gated).
+
 ## 0.12.0
 
 **Post-commit backstop.** Catches a floor change (auth / secrets / money / migration /

@@ -53,12 +53,16 @@ def main():
     if not content.strip():
         g.emit_allow()
 
+    cwd = inp.get("cwd") or os.getcwd()
     # Write-gate-deadlock-fix-v2 (Option D): classify a REAL delta (not the all-adds
     # synth_write_diff) so the fire's per-hunk content hashes match what a natural agent
     # gate_diff produces — the root-cause fix for the floor write-gate deadlock.
+    # file_content_fetcher (M1 two-stage): at write-gate time the on-disk file is PRE-edit, which
+    # still carries the pre-existing co-signal (e.g. a pwn `pull_request_target` trigger the agent
+    # is adding a checkout to) — so reading it is correct for confirming an out-of-diff co-signal.
     classification = classify_diff(
-        g.build_change_diff(inp, path, content), trigger_threshold=g.effective_threshold(cfg))
-    cwd = inp.get("cwd") or os.getcwd()
+        g.build_change_diff(inp, path, content), trigger_threshold=g.effective_threshold(cfg),
+        file_content_fetcher=g.file_content_fetcher(cwd))
 
     # P6.3 (repo-scope suppression): a write whose target resolves OUTSIDE the working repo
     # or into a temp/scratch dir cannot be committed/merged — it can't SHIP, and the gate's

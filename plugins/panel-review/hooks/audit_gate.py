@@ -41,7 +41,8 @@ def main():
     if not diff.strip():
         g.emit_allow()  # nothing staged
 
-    classification = classify_diff(diff, trigger_threshold=g.effective_threshold(cfg))
+    classification = classify_diff(diff, trigger_threshold=g.effective_threshold(cfg),
+                                   file_content_fetcher=g.file_content_fetcher(cwd))
     gate_self = g.diff_touches_gate_self(diff)
     if not classification["risky"] and not gate_self:
         g.emit_allow()  # trivial, non-gate-self change
