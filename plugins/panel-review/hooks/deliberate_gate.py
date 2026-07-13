@@ -132,9 +132,14 @@ def main():
     # applies its own default rather than a guessed label (audit F-001/F-002, 2026-06-26).
     # Server contract: when gate_type is omitted, /receipts/deliberate-check defaults the
     # minted fire to 'deliberate' (mcp_user_routes.receipts_deliberate_check).
-    # '/'-form, matching how the server derives a receipt's area. A raw dirname is '\'-separated
-    # on Windows, and the area is matched as a STRING — so it matched nothing there.
-    area = os.path.dirname(path).replace("\\", "/") or "repo-root"
+    # REPO-RELATIVE '/'-form, matching how the server derives a receipt's area from the agent's
+    # `relevant_paths` (which are naturally repo-relative). The area is matched as a STRING, so both
+    # the separators AND the root prefix have to agree. A raw dirname of the file_path Claude Code
+    # hands us is absolute AND '\'-separated on Windows — it matched nothing, so the proactive
+    # downgrade / area-unlock were silently dead (prod runbook 2026-07-13; deliberation
+    # mcp_fd6de1da). Falls back to the absolute '/'-form if the repo root can't be resolved; the
+    # server reconciles that against a relative receipt area.
+    area = g.repo_relative_area(path, cwd)
     gate_type = {"high": "deliberate", "low": "synthesize"}.get(
         classification.get("max_confidence"))
     resp = g.check_deliberate_unlock(cfg, repo, area, session_id,
@@ -185,7 +190,8 @@ def main():
             g.emit_deny(
                 f"TruVerifAI flagged a {cats} change (a floor class: auth / secrets / money / "
                 "migrations / removed-guard).\n"
-                + g.transparency_block(classification, resp) +
+                + g.transparency_block(classification, resp)
+                + g.area_diagnostic_block(area, resp) +
                 "Match the tool to your situation:\n"
                 "  • A GENUINE floor change you want reviewed → `audit_coding`. A PASS covers FLOOR "
                 "and NON-floor hunks alike, so it releases the whole write in one call. This is the "
@@ -224,7 +230,8 @@ def main():
         thh_line = ("  target_hunk_hashes = %s\n" % json.dumps(all_hashes)) if all_hashes else ""
         g.emit_deny(
             f"TruVerifAI flagged a {cats} change worth a review before it ships.\n"
-            + g.transparency_block(classification, resp) +
+            + g.transparency_block(classification, resp)
+            + g.area_diagnostic_block(area, resp) +
             "This is finished code, so the natural review is `audit_coding` — run it ONCE with your "
             "proposed_action, AND pass:\n"
             f'  gate_repo = "{repo}"\n'
@@ -274,7 +281,8 @@ def main():
             g.emit_deny(
                 f"TruVerifAI flagged a borderline-consequential {cats} change — worth a "
                 "fast second opinion before building on it.\n"
-                + g.transparency_block(classification, resp) +
+                + g.transparency_block(classification, resp)
+                + g.area_diagnostic_block(area, resp) +
                 "Get a fast second opinion with `synthesize_coding` (~15-30s), then release by "
                 "recording a one-line skip (`record_gate_skip`). Or run `audit_coding` — a PASS "
                 "releases the gate directly. Pass:\n"

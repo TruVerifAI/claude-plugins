@@ -3,6 +3,35 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/panel-review/.claude-plugin/plugin.json`.
 
+## 0.15.0
+
+**Two ways the gate told you something that wasn't true.** Both were found by running the gate
+against itself in production. No change to the tools, config options, or response shape.
+
+- **A skip that said "released" and released nothing.** `test_or_docs_only` and
+  `generated_or_vendored_code` were admitted over an unreviewed FLOOR change (auth, secrets, money,
+  migrations, a removed guard) — and then covered none of it. The gate blocked again on the retry,
+  the same skip was admitted again, and the loop had no end: every call answered "ok, released"
+  while nothing was ever released. A path claim can be perfectly true and still not change what the
+  hunk *is* — a real credential in a test file is still a live credential, and `.github/workflows/`
+  classifies as test/docs, which is exactly where the CI floors matter. **No skip reason releases a
+  floor hunk now.** They are denied, with the reason and the exits that actually work
+  (`audit_coding`, `confirm_floor`, `synthesize_coding`, or `accept_risk_no_review` as a logged last
+  resort — plus apply/defer at the write gate). Cover the floor and the same skip then clears the
+  rest of the change, as before.
+
+- **The "Still uncovered: N floor" count was wrong.** It counted a floor hunk by category alone and
+  ignored the path exemption, so it over-stated the floor — reporting 4 where the server had 2. Not
+  cosmetic: it sent the agent to floor tools that then *refuse*, which reads exactly like a broken
+  gate. The count now matches what the server enforces.
+
+- **A deliberation you already ran, silently ignored.** Calling `deliberate_coding` up front is
+  supposed to soften a later write in that area. It never did, unless you happened to pass an
+  absolute path: the gate compared its own directory against the one you named, and the two were
+  never in the same form. Fixed on both sides — and when a deliberation *doesn't* apply to a write,
+  the gate now says so ("you have a recent deliberation, but for another area") instead of quietly
+  doing nothing.
+
 ## 0.14.0
 
 **The gate no longer blocks code a review already passed.** Three defects, all reaching that same

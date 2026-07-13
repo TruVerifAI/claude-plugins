@@ -32,6 +32,7 @@ from risk_classifier import (  # vendored, same dir
     classify_diff,
     hunk_content_hash,
     is_hard_floor,          # per-hunk floor membership — the uncovered floor/non-floor split
+    floor_exempt,           # ...and the PATH demotion that makes that membership *effective*
     NORM_VERSION,
     clamp_threshold,
     # Gate-self detection + the synthesized self-coverage hash live in the vendored
@@ -236,6 +237,39 @@ def repo_fingerprint(cwd):
     if not basis:
         basis = _git(["rev-parse", "--show-toplevel"], cwd).strip() or (cwd or ".")
     return "repo_" + hashlib.sha256(basis.encode("utf-8", "replace")).hexdigest()[:24]
+
+
+def repo_relative_area(path, cwd):
+    """The gate's `area` for a write: the target's directory, REPO-RELATIVE and `/`-separated.
+
+    The area is matched against a proactive `deliberate_coding` receipt, whose own area is
+    `dirname(relevant_paths[0])` — i.e. literally what the agent passed, which is naturally a
+    repo-relative path (`smoke/dirA`). Claude Code hands this hook an ABSOLUTE file_path, so a raw
+    `os.path.dirname` produced `C:/repo/smoke/dirA` and the two could never be equal: the proactive
+    downgrade and the deliberate area-unlock silently did nothing for anyone who didn't guess that
+    the paths had to be absolute (prod runbook 2026-07-13; deliberation mcp_fd6de1da).
+
+    Sending the repo-relative form makes the common case an EXACT match. Falls back to the
+    `/`-normalized absolute dirname when the repo root can't be resolved or the file lies outside
+    it — the server reconciles that rooted form against a relative receipt area, so an unresolvable
+    root degrades to the old behavior instead of breaking the match.
+
+    'repo-root' is preserved as the sentinel for a file directly at the top level (a receipt for the
+    root behaves the same as before).
+    """
+    d = os.path.dirname(path or "")
+    if not d:
+        return "repo-root"
+    root = _git(["rev-parse", "--show-toplevel"], cwd).strip()
+    if root:
+        try:
+            rel = os.path.relpath(d, root)
+        except ValueError:      # different drives on Windows -> not in this repo
+            rel = None
+        if rel and not rel.startswith(".."):
+            rel = rel.replace("\\", "/")
+            return "repo-root" if rel == "." else rel
+    return d.replace("\\", "/") or "repo-root"
 
 
 def is_out_of_repo_scope(path, cwd):
@@ -797,8 +831,23 @@ def _uncovered_bucket_line(uncovered_hunks):
     the count refuse to move, and proposed disabling the gates."""
     if not uncovered_hunks:
         return ""
-    floor_n = sum(1 for h in uncovered_hunks if is_hard_floor(h.get("category")))
-    plain_n = len(uncovered_hunks) - floor_n
+    # EFFECTIVE floor = floor by category AND not demoted by its path (`floor_exempt`) — the same
+    # definition the server enforces (`_floor_hashes_from_body`) and that deliberate_gate already
+    # uses to choose WHICH message to print. Counting by category alone (the bug this fixes, found
+    # by the 2026-07-13 prod runbook) over-states the floor: a `removed_guard` under `tests/` is
+    # exempt, so the server sees no floor hunk while this line claimed one. That is not cosmetic —
+    # it routes the agent to floor tools that then REFUSE (`gate_skip_accept_risk_not_floor`,
+    # confirm_floor releasing nothing), which is the exact "the count won't move" trap this bucket
+    # line exists to prevent. The two definitions must not drift again.
+    def _is_effective_floor(h):
+        return (is_hard_floor(h.get("category"))
+                and not floor_exempt(h.get("category"), h.get("path_class")))
+
+    floor_n = sum(1 for h in uncovered_hunks if _is_effective_floor(h))
+    # Counted, not subtracted (audit mcp_2ac350d4 F-002): `len(hunks) - floor_n` is only correct
+    # while the split is strictly binary. If a third tier is ever added (a soft-floor / warning
+    # class), the subtraction would silently fold it into "non-floor" and mis-route the agent again.
+    plain_n = sum(1 for h in uncovered_hunks if not _is_effective_floor(h))
     parts = ["Still uncovered: %d floor, %d non-floor." % (floor_n, plain_n)]
     if floor_n and plain_n:
         parts.append("These clear SEPARATELY — an `audit_coding` PASS covers BOTH in one call "
@@ -1578,6 +1627,51 @@ def maybe_human_override(cfg, classification, check_response, session_id, repo,
 # ---------------------------------------------------------------------------
 # Hook input / output
 # ---------------------------------------------------------------------------
+
+def area_diagnostic_block(area, check_response):
+    """The write gate's `area` — and, when it matters, why a proactive deliberation didn't apply.
+
+    D (deliberation mcp_fd6de1da). The area is how a proactive `deliberate_coding` receipt is
+    matched to a write, and it used to be INVISIBLE: the `area = ...` line was dropped when
+    record_gate_skip retired its `area` param, so when the match failed there was no error, no
+    warning, and nothing to compare — the feature just silently did nothing. Show the area (it is a
+    diagnostic here, NOT a parameter to pass anywhere), and if the server says fresh proactive
+    receipts exist under OTHER directories, say so: a near-miss is the single most likely reason an
+    agent thinks it already deliberated this and the gate "ignored" it.
+
+    Deliberately NOT emitted as `area = "..."`. That exact key is a RETIRED record_gate_skip
+    parameter — tests/test_gate_hooks_e2e.py guards against it reappearing, because an agent that
+    sees `key = value` in a gate message copies it into the next call and gets a schema error. This
+    is a diagnostic, and it reads like one."""
+    if not area:
+        return ""
+    out = '  ▸ this write is matched on area: %s\n' % area
+    miss = [m for m in ((check_response or {}).get("proactive_area_miss") or []) if m]
+    if not miss:
+        return out
+
+    # The server reports every fresh proactive receipt that did NOT apply. Two different reasons,
+    # and telling the agent the wrong one is its own small lie: a receipt naming ANOTHER directory
+    # is a path problem, while one naming THIS directory didn't apply because it was minted in a
+    # different session.
+    def _norm(a):
+        return str(a).replace("\\", "/").rstrip("/")
+
+    here = _norm(area)
+    other = [m for m in miss if not _norm(m).endswith(here)]
+    if other:
+        shown = ", ".join('"%s"' % m for m in other[:3])
+        more = (" (+%d more)" % (len(other) - 3)) if len(other) > 3 else ""
+        out += ("  ⚠️  You have a recent `deliberate_coding` receipt, but for %s%s — not this "
+                "area, so it does NOT soften this write. Pass `relevant_paths` that resolve to "
+                "THIS directory (repo-relative is fine) if you meant to cover it.\n"
+                % (shown, more))
+    if len(other) < len(miss):
+        out += ("  ⚠️  You have a recent `deliberate_coding` receipt for THIS area, but it was "
+                "minted in a different session, so it does NOT soften this write. Re-run "
+                "`deliberate_coding` in this session if the design question is still open.\n")
+    return out
+
 
 def gate_signal_line(classification):
     """The compact classifier-signal line for a deny message — the labels the agent

@@ -107,8 +107,28 @@ Both take the `gate_context_id` the gate printed. Never re-supply the diff or re
 If the change has an **UNREVIEWED floor-class hunk — auth / secrets / money / migration /
 removed-guard**, a judgment skip (`false_positive_not_risky`, `trivial_change`,
 `disagree_with_classification`, `reviewed_outside_truverifai`, `time_critical_hotfix`,
-`tool_unavailable`, `other`) is **denied** (`gate_skip_reason_floor_denied`). Only the path-verified
-`test_or_docs_only` / `generated_or_vendored_code` can release a floor change on a judgment basis.
+`tool_unavailable`, `other`) is **denied** (`gate_skip_reason_floor_denied`).
+
+**No skip reason releases a floor hunk. Not one — `test_or_docs_only` and
+`generated_or_vendored_code` included.** They are denied too (`gate_skip_reason_floor_denied`).
+
+The path claim can be perfectly TRUE and still not help, because it doesn't change what the hunk
+**is**. The test/docs exemption has already been applied by the classifier before the gate fires —
+most floor classes in a test path are demoted and never fire at all. What still floors, floors
+*wherever it lives*: a real credential in a test file is a live credential someone has to rotate;
+`.github/workflows/` itself classifies as test/docs, which is precisely where the CI floors matter;
+and a generated/vendored path is never floor-exempt at all.
+
+**To clear a floor hunk** — every one of these is reachable:
+- `audit_coding` (a PASS) — covers floor **and** non-floor in ONE call. The recommended review.
+- `confirm_floor` (**FREE**, one budget model) or `synthesize_coding` — release the FLOOR hunks, but
+  only if they agree the change isn't risky.
+- `accept_risk_no_review` — the logged last resort: ships it un-reviewed as an accountable override
+  to the human, and needs a substantive pre-mortem.
+
+Once the floor is covered, the **same** skip becomes admissible and clears the remaining non-floor
+hunks. So on a mixed change: cover the floor first, then skip the rest.
+
 The two single-call codes are **gate-dependent** on floor: `recommendations_applied` and
 `review_deferred_to_commit` DO release a floor change at the **write gate** (you reviewed / are
 deferring the batch), but at the **commit gate** they're denied — a shipping floor hunk needs a real
