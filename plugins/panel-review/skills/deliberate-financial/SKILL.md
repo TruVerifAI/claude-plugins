@@ -18,7 +18,7 @@ description: >
 
 # When to use this skill
 
-This is the **decision / selection** finance primitive (~60-120s): four models reason, conflicts are surfaced and defended/revised, then synthesized. Use it to **choose or compare** — not for a fast take (`synthesize-financial`) or to critique a finished draft (`audit-financial`).
+This is the **decision / selection** finance primitive (~2-5 min): four models reason, conflicts are surfaced and defended/revised, then synthesized. Use it to **choose or compare** — not for a fast take (`synthesize-financial`) or to critique a finished draft (`audit-financial`).
 
 **Trigger on explicit user requests:**
 - "which of these trades / strategies / investments should I pursue?" (ranking — the panel ranks in prose)

@@ -132,7 +132,9 @@ def main():
     # applies its own default rather than a guessed label (audit F-001/F-002, 2026-06-26).
     # Server contract: when gate_type is omitted, /receipts/deliberate-check defaults the
     # minted fire to 'deliberate' (mcp_user_routes.receipts_deliberate_check).
-    area = os.path.dirname(path) or "repo-root"
+    # '/'-form, matching how the server derives a receipt's area. A raw dirname is '\'-separated
+    # on Windows, and the area is matched as a STRING — so it matched nothing there.
+    area = os.path.dirname(path).replace("\\", "/") or "repo-root"
     gate_type = {"high": "deliberate", "low": "synthesize"}.get(
         classification.get("max_confidence"))
     resp = g.check_deliberate_unlock(cfg, repo, area, session_id,
@@ -159,34 +161,47 @@ def main():
     if action == "deny":
         gcid = (resp or {}).get("gate_context_id")
         gcid_line = ("  gate_context_id = %s\n" % json.dumps(gcid)) if gcid else ""
-        # Write-gate-deadlock-fix-v2: FLOOR-aware release paths. A floor hunk is released ONLY by a
-        # diff-level review (audit PASS or a synthesize SYNTH_CONFIRM) — a `deliberate` area-unlock
-        # can't cover a floor hunk (server F-001/F-006), so the floor message does NOT offer it.
-        # It forwards the fire's floor hunk hashes as `target_hunk_hashes` (Option B) so coverage
-        # binds deterministically even if the write gate's diff shape differs from the agent's.
+        # FLOOR-aware release paths. A floor hunk is released ONLY by a diff-level review (an audit
+        # PASS or a synthesize SYNTH_CONFIRM) — a `deliberate` area-unlock can't cover one (server
+        # F-001/F-006), so the floor message does NOT offer it.
+        #
+        # `target_hunk_hashes` carries ALL the change's risky hunks, NOT just the floor ones
+        # (2026-07-12). Forwarding a floor-ONLY list rebuilt the commit-gate deadlock here: the
+        # message recommends `audit_coding`, and receipt_writer._resolve_gate_bound_hunks binds an
+        # audit's coverage to EXACTLY the forwarded list (Tier 0 is a hard intersection, and for an
+        # audit every fire hunk is eligible). So the agent copied the floor-only list, the PASS
+        # covered the floor hunks only, the NON-floor hunks stayed uncovered, the write re-blocked,
+        # and this same message printed again — forever. Sending every hash costs the floor tools
+        # nothing: confirm_floor / synthesize resolve with floor_only=True, so the server's own
+        # floor map filters the non-floor hashes out. `floor_hashes` still decides WHICH message to
+        # print; it just no longer narrows the review.
         floor_hashes = [h["content_hash"] for h in classification.get("hunks", [])
                         if h.get("content_hash") and is_hard_floor(h.get("category"))
                         and not floor_exempt(h.get("category"), h.get("path_class"))]
         if floor_hashes:
-            hh_line = "  target_hunk_hashes = %s\n" % json.dumps(floor_hashes)
+            all_hashes = [h["content_hash"] for h in classification.get("hunks", [])
+                          if h.get("content_hash")]
+            hh_line = "  target_hunk_hashes = %s\n" % json.dumps(all_hashes)
             g.emit_deny(
                 f"TruVerifAI flagged a {cats} change (a floor class: auth / secrets / money / "
                 "migrations / removed-guard).\n"
                 + g.transparency_block(classification, resp) +
-                "Match the tool to your situation to release the gate:\n"
-                "  • A GENUINE floor change you want reviewed → `audit_coding` — a PASS releases it "
-                "(the recommended review), or\n"
-                "  • You believe the gate MIS-FIRED (a false positive) → `confirm_floor` (a FREE "
-                "one-model check) or `synthesize_coding` (~15-30s) — each releases the gate only if "
-                "it agrees the change isn't actually risky.\n"
+                "Match the tool to your situation:\n"
+                "  • A GENUINE floor change you want reviewed → `audit_coding`. A PASS covers FLOOR "
+                "and NON-floor hunks alike, so it releases the whole write in one call. This is the "
+                "recommended review.\n"
+                "  • You believe the gate MIS-FIRED → `confirm_floor` (FREE, one model) or "
+                "`synthesize_coding` (~15-30s). Each releases the FLOOR hunks, and only if it agrees "
+                "the change isn't risky. Neither touches a NON-floor hunk: if 'Still uncovered' "
+                "lists any, release those with an `audit_coding` PASS or "
+                "`record_gate_skip(<judgment reason>, gate_context_id)`.\n"
                 "Pass to whichever you run:\n"
                 f'  gate_repo = "{repo}"\n'
                 "  gate_diff = the change you're about to write\n"
-                f'  gate_session_id = "{session_id or ""}"\n'
                 + gcid_line
                 + hh_line +
-                "Copy the `target_hunk_hashes` line above verbatim — it binds the review to this "
-                "change so the write proceeds on retry.\n"
+                "Copy `target_hunk_hashes` verbatim — it binds coverage to this change's hunks, so "
+                "a cosmetically-drifted diff still releases.\n"
                 "After that ONE review you can, instead of a fresh review: apply its findings and "
                 "call `record_gate_skip(recommendations_applied, gate_context_id)`, or "
                 "`record_gate_skip(review_deferred_to_commit, gate_context_id)` to defer to commit "
@@ -247,9 +262,13 @@ def main():
         if b_action == "deny" and not g.borderline_budget_consume(
                 session_id, cfg["borderline_session_budget"]):
             b_action = "advise"  # session synthesize soft-gate budget exhausted
+        # The borderline soft-gate's ONLY release is a record_gate_skip, which now REQUIRES the
+        # gate_context_id. So if we failed to issue one, this tier has no exit at all — downgrade
+        # it to the advisory it already falls back to elsewhere rather than hard-block the agent
+        # for our own mint failure (gate_lib.gate_context_missing).
+        if b_action == "deny" and g.gate_context_missing(resp):
+            b_action = "advise"
         if b_action == "deny":
-            # PREFERRED handle (Step 0): the server-issued gate-fire id, when present. The
-            # area line stays for the backward-compat window (an old server returns no id).
             gcid = (resp or {}).get("gate_context_id")
             gcid_line = ("  gate_context_id = %s\n" % json.dumps(gcid)) if gcid else ""
             g.emit_deny(
@@ -263,11 +282,11 @@ def main():
                 "  gate_diff = the change you're about to write\n"
                 f'  gate_session_id = "{session_id or ""}"\n'
                 + gcid_line
-                # The synthesize soft-gate releases on an AREA skip (the write-gate key);
-                # without this line a `record_gate_skip` here fails server validation
-                # (no gate context) and the borderline skip is unusable (2026-06-19 fix).
-                # json.dumps so a quote/backslash in the path can't malform the copy key.
-                + f"  area = {json.dumps(area)}\n"
+                # 2026-07-12: the legacy `area` skip key is DELETED — record_gate_skip requires the
+                # gate_context_id (gcid_line above), which the borderline fire always carries. An
+                # `area = ...` line here would hand the agent a parameter the tool no longer
+                # accepts, and a schema error on the release path is how an agent concludes the
+                # gate is broken. If no id was minted, the skip isn't available; run the review.
                 + g.gate_signal_line(classification) + "\n"
                 "Then retry. (Both tools are in your MCP tools; passing gate_context_id binds "
                 "coverage to the gate's own hunks.)"

@@ -18,7 +18,7 @@ description: >
 
 # When to use this skill
 
-This is the **verification** finance primitive (~60-120s): stress-test a decision *you've already drafted* before it's acted on at real-money size.
+This is the **verification** finance primitive (~2-5 min): stress-test a decision *you've already drafted* before it's acted on at real-money size.
 
 **Trigger on explicit user requests** (including soft ones — "mind looking this over before I place it?"):
 - "audit / review / check this trade thesis / strategy / backtest"

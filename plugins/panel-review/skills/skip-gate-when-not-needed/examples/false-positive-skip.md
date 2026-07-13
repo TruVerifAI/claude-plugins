@@ -5,11 +5,24 @@
 You add a docstring to a test helper. The write gate flags it:
 
 ```
-TruVerifAI flagged a test/docs change — worth a quick check before it ships.
-Run `audit_coding` ... OR record a one-line skip with a reason, AND pass:
-  gate_repo       = "repo_268c1440e37b3de823d2ace6"
+TruVerifAI flagged a code_review change worth a review before it ships.
+What fired (1 hunk; 0 already reviewed, 1 need review):
+  - code_review - matched `def` at tests/helpers/fixtures.py:12
+  Still uncovered: 0 floor, 1 non-floor. NON-floor only: `audit_coding` PASS, or
+  `record_gate_skip` with a judgment reason (e.g. false_positive_not_risky) — free, one line.
+  Floor tools (confirm_floor / accept_risk) release NOTHING here.
+This is finished code, so the natural review is `audit_coding` — run it ONCE with your
+proposed_action, AND pass:
+  gate_repo = "repo_268c1440e37b3de823d2ace6"
+  gate_diff = the change you're about to write
   gate_context_id = "gc_5f3a9c1b2d4e6f80"
-  gate_session_id = "cf7f53..."
+  target_hunk_hashes = ["a1b2c3d4e5f6a7b8"]
+A PASS releases the gate. ...
+Or, if the NON-floor hunks in 'Still uncovered' genuinely don't need review, call
+`record_gate_skip` (free) with a judgment reason_code, gate_repo, and the gate context
+below (copy it verbatim), then retry.
+  gate_context_id = "gc_5f3a9c1b2d4e6f80"
+  gate_signal = classifier_version="2.12.0" score=20 risk_categories="code_review"
 ```
 
 The flagged file is `tests/helpers/fixtures.py` and the change is a docstring. This
@@ -26,10 +39,10 @@ mcp__truverifai__record_gate_skip(
 ```
 
 Then retry the Write — the gate sees the logged skip and releases. Pass the
-`gate_context_id` the gate printed (copy it verbatim); the server verifies the gate
-fired and uses its own recorded hunks/area, so you don't also send `area`/`hunk_hashes`.
-(Only an older gate that printed no `gate_context_id` needs the legacy key — `area`
-for the write gate, `hunk_hashes` for the commit gate.)
+`gate_context_id` the gate printed (copy it verbatim); it is **required**. The server
+verifies a gate really fired and releases exactly the hunks **it** recorded, so you never
+supply hunks yourself. If the gate message carries no id (rare — it couldn't issue one),
+don't skip: run `audit_coding` with `gate_repo` + `gate_diff`.
 
 ## A counter-example (do NOT skip)
 

@@ -59,25 +59,37 @@ This is a free call (no credits charged). The user sees the aggregate on their T
 When a TruVerifAI review gate blocks a change you judge a **genuine false positive**,
 `synthesize_coding` is a cheap way to clear it — an *intended* path on a **floor
 class** (auth / secrets / money / migration / removed-guard), where a one-line `record_gate_skip`
-with a judgment code is denied. (Even cheaper: **`confirm_floor`** — a FREE one-budget-model check
-that mints the same SYNTH_CONFIRM if it agrees the floor change is token-shape noise. Reach for it
-first on a suspected false floor; escalate to `synthesize_coding`'s panel for a broader read.) Pass
-the gate context the block message printed — the same fields either tool takes:
+with a judgment code is denied while the floor hunk is unreviewed. (Even cheaper: **`confirm_floor`**
+— a FREE one-budget-model check that mints the same SYNTH_CONFIRM if it agrees the floor change is
+token-shape noise. Reach for it first on a suspected false floor; escalate to `synthesize_coding`'s
+panel for a broader read.)
+
+**It releases FLOOR hunks only.** On a change that also has ordinary risky hunks, a passing
+`synthesize_coding` / `confirm_floor` clears the floor and the gate **keeps blocking** on the rest —
+release those with a judgment `record_gate_skip` or an `audit_coding` PASS (which covers both kinds
+in one call). The block message's `Still uncovered: N floor, M non-floor` line tells you which
+bucket is left. And a verdict that is **not** a PASS mints nothing — the response says so
+explicitly, so an affirmative-sounding answer is never mistaken for a release.
+
+Pass the gate context the block message printed — the same fields either tool takes:
 
 - **`gate_repo`** — copied from the gate message.
 - **`gate_diff`** — the change being gated (the staged diff, or the content being written).
 - **`gate_context_id`** — the `gc_…` the gate printed. **Pass it** — the SYNTH_CONFIRM then binds to
   the gate's OWN recorded floor hunks, so a cosmetically drifted `gate_diff` still releases.
-- **`target_hunk_hashes`** — when the **write gate** (Write/Edit) blocked a **floor** change it also
-  printed a `target_hunk_hashes = [...]` line. **Copy it verbatim.** The SYNTH_CONFIRM then binds
-  *deterministically* to exactly those floor hunks and releases even when the write gate's diff shape
-  differs from your `gate_diff`. (Optional; only present on a floor write-gate block.)
+- **`target_hunk_hashes`** — the **write gate** prints a `target_hunk_hashes = [...]` line on every
+  block. **Copy it verbatim.** The SYNTH_CONFIRM binds to the **floor** hunks among them (a synthesize
+  confirmation only ever covers floor), so it releases even when the write gate's diff shape differs
+  from your `gate_diff`. (The commit gate prints no such line; there, the `gate_context_id` binds
+  coverage on its own.)
 - **`gate_session_id`** — when the gate provided one.
 
 If the panel agrees the change is low-risk, the server mints a **SYNTH_CONFIRM** bound to the
-flagged hunks and the gate **releases on retry** — ~15–30s, no full `audit_coding`. This is the
-intended cheap path to release a **floor-class** write gate (which `deliberate_coding` cannot
-release). If the panel surfaces real risk instead, run `audit_coding`.
+change's **floor** hunks, and they release on retry — ~15–30s, no full `audit_coding`. This is the
+intended cheap path to clear a **floor-class** gate (which `deliberate_coding` cannot release). If
+any NON-floor hunks remain uncovered the gate keeps blocking on those; clear them with a judgment
+`record_gate_skip` or an `audit_coding` PASS. If the panel surfaces real risk instead, run
+`audit_coding`.
 
 **Important — synthesize only releases a FLOOR gate.** SYNTH_CONFIRM is minted only on a floor
 change; on a **non-floor** gate `synthesize_coding` writes **no receipt**, so it does not release

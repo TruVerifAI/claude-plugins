@@ -116,14 +116,19 @@ def main():
             f'  gate_repo = "{repo}"\n'
             "  gate_diff = the staged diff (run: git diff --staged)\n"
             + gcid_line +
-            "A PASS releases the commit on retry. Re-committing after fixing earlier findings? "
+            "A PASS releases the commit on retry — it covers FLOOR and non-floor hunks alike, so "
+            "when both are present it is the ONE call that clears everything. Re-committing after "
             # §4.I diff-delta: a prior audit PASS still covers the hunks you didn't touch.
-            "Scope `audit_coding` to the changed hunks — your prior PASS still covers the rest.\n"
-            "On a FLOOR class (auth / secrets / money / migrations / removed-guard) you believe is "
-            "a false positive, release cheaper: `confirm_floor` (FREE, one model), then "
-            "`synthesize_coding` (~15-30s) — a passing verdict releases the commit (forward "
-            "gate_repo + gate_diff + the gate_context_id above). On a non-floor change these "
-            "release nothing — use `audit_coding`.\n"
+            "fixing earlier findings? Scope `audit_coding` to the changed hunks — your prior PASS "
+            "still covers the rest.\n"
+            "Each bucket in 'Still uncovered' above has its OWN release, and one does not do the "
+            "other's job:\n"
+            "  - FLOOR (auth / secrets / money / migrations / removed-guard) you believe mis-fired: "
+            "`confirm_floor` (FREE, one model), or `synthesize_coding` (~15-30s) — a low-risk "
+            "verdict releases the FLOOR hunks (forward gate_repo + gate_diff + the gate_context_id "
+            "above). Neither releases a NON-floor hunk.\n"
+            "  - NON-floor risky hunks: an `audit_coding` PASS, or `record_gate_skip` with a "
+            "judgment reason (free, one line). Floor tools release NOTHING here.\n"
             "After ONE review, apply its findings and call "
             "`record_gate_skip(recommendations_applied, gate_context_id)` instead of re-auditing "
             "(a FLOOR hunk still needs a real PASS at commit — it's the ship checkpoint).\n"
@@ -132,6 +137,11 @@ def main():
             "`record_gate_skip(accept_risk_no_review, gate_context_id, reason_text=<pre-mortem>)` "
             "ships it un-reviewed as a logged OVERRIDE to the human, not a review; needs a "
             "substantive pre-mortem and expires in minutes.\n"
+            "Do NOT disable the gates, and do NOT ask the user to. Every bucket above has a "
+            "reachable exit. `accept_risk_no_review` is the FLOOR escape only — it releases a floor "
+            "block's floor hunks and nothing else. If a release tool reported success and the count "
+            "did NOT move, you cleared a bucket that wasn't the blocking one: re-read 'Still "
+            "uncovered' and use that bucket's tool.\n"
             + g.skip_and_signal(classification, audit=True,
                                 gate_context_id=(resp or {}).get("gate_context_id"))
         )

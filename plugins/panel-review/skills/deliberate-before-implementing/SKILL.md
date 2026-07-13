@@ -79,8 +79,10 @@ write**. For a **floor-class** write (auth / secrets / money / migration / remov
 release it with an
 `audit_coding` PASS or a `synthesize_coding` SYNTH_CONFIRM (both accept the `target_hunk_hashes`
 line the gate printed — copy it verbatim so coverage binds to exactly those floor hunks); a judgment
-`record_gate_skip` is also **denied** on the floor. Reserve `deliberate_coding` for a still-open
-design (no concrete diff yet); a finished Write/Edit's natural review is `audit_coding`.
+`record_gate_skip` is **denied** while a floor hunk is unreviewed. Note a SYNTH_CONFIRM releases the
+**floor** hunks only, so if the change also has ordinary risky hunks the gate keeps blocking on
+those — an `audit_coding` PASS covers both kinds in one call. Reserve `deliberate_coding` for a
+still-open design (no concrete diff yet); a finished Write/Edit's natural review is `audit_coding`.
 
 ## After acting on the response
 

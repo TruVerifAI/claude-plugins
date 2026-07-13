@@ -3,6 +3,39 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/panel-review/.claude-plugin/plugin.json`.
 
+## 0.14.0
+
+**The gate no longer blocks code a review already passed.** Three defects, all reaching that same
+failure - which is what makes an agent conclude it is deadlocked and ask you to switch the gates
+off. No change to the tools, config options, or response shape.
+
+- **The floor deadlock.** Coverage is tracked per hunk, but admission was decided per *fire*: once a
+  change contained any floor hunk, the fire was stamped floor-class and stayed that way, so a
+  one-line skip was denied *even after the floor had been reviewed* - leaving the ordinary hunks
+  with no reachable exit. Admission now keys on **live floor exposure**: clear the floor, and the
+  skip that was denied becomes admissible and releases the non-floor remainder.
+- **MultiEdit hunk hashes.** A write gate has to synthesize its diff (the bytes aren't on disk yet).
+  It was concatenating each edit's diff whole, so the next edit's `+++ b/<path>` header landed
+  *inside* the previous hunk - where a `+`-prefixed line is, correctly, read as added content. Every
+  hunk but the last hashed wrong, so an `audit_coding` PASS earned at the write gate covered hashes
+  the commit gate would never compute, and the commit gate re-blocked the reviewed code.
+- **Windows `area` matching.** An area is matched as a string; the server stores `/`-form while the
+  write gate sent a raw `os.path.dirname` (`\`-separated on Windows). They could never match, so the
+  proactive-review downgrade and the deliberate area-unlock were **silently dead on Windows**.
+
+**Clearer copy where it counts.** The skill text claimed `accept_risk_no_review` "always releases a
+floor block" - it does not (never for gate-self) - and the claim sat in the *"never disable the
+gates"* paragraph, which is exactly what an agent reads when it feels stuck. The gates now state the
+two-bucket model plainly: a floor tool (`confirm_floor` / `synthesize_coding`) releases FLOOR hunks
+**only**, so on a mixed change the gate keeps blocking on the ordinary hunks it never touched - read
+the `Still uncovered: N floor, M non-floor` line and clear *that* bucket. An `audit_coding` PASS
+covers both in one call.
+
+**`record_gate_skip` now requires `gate_context_id`** (breaking; the legacy path is gone). A skip may
+only release a gate the server can verify actually fired - a client-supplied hunk list proves nothing
+about the hunks it chose to omit. If we fail to issue a gate context, the gate now **fails open**:
+that is our bug, not yours, and it must never block you.
+
 ## 0.13.0
 
 **Risk-classifier coverage expansion (classifier 2.5.0 -> 2.12.0).** Broadens what the local gate

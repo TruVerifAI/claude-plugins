@@ -1,9 +1,16 @@
 # `record_gate_skip` reason codes
 
+Every call takes `gate_repo` and the **`gate_context_id`** the gate printed (required — the server
+verifies a gate fired and releases exactly the hunks it recorded).
+
 Pick the closest single fit. `reason_text` is required for `other`,
 `disagree_with_classification`, and `accept_risk_no_review` (a substantive pre-mortem) — **and for
 the judgment codes (`false_positive_not_risky`, `trivial_change`, `reviewed_outside_truverifai`,
-`time_critical_hotfix`) at the write and commit gates.** It's welcome on any code. All skips are logged.
+`time_critical_hotfix`) at the write and commit gates.** It's welcome on any code.
+
+Past 500 characters `reason_text` is clipped — 4,000 for `accept_risk_no_review`, whose pre-mortem is
+the accountability record. You're told when it happens and the call still succeeds, so never retry
+just to shorten it. All skips are logged.
 
 | reason_code | Use when | reason_text |
 |---|---|---|
@@ -20,15 +27,24 @@ the judgment codes (`false_positive_not_risky`, `trivial_change`, `reviewed_outs
 | `review_deferred_to_commit` | Defer a batch of successive risky writes to the commit gate; releases this write + silences the write gate for the session (~1h). | optional |
 | `accept_risk_no_review` | **LAST RESORT on a FLOOR block only** — you've decided to ship the floor change un-reviewed. Logged as an accountable override to the human, not a review; bound to this one fire, expires in minutes. | **required** — a substantive pre-mortem |
 
-## Floor classes — a judgment skip is **denied**; run a real check
+## Floor classes — while a floor hunk is UNREVIEWED, a judgment skip is **denied**
 
-For a change touching a **floor class — auth / secrets / money / migration / removed-guard**,
-the judgment and external-trust codes (`false_positive_not_risky`, `trivial_change`,
-`disagree_with_classification`, `reviewed_outside_truverifai`, `time_critical_hotfix`,
-`tool_unavailable`, `other`) are **denied** — those classes "need a real check, not a judgment
-call." Only the **path-verified** codes (`test_or_docs_only`, `generated_or_vendored_code`) can
-release a floor change on that basis, and only when the server confirms the path class from
-fire-time evidence.
+While a change has an **unreviewed floor-class hunk — auth / secrets / money / migration /
+removed-guard**, the judgment and external-trust codes (`false_positive_not_risky`,
+`trivial_change`, `disagree_with_classification`, `reviewed_outside_truverifai`,
+`time_critical_hotfix`, `tool_unavailable`, `other`) are **denied** — those classes "need a real
+check, not a judgment call." Only the **path-verified** codes (`test_or_docs_only`,
+`generated_or_vendored_code`) can release a floor change on that basis, and only when the server
+confirms the path class from fire-time evidence.
+
+**A mixed change has two buckets.** Most real changes fire both floor and ordinary risky hunks, and
+they clear **separately**: floor hunks on an `audit_coding` PASS / `confirm_floor` /
+`synthesize_coding` / `accept_risk_no_review`; ordinary hunks on an `audit_coding` PASS or a
+judgment code here. A floor tool releases floor hunks **only**, so on a mixed change it can succeed
+while the gate still blocks on the ordinary hunks it never touched. Read the gate's
+`Still uncovered: N floor, M non-floor` line and use that bucket's tool — an `audit_coding` PASS
+covers both in one call. **Once every floor hunk is covered, a judgment code here becomes
+admissible** and releases the non-floor remainder.
 
 The two **single-call** codes are **gate-dependent** on floor: `recommendations_applied` and
 `review_deferred_to_commit` release a floor change at the **write gate** (you reviewed / are
@@ -56,9 +72,9 @@ un-reviewed. It:
 
 To release a floor change *without* accepting un-reviewed risk, **match the tool to your situation**
 (the gate's deny message spells this out). **It works the same at the commit gate and the write gate.**
-Always pass the `gate_context_id` the gate printed (it binds coverage to the gate's own hunks); on a
-**write-gate** floor block, also copy the `target_hunk_hashes = [...]` line verbatim so coverage binds
-*deterministically* to exactly those floor hunks:
+Always pass the `gate_context_id` the gate printed (it binds coverage to the gate's own hunks). On a
+**write-gate** block, also copy the `target_hunk_hashes = [...]` line **whole and verbatim** — it lists
+every risky hunk of the change, and a partial list narrows what your review covers:
 
 - **A genuine floor change you want reviewed →** run `audit_coding` with your `proposed_action` +
   `gate_repo`/`gate_diff`/`gate_context_id`; a PASS releases it. This is the **recommended** path for a
@@ -66,12 +82,14 @@ Always pass the `gate_context_id` the gate printed (it binds coverage to the gat
   it does **not** release a floor change.)
 - **You believe the gate mis-fired (a false positive — an auth word in a comment, a rename, a test
   fixture) →** run `confirm_floor` (free, one model) with `gate_repo` + `gate_diff` + `gate_context_id`,
-  or `synthesize_coding` (same args; ~15–30s) for a broader multi-model read. Each releases the gate
-  **only if it agrees the change isn't actually risky**; if it finds the change material, run
-  `audit_coding`.
-- **Review tool down + sustained outage →** the gate prompts a **human** to approve
-   (`permissionDecision: "ask"`). You cannot skip a floor change past it, and you cannot approve
-   your own prompt. (This human gate is **best-effort in automation**: in a non-interactive context
+  or `synthesize_coding` (same args; ~15–30s) for a broader multi-model read. Each releases the
+  **floor hunks**, and only if it agrees the change isn't actually risky; if it finds the change
+  material, run `audit_coding`. Neither touches a NON-floor hunk — if the gate's `Still uncovered`
+  line still lists any, release those with a judgment code here or an `audit_coding` PASS.
+- **Review tool down + sustained outage →** the **commit** gate prompts a **human** to approve
+   (`permissionDecision: "ask"`); the write gate simply denies. You cannot approve your own prompt.
+   If you're consciously shipping the change un-reviewed, `accept_risk_no_review` is the logged
+   last resort — it releases the floor hunks at either gate. (This human gate is **best-effort in automation**: in a non-interactive context
    — `bypassPermissions` / `dontAsk` / headless `-p` — Claude Code auto-proceeds the prompt with no
    human present. Every prompt is logged with the raw `permission_mode` so the dashboard labels it
    honestly rather than claiming a human always decided.)
@@ -113,14 +131,12 @@ Both take the `gate_context_id` the gate printed; never re-supply the diff or re
 
 ### `prior_pass_receipt_match` is **not** a skip (don't use it to skip)
 
-`prior_pass_receipt_match` replaces the old `already_reviewed_this_session`, but it is **not
-a way to skip**: if you genuinely already passed an `audit_coding` of this *exact* code, the
-gate releases **automatically** — a matching PASS receipt covers the hunks, so no skip is
-needed. If the gate still fired, the code **changed** since that review, so re-run the
-review (you can scope `audit_coding` to just the changed/uncovered hunks — the prior PASS
-still covers the rest). Recording a skip with this reason is **denied at every gate**.
-(`already_reviewed_this_session` is a **deprecated** alias — still accepted for now,
-normalized to `prior_pass_receipt_match`, and likewise denied — but don't use it.)
+`prior_pass_receipt_match` is **not a way to skip**: if you genuinely already passed an
+`audit_coding` of this *exact* code, the gate releases **automatically** — a matching PASS
+receipt covers the hunks, so no skip is needed. If the gate still fired, the code **changed**
+since that review, so re-run the review (you can scope `audit_coding` to just the
+changed/uncovered hunks — the prior PASS still covers the rest). Recording a skip with this
+reason is **denied at every gate**.
 
 ## Honesty matters
 

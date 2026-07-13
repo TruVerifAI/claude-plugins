@@ -31,6 +31,7 @@ import urllib.request
 from risk_classifier import (  # vendored, same dir
     classify_diff,
     hunk_content_hash,
+    is_hard_floor,          # per-hunk floor membership — the uncovered floor/non-floor split
     NORM_VERSION,
     clamp_threshold,
     # Gate-self detection + the synthesized self-coverage hash live in the vendored
@@ -618,6 +619,16 @@ def _unified_delta(path, old_text, new_text):
     return text if (text.strip() and "@@" in text) else synth_write_diff(path, new_text)
 
 
+def _hunk_body(delta_text):
+    """Everything from a delta's first `@@` on — i.e. the hunks with the file header removed,
+    so several deltas over the SAME file can share one header (see build_change_diff)."""
+    lines = (delta_text or "").splitlines()
+    for i, ln in enumerate(lines):
+        if ln.startswith("@@"):
+            return "\n".join(lines[i:])
+    return ""
+
+
 def build_change_diff(inp, path, content):
     """Write-gate-deadlock-fix-v2 (Option D): synthesize the diff the classifier scores so
     its hunk hashes MATCH what a natural agent gate_diff produces — the root-cause fix for
@@ -635,14 +646,36 @@ def build_change_diff(inp, path, content):
         if tool == "Edit":
             return _unified_delta(path, ti.get("old_string", "") or "", content)
         if tool == "MultiEdit":
-            parts = []
+            # ONE file header, then every edit's @@ block — the shape git itself emits for a
+            # single file with several changed regions. Concatenating the per-edit diffs
+            # WHOLE (headers and all) instead puts a `+++ b/<path>` line INSIDE the preceding
+            # hunk, where the classifier — correctly — reads any `+`-prefixed line as added
+            # content (its `not in_hunk` header guard is what lets a PEM `-----BEGIN ...` or a
+            # YAML `---` inside a hunk count as content). That polluted every hunk but the
+            # last, so the same edit hashed differently alone vs. followed by another: the
+            # write gate stored the polluted hash, audit_coding PASSed over it, and then the
+            # COMMIT gate — classifying the real git diff — computed the clean hash, found no
+            # coverage, and re-blocked the code it had just passed.
+            bodies = []
             for e in (ti.get("edits") or []):
                 o = e.get("old_string", "") or ""
                 n = e.get("new_string", "") or ""
                 if n.strip() or o.strip():
-                    parts.append(_unified_delta(path, o, n))
-            joined = "\n".join(p for p in parts if p)
-            return joined if ("@@" in joined) else synth_write_diff(path, content)
+                    delta = _unified_delta(path, o, n)
+                    body = _hunk_body(delta)
+                    if delta.strip() and not body.strip():
+                        # An edit produced content we could not turn into a hunk. Dropping it
+                        # would UNDER-classify — the one direction that is a real bypass — and
+                        # the global `@@` check below would not notice, because the OTHER edits
+                        # still supply a `@@`. Fall back to all-adds over the whole content: it
+                        # over-marks, which only ever over-blocks.
+                        return synth_write_diff(path, content)
+                    bodies.append(body)
+            joined = "\n".join(b for b in bodies if b.strip())
+            if "@@" not in joined:
+                return synth_write_diff(path, content)
+            p = path or "unknown"
+            return "--- a/%s\n+++ b/%s\n%s\n" % (p, p, joined)
         if tool == "Write":
             old = _read_file_safe(path, cwd)
             if old is not None:
@@ -750,6 +783,40 @@ def _hunk_evidence(classification):
     return body
 
 
+def _uncovered_bucket_line(uncovered_hunks):
+    """The one line that makes a block legible: of the hunks STILL uncovered, how many are FLOOR
+    and how many are ordinary, and which tool clears each. Returns "" when there's nothing left.
+
+    The two buckets have different releases and neither tool can do the other's job:
+      - FLOOR (auth / secrets / money / migrations / removed-guard) → audit_coding PASS,
+        confirm_floor / synthesize_coding (a low-risk verdict), or accept_risk_no_review.
+      - NON-floor risky → audit_coding PASS, or a one-line record_gate_skip judgment reason.
+    A floor tool CANNOT release a non-floor hunk (receipt_coverage.audit_covered_hashes ignores
+    synthesize/accept_risk receipts), which is precisely the trap the 2026-07-10 deadlock fell into:
+    the agent cleared the floor, kept re-running floor tools against a non-floor remainder, watched
+    the count refuse to move, and proposed disabling the gates."""
+    if not uncovered_hunks:
+        return ""
+    floor_n = sum(1 for h in uncovered_hunks if is_hard_floor(h.get("category")))
+    plain_n = len(uncovered_hunks) - floor_n
+    parts = ["Still uncovered: %d floor, %d non-floor." % (floor_n, plain_n)]
+    if floor_n and plain_n:
+        parts.append("These clear SEPARATELY — an `audit_coding` PASS covers BOTH in one call "
+                     "(simplest here). Otherwise clear the floor (`confirm_floor` / "
+                     "`synthesize_coding` / `accept_risk_no_review`) AND the non-floor "
+                     "(`record_gate_skip` with a judgment reason) — a floor tool does NOT release "
+                     "a non-floor hunk, so neither alone will unblock this.")
+    elif floor_n:
+        parts.append("FLOOR only: `audit_coding` PASS, or `confirm_floor` (FREE) / "
+                     "`synthesize_coding` if you believe it mis-fired, or "
+                     "`accept_risk_no_review` as a logged last resort.")
+    else:
+        parts.append("NON-floor only: `audit_coding` PASS, or `record_gate_skip` with a judgment "
+                     "reason (e.g. false_positive_not_risky) — free, one line. Floor tools "
+                     "(confirm_floor / accept_risk) release NOTHING here.")
+    return "  " + " ".join(parts) + "\n"
+
+
 def transparency_block(classification, check_response, max_items=8):
     """Fix 2A: a short, LOCAL itemization of what fired vs. what's already reviewed, for the
     deny message. Uses the client-side `matched` span (identifier/keyword + 1-based line; secret
@@ -772,6 +839,12 @@ def transparency_block(classification, check_response, max_items=8):
         covered_n = len(hunks) - len(target)
         header = ("What fired (%d hunk%s; %d already reviewed, %d need review):\n"
                   % (len(hunks), "" if len(hunks) == 1 else "s", covered_n, len(target)))
+        # 2026-07-12: split what's LEFT into floor vs non-floor. Without this the agent sees only
+        # "N need review" and cannot tell WHICH tool can clear them — in the 2026-07-10 deadlock it
+        # covered every floor hunk, kept reading a floor-flavored block, and re-ran floor tools that
+        # by construction cannot touch a non-floor hunk. The two buckets have DIFFERENT releases, so
+        # a block that doesn't name the bucket is a block with no legible exit.
+        header += _uncovered_bucket_line(target)
     else:
         target = hunks
         header = "What fired (%d hunk%s):\n" % (len(hunks), "" if len(hunks) == 1 else "s")
@@ -855,6 +928,47 @@ def _uncovered_risky_hunks(classification, check_response):
     return ([h for h in hunks if h.get("content_hash") in uc], True)
 
 
+# The reason string every "we couldn't issue a gate context" release carries. One constant so the
+# commit gate, the write gate, the gate-self path and the borderline tier can't drift.
+NO_GATE_CONTEXT_ALLOW = (
+    "TruVerifAI blocked this change but could not issue a gate context (our failure, not yours) — "
+    "allowing it through unreviewed rather than trapping you. Nothing is required of you. If you "
+    "want the review anyway, run audit_coding with gate_repo + gate_diff."
+)
+
+
+def gate_context_missing(check_response):
+    """True when the server BLOCKED a change and DECLARED that it could not issue a gate context —
+    i.e. WE failed, and we said so.
+
+    The gate_context_id is minted best-effort (mcp_user_routes._mint_gate_fire returns None on any
+    failure — a DB fault, a serialization error) and the block is returned regardless. Since
+    2026-07-12 the gate_context_id is the ONLY handle that releases a skip, so a block without one
+    leaves the agent with no skip at all: it would have to buy a full audit_coding review to pay
+    for OUR database hiccup. That is the gate punishing the user for our bug, and an agent that
+    keeps hitting an unreleasable block is an agent that tells the user to disable the gates.
+
+    So this fails OPEN — the same posture the gate already takes when our server is unreachable
+    entirely (check_response is None → allow). A half-broken server must never be STRICTER than a
+    fully broken one; that would be an incoherent safety story.
+
+    POSITIVE SIGNAL, not absence (owner decision 2026-07-12). We key on the server explicitly
+    asserting `gate_context_minted: false`, NOT on the id merely being absent. An absent key is a
+    WEAK signal — a dropped field, a proxy rewriting the body, an unexpected response shape, or a
+    backend rolled back past gate-fire minting would all read as "we failed" and SILENTLY switch
+    the gates off, which is the one failure that never shows up in telemetry. Requiring the server
+    to say it out loud means an unknown shape denies (the status quo) and only a declared failure
+    opens. Deploy the SERVER before republishing the plugin: new hook + old server (no field) just
+    denies as it does today, which is the safe skew direction.
+
+    NOT agent-forgeable: this reads OUR OWN server's HTTPS response inside the hook process. The
+    agent never sees it, supplies nothing to it, and has no argument that reaches it — unlike
+    record_gate_skip, where the agent passes the id itself and is therefore REFUSED without one.
+    (An agent that could forge this response could already forge `covered: true` and release
+    everything, so it adds no attack surface.)"""
+    return isinstance(check_response, dict) and check_response.get("gate_context_minted") is False
+
+
 def audit_decision(classification, check_response, force_risky=False, tightness=None):
     """Return (action, detail). action ∈ {'allow', 'allow_warn', 'advise', 'deny'}.
 
@@ -928,6 +1042,10 @@ def audit_decision(classification, check_response, force_risky=False, tightness=
         ):
             return ("advise", "focused: only non-floor low-confidence changes are uncovered "
                               "— advisory, not blocking")
+    # We would BLOCK — but if we never issued a gate context, the agent has no skip handle and
+    # would have to buy a review to pay for OUR failure. Fail open (see gate_context_missing).
+    if gate_context_missing(check_response):
+        return ("allow_warn", NO_GATE_CONTEXT_ALLOW)
     return ("deny", "uncovered")
 
 
@@ -964,6 +1082,14 @@ def audit_decision_gate_self(check_response):
     if "gate_self_coverage" not in check_response:
         return ("allow_warn", "server has not deployed scoped gate-self coverage yet; "
                               "failing open — review this gate-self change manually")
+    # Same rule as the ordinary commit gate: our own mint failure must not trap the agent. A
+    # gate-self change is the highest-stakes class, so this is the one place the fail-open stings —
+    # but the alternative (a hard block with NO release handle) is the deadlock we are eliminating,
+    # and a gate-self change reaching here can still be released by an audit_coding PASS. The
+    # release is logged, and the post-commit backstop still records a floor change that shipped
+    # unreviewed.
+    if gate_context_missing(check_response):
+        return ("allow_warn", NO_GATE_CONTEXT_ALLOW)
     return ("deny", "uncovered")
 
 
@@ -1052,6 +1178,9 @@ def deliberate_decision(classification, check_response, *, force_risky=False, ti
     # advisory nudge. NOT for a gate-self change (proactive area receipts can't release gate-self).
     if not force_risky and check_response.get("proactive_consulted"):
         return ("advise", "proactive deliberation this session; downgraded to advisory")
+    # Our mint failure must not trap a WRITE either (see gate_context_missing).
+    if gate_context_missing(check_response):
+        return ("allow_warn", NO_GATE_CONTEXT_ALLOW)
     return ("deny", "uncovered")
 
 
@@ -1483,33 +1612,34 @@ def skip_and_signal(classification, audit, area=None, gate_context_id=None):
     skip covered the wrong hunks (see docs/MCP/gate-skip-friction-findings.md). The
     retry recomputes the same hashes in THIS same hook process at THIS same version,
     so a value copied from here always matches — no server round-trip, no skew."""
-    lines = []
-    if isinstance(gate_context_id, str) and gate_context_id:
-        # PREFERRED handle (Step 0). isinstance+truthy so a None/empty/non-string id never
-        # prints a bogus handle; json.dumps emits a quoted token (`gate_context_id = "gc_…"`)
-        # matching the existing hunk_hashes/area lines, so a stray quote can't malform it.
-        lines.append("  gate_context_id = %s" % json.dumps(gate_context_id))
-    if audit:
-        hashes = [h["content_hash"] for h in classification.get("hunks", [])]
-        lines.append("  hunk_hashes = %s" % json.dumps(hashes))
-    elif area:
-        # json.dumps (not hand-quoting): the key is a copy-verbatim protocol, so a
-        # quote/backslash/newline in the path must not produce malformed output.
-        lines.append("  area = %s" % json.dumps(area))
-    elif not (isinstance(gate_context_id, str) and gate_context_id):
-        # Defensive: a write-gate caller with neither an area NOR a usable server id (same
-        # predicate as the preferred-handle check above — a valid gate_context_id alone is
-        # a sufficient handle, so suppress this line then). Every
-        # write-gate caller passes a non-empty area (deliberate_gate derives
-        # `os.path.dirname(path) or "repo-root"`); if one ever doesn't, do NOT emit a
-        # blank `area = ""` (it fails server validation the same way the bug this fixes
-        # did) — route to the review instead.
-        lines.append("  (no area available — run the suggested review instead of skipping)")
-    lines.append(gate_signal_line(classification))
+    # 2026-07-12: the gate_context_id is the ONLY release handle. The legacy `hunk_hashes = [...]`
+    # / `area = "..."` fallback keys are DELETED server-side (record_gate_skip refuses a call
+    # without an id), so printing them would hand the agent arguments that no longer exist — and
+    # an agent that pastes them gets a schema error, which is exactly the "the gate is broken"
+    # spiral this whole change exists to prevent. Print the id, or route to the review.
+    have_gcid = isinstance(gate_context_id, str) and bool(gate_context_id)
+    if not have_gcid:
+        # The server couldn't mint a fire (best-effort — a DB fault). There is no skip handle, so
+        # don't dangle one: name the path that still works. audit_coding needs no gate context; it
+        # hashes the diff you give it, and its PASS covers floor and non-floor hunks alike.
+        return (
+            "No gate context was issued for this block, so `record_gate_skip` can't release it "
+            "(a skip only releases a gate the server can verify fired). Run `audit_coding` with "
+            "gate_repo + gate_diff instead — a PASS releases the change. You are not stuck.\n"
+            + gate_signal_line(classification)
+        )
+    lines = ["  gate_context_id = %s" % json.dumps(gate_context_id),
+             gate_signal_line(classification)]
     return (
-        "Or, if this is NOT a floor class and genuinely does not need review, call "
-        "`record_gate_skip` (free) with a reason_code, gate_repo, and the gate context below "
-        "(copy it verbatim), then retry:\n"
+        # NOT "if this is not a floor class" (2026-07-12): a judgment skip is denied only while a
+        # FLOOR hunk is UNREVIEWED, and once the floor is covered it is the ONLY release for the
+        # change's NON-floor hunks. Telling the agent not to use it on a floor-class change steers
+        # it away from the exact call that clears the remainder.
+        "Or, if the NON-floor hunks in 'Still uncovered' genuinely don't need review, call "
+        "`record_gate_skip` (free) with a judgment reason_code, gate_repo, and the "
+        "`gate_context_id` VALUE below (copy the gc_… string verbatim), then retry. (A judgment "
+        "skip is denied while a FLOOR hunk is still unreviewed — cover the floor first, then it "
+        "works.)\n"
         + "\n".join(lines)
     )
 

@@ -76,25 +76,34 @@ gate — including on a **floor** change:
 - **`gate_context_id`** — the `gc_…` the gate printed. **Pass it** — coverage then binds to the
   gate's OWN recorded hunks, so a cosmetically drifted `gate_diff` (a smart-quote, an em-dash) still
   releases the change instead of silently missing coverage.
-- **`target_hunk_hashes`** — when the **write gate** blocked a **floor** change it also printed a
-  `target_hunk_hashes = [...]` line. **Copy it verbatim.** Coverage then binds *deterministically* to
-  exactly those floor hunks, so the change releases even when the write gate's diff shape differs from
-  your `gate_diff`. (Optional; only present on a floor write-gate block.)
+- **`target_hunk_hashes`** — the **write gate** prints a `target_hunk_hashes = [...]` line on every
+  block. **Copy it whole and verbatim.** Coverage binds *deterministically* to exactly the hashes you
+  pass, so the change releases even when the write gate's diff shape differs from your `gate_diff` —
+  and a **partial** list narrows what this PASS covers, leaving the rest blocked. The line lists every
+  risky hunk of the change, so copying it whole is what you want. (The commit gate prints no such
+  line; there, the `gate_context_id` binds coverage on its own.)
 
 (`audit_coding` takes `gate_repo` / `gate_diff` / `gate_context_id` / `target_hunk_hashes` — it does
 **not** take a `gate_session_id`.)
 
 A **PASS-level action** (`proceed` / `proceed_with_caveats` — i.e. a verdict of `approve` /
 `approve_with_caveats` with no finding that tightened the action) releases the gate on retry. (A
-critical finding can floor an `approve` verdict to `escalate_to_human`, which does not release.) On a
-**floor class**
-(auth / secrets / money / migrations / removed-guard) a judgment `record_gate_skip` is **denied**.
+critical finding can floor an `approve` verdict to `escalate_to_human`, which does not release.)
+
+An `audit_coding` PASS covers **floor and non-floor hunks alike**, which is why it's the one call
+that clears a mixed change in a single step. That matters, because the two kinds of hunk release
+**separately**: while a **floor** hunk (auth / secrets / money / migrations / removed-guard) is
+unreviewed, a judgment `record_gate_skip` is **denied**, and the floor tools (`confirm_floor`,
+`synthesize_coding`, `accept_risk_no_review`) release floor hunks **only** — so on a mixed change
+one of those can succeed while the gate still blocks on the ordinary hunks it never touched. Read
+the gate's `Still uncovered: N floor, M non-floor` line and use that bucket's tool.
+
 For a genuine floor change, this `audit_coding` PASS is the recommended release. If you instead
 believe the gate mis-fired, a free `confirm_floor` (or a `synthesize_coding` SYNTH_CONFIRM, ~15–30s)
-clears it — but only if the model agrees the change isn't actually risky. Under a sustained
-review-tool outage the gate asks a human. (After you run ONE review, `record_gate_skip(recommendations_applied)` — findings applied — or
-`review_deferred_to_commit` — a batch — also release a floor **write**, but the floor is re-audited
-at commit.)
+clears the floor hunks — but only if the model agrees the change isn't actually risky. Under a
+sustained review-tool outage the gate asks a human. (After you run ONE review,
+`record_gate_skip(recommendations_applied)` — findings applied — or `review_deferred_to_commit` — a
+batch — also release a floor **write**, but the floor is re-audited at commit.)
 
 ## Worked examples
 
