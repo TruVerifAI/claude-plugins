@@ -3,6 +3,18 @@
 All notable changes to the TruVerifAI plugin. Versions match
 `.claude-plugin/marketplace.json` and `plugins/panel-review/.claude-plugin/plugin.json`.
 
+## 0.16.0
+
+**A floor change hidden next to an ordinary one is no longer waved through.** When two edits land
+within three lines of each other, git merges them into a single hunk — and the gate used to label
+that hunk with just one of its signals. If a guard removal (or another floor change: auth, secrets,
+money, a migration) sat next to an ordinary risky edit, the ordinary signal could win the label and
+the floor was silently dropped: the gate reported "0 floor", and a one-line skip shipped the guard
+un-reviewed. Now a floor signal in the hunk always wins the label, so the merged change is treated as
+the floor it is — the skip is denied and it needs a real review. Uses the *effective* floor (a floor
+class that isn't path-exempt here), so a floor removed under `tests/` still stays exempt. Only ever
+adds floor coverage, never removes it. No change to the tools, config options, or response shape.
+
 ## 0.15.0
 
 **Two ways the gate told you something that wasn't true.** Both were found by running the gate

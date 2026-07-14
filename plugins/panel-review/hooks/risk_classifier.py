@@ -1309,6 +1309,21 @@ def _classify_hunk(path, added, removed, trigger_threshold=None, extra_fired=Non
     trigger_score = sum(s["weight"] for s in trigger_fired) + supp_weight
     borderline_score = sum(s["weight"] for s in borderline_fired) + (large_weight if is_large_hunk else 0)
 
+    # F1 (floor-masking fix): when several trigger signals fire in ONE hunk (e.g. git merged a
+    # guard removal and an os.system() into a single hunk), the DECIDING signal sets the hunk's
+    # category, and floor status is derived from that category downstream. Picking the max-WEIGHT
+    # signal let a co-located non-floor signal win a weight tie (broken by array order) and MASK a
+    # real floor — the gate then printed "0 floor" and a free skip shipped it unreviewed. Prefer an
+    # EFFECTIVE-floor signal (a floor category NOT path-exempt here) so the floor can't be masked;
+    # tie-break by weight. Only ever PROMOTES a hunk to floor (fail-safe). EFFECTIVE floor, not raw
+    # is_hard_floor: else an exempt floor (removed_guard in tests/) could win over a non-exempt one
+    # (tls_pinning_removed) and re-open the fail-open.
+    _f1_pc = classify_path_class(path, "\n".join(added))
+
+    def _floor_first(s):
+        c = s["category"]
+        return (is_hard_floor(c) and not floor_exempt(c, _f1_pc), s["weight"])
+
     if auto:
         # POLICY (audit F-001): an auto-trigger signal (e.g. a hardcoded secret) is ALWAYS
         # HIGH, bypassing suppressors by design — a leaked key in a test fixture is still a
@@ -1319,7 +1334,7 @@ def _classify_hunk(path, added, removed, trigger_threshold=None, extra_fired=Non
         score = deciding_signal["weight"]
     elif trigger_score >= threshold:
         confidence = HIGH
-        deciding_signal = max(trigger_fired, key=lambda s: s["weight"])
+        deciding_signal = max(trigger_fired, key=_floor_first)
         cat = deciding_signal["category"]
         reason = "trigger_score_%d" % trigger_score
         score = trigger_score
@@ -1327,7 +1342,7 @@ def _classify_hunk(path, added, removed, trigger_threshold=None, extra_fired=Non
         # F-007 lower bound: a trigger-class signal present floors the band at BORDERLINE.
         # Suppressors demoted it below the threshold; they cannot silence it to PASS.
         confidence = LOW
-        deciding_signal = max(trigger_fired, key=lambda s: s["weight"])
+        deciding_signal = max(trigger_fired, key=_floor_first)
         cat = deciding_signal["category"]
         reason = "trigger_near_miss_%d" % trigger_score
         score = trigger_score
