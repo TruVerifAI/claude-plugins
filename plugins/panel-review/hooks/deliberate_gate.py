@@ -193,7 +193,8 @@ def main():
                 + g.transparency_block(classification, resp)
                 + g.area_diagnostic_block(area, resp) +
                 "Match the tool to your situation:\n"
-                "  • A GENUINE floor change you want reviewed → `audit_coding`. A PASS covers FLOOR "
+                "  • A GENUINE floor change you want reviewed → `audit_coding`. A PASS (final "
+                "action proceed/proceed_with_caveats) covers FLOOR "
                 "and NON-floor hunks alike, so it releases the whole write in one call. This is the "
                 "recommended review.\n"
                 "  • You believe the gate MIS-FIRED → `confirm_floor` (FREE, one model) or "
@@ -238,7 +239,8 @@ def main():
             "  gate_diff = the change you're about to write\n"
             + gcid_line
             + thh_line +
-            "A PASS releases the gate. After that ONE review you never need a second: if it "
+            "A PASS (final action proceed/proceed_with_caveats — a major finding raises the "
+            "action past that) releases the gate. After that ONE review you never need a second: if it "
             "returns findings, apply them and call "
             "`record_gate_skip(recommendations_applied, gate_context_id)` to proceed; or "
             "`record_gate_skip(review_deferred_to_commit, gate_context_id)` to defer ALL review to "
@@ -250,6 +252,15 @@ def main():
             "use `audit_coding` to release.)\n"
             + g.skip_and_signal(classification, audit=False, area=area,
                                 gate_context_id=gcid)
+        )
+    # Fail-open must never be SILENT (2026-07-23 — mirror of the commit gate's
+    # advisory): the write proceeds, but the outage is surfaced on the FIRST write.
+    if action == "allow" and detail == g.FAIL_OPEN_WRITE_DETAIL:
+        g.emit_allow_advisory(
+            "TruVerifAI write gate: the coverage/unlock check was UNREACHABLE, so the "
+            "gate FAILED OPEN — this write was NOT gated. If this repeats, the gates "
+            "are not enforcing: verify connectivity/API key (the plugin's /setup "
+            "command includes a gate-endpoint self-check). Tell the user about this."
         )
     if action == "allow_warn":
         g.emit_allow(detail)  # recent_pass escape valve

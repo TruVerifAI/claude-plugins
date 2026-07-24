@@ -1,7 +1,7 @@
 {
   "name": "panel-review",
   "displayName": "AI Panel Review",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "description": "Multi-model second-opinion deliberation for high-stakes coding and financial decisions. Eight skills across two profiles — coding and financial (audit / deliberate / synthesize per profile), plus shared record-outcome and skip-gate — route to the TruVerifAI MCP server, where four frontier models reason independently and conflict-target each other's positions to produce decision-grade output. Outcome reporting closes the loop — the dashboard shows what % of MCP calls actually changed the agent's decision.",
   "author": {
     "name": "TruVerifAI",
@@ -35,7 +35,7 @@
     "enable_gates": {
       "type": "boolean",
       "title": "Enable the proactive review gates",
-      "description": "When enabled, a PreToolUse gate runs before a risky git commit (the commit gate) or a risky Write/Edit (the write gate), plus a non-blocking post-commit backstop that catches a floor change created-and-committed in one shell command (which slips past both gates). A local classifier scores the change across many domains (auth, billing, migrations, secrets, infra-as-code, and more — including risky DELETIONS like a removed permission check) and sends TruVerifAI only a repo fingerprint + hunk content hashes — never source, paths, or diffs. If the change isn't already covered the gate asks the agent to run one review — audit_coding for finished code (a PASS releases it, covering floor and non-floor hunks alike), or deliberate_coding for a still-open design — OR to record a one-line skip-with-reason. On a FLOOR block (auth, secrets, money, migrations, a removed guard) the one-line skip is denied while the floor hunk is unreviewed: release it with an audit_coding PASS, or with confirm_floor (free) / synthesize_coding if you believe the gate mis-fired. Fails open on any error and never deadlocks. Set to false to disable the gates (and the backstop) entirely. Default true. To change it, type true or false.",
+      "description": "When enabled, a PreToolUse gate runs before a risky git commit (the commit gate) or a risky Write/Edit (the write gate), plus a non-blocking post-commit backstop that catches a floor change created-and-committed in one shell command (which slips past both gates). A local classifier scores the change across many domains (auth, billing, migrations, secrets, infra-as-code, and more — including risky DELETIONS like a removed permission check) and sends TruVerifAI only a repo fingerprint + hunk content hashes — never source, paths, or diffs. If the change isn't already covered the gate asks the agent to run one review — audit_coding for finished code (a PASS releases it, covering floor and non-floor hunks alike), or deliberate_coding for a still-open design — OR to record a one-line skip-with-reason. On a FLOOR block (auth, secrets, money, migrations, a removed guard) the one-line skip is denied while the floor hunk is unreviewed: release it with an audit_coding PASS, or with confirm_floor (free) / synthesize_coding if you believe the gate mis-fired; the one exception is recommendations_applied after a real review (applying the review's findings releases the re-fired floor too - lineage-verified, minutes-TTL, logged distinctly). Fails open on any error and never deadlocks. Set to false to disable the gates (and the backstop) entirely. Default true. To change it, type true or false.",
       "default": true
     },
     "gate_tightness": {

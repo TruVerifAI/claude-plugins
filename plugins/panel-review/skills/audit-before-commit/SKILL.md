@@ -93,7 +93,9 @@ critical finding can floor an `approve` verdict to `escalate_to_human`, which do
 An `audit_coding` PASS covers **floor and non-floor hunks alike**, which is why it's the one call
 that clears a mixed change in a single step. That matters, because the two kinds of hunk release
 **separately**: while a **floor** hunk (auth / secrets / money / migrations / removed-guard) is
-unreviewed, a judgment `record_gate_skip` is **denied**, and the floor tools (`confirm_floor`,
+unreviewed, a judgment `record_gate_skip` is **denied** (sole exception:
+`recommendations_applied` with your recent review on record — applying a review's findings
+releases the re-fired floor too), and the floor tools (`confirm_floor`,
 `synthesize_coding`, `accept_risk_no_review`) release floor hunks **only** — so on a mixed change
 one of those can succeed while the gate still blocks on the ordinary hunks it never touched. Read
 the gate's `Still uncovered: N floor, M non-floor` line and use that bucket's tool.

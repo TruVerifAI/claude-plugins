@@ -110,6 +110,20 @@ def evaluate(g, cfg, inp, cwd):
     # "maybe covered" — the worst case here is a false advisory, so minimize it.
     if not coverage_known:
         return None
+    # Receipt correlation (gate-usability §3.6, the 2026-07-22 A1 false positive): a real
+    # audit PASS landed SECONDS before this commit, yet the backstop re-classifies the
+    # COMMITTED base..HEAD diff, whose hunk boundaries can differ from the staged diff the
+    # PASS covered (git re-hunks around context) — a strict-hash miss the normalized tier
+    # can't always rescue (boundary drift ≠ byte drift). The server already reports
+    # `recent_pass` (a real audit PASS in the recency window, the same signal the commit
+    # gate's escape valve uses). A fresh PASS makes an "unreviewed floor commit" claim
+    # unreliable, and this hook's stated posture is to minimize false advisories — so
+    # stay silent and DON'T log a dashboard row the owner has to triage. Trade-off,
+    # accepted: a genuinely-fused unreviewed floor commit within minutes of an unrelated
+    # PASS goes un-flagged; the pre-commit gates (which do NOT honor recent_pass on
+    # floor) remain the enforcement layer — the backstop is advisory-only.
+    if resp.get("recent_pass") is True:
+        return None
     uncovered_floor = [h for h in uncovered if _is_floor(h)]
     if not uncovered_floor:
         return None  # the floor content was reviewed (receipt present) → silent

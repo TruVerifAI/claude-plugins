@@ -80,8 +80,10 @@ one review without ever calling TruVerifAI again for the same change:
   review actually ran for this repo recently (it's an attestation, not a free skip). Also use it
   when a **PASS-then-modify** re-fires the gate: after a PASS, ideally write exactly what you
   reviewed — but if you tweak the content (even a comment), the gate re-fires on the changed
-  bytes, and `recommendations_applied` releases it with no second review. A floor hunk is still
-  re-audited at commit.
+  bytes, and `recommendations_applied` releases it with no second review — FLOOR hunks
+  included (owner ruling 2026-07-23: compliance is never penalized). The floor release is
+  lineage-verified (your recent review must be on record), expires in minutes, and is logged
+  distinctly as "findings applied (revision not re-reviewed)" — never as an audited PASS.
 - **`review_deferred_to_commit`** — defer ALL review to the commit gate. It releases this write
   AND silences the write gate for the rest of the session/area (~1h). Use it **ONLY when you
   expect a batch of successive risky/floor writes** and want to review them together at commit
@@ -129,11 +131,13 @@ and a generated/vendored path is never floor-exempt at all.
 Once the floor is covered, the **same** skip becomes admissible and clears the remaining non-floor
 hunks. So on a mixed change: cover the floor first, then skip the rest.
 
-The two single-call codes are **gate-dependent** on floor: `recommendations_applied` and
-`review_deferred_to_commit` DO release a floor change at the **write gate** (you reviewed / are
-deferring the batch), but at the **commit gate** they're denied — a shipping floor hunk needs a real
-PASS there. A **recent unrelated review does NOT release a floor change**: the recent-pass shortcut is
-disabled whenever a floor hunk is uncovered, so the floor needs its own review.
+On floor: `recommendations_applied` (with your recent review on record) releases a floor
+change at **both** gates — the zero-friction compliance path. `review_deferred_to_commit`
+releases a floor change at the **write gate only**; the deferred batch is re-reviewed at the
+commit gate (defer *up to* commit, never past it). A **recent unrelated review does NOT release
+a floor change via the recent-pass shortcut**: that valve is disabled whenever a floor hunk is
+uncovered — the floor releases only through a real review, the applied attestation, a floor
+tool, or the logged accept-risk override.
 
 ### A mixed change has TWO buckets, and each needs its own release
 

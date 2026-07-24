@@ -76,7 +76,10 @@ def main():
                 "highest-stakes area, so the review can't be skipped.\n"
                 "Run `audit_coding` with your proposed_action + relevant_code, AND pass:\n"
                 f'  gate_repo = "{repo}"\n'
-                "  gate_diff = the staged diff (run: git diff --staged)\n"
+                + ("  gate_diff = the change being committed (run: git diff HEAD)\n"
+                   if (g.commit_targets_worktree(command)
+                       or not g._git(["diff", "--staged"], cwd).strip())
+                   else "  gate_diff = the staged diff (run: git diff --staged)\n") +
                 "A PASS lets the commit proceed on retry. (`deliberate_coding` is accepted if the "
                 "design is still open. Gate-self changes need a real audit/deliberate PASS of THIS "
                 "change — they can't be skipped, and an unrelated recent review won't release them.)"
@@ -88,8 +91,10 @@ def main():
     # gate-fire context (Step 0, design §2.2) and return its gate_context_id — the
     # preferred skip handle surfaced by skip_and_signal below.
     hashes = [h["content_hash"] for h in classification["hunks"]]
+    is_merge = g.is_merge_in_progress(cwd)
     resp = g.check_audit_coverage(cfg, repo, hashes,
-                                  classification=classification, session_id=session_id)
+                                  classification=classification, session_id=session_id,
+                                  is_merge=is_merge)
     action, detail = g.audit_decision(classification, resp, force_risky=False,
                                       tightness=cfg["gate_tightness"])
     if action == "deny":
@@ -104,19 +109,49 @@ def main():
         g.maybe_human_override(cfg, classification, resp, session_id, repo,
                                permission_mode=inp.get("permission_mode"))
         gcid = (resp or {}).get("gate_context_id")
+        # Gate-usability §3.6 ("unstages on block" confusion, 2026-07-22 L9781): this
+        # hook fires BEFORE the Bash command runs, so a fused `git add X && git commit`
+        # that gets denied never executed its `git add` — nothing was ever staged, and
+        # `git diff --staged` would capture an EMPTY diff (the "no binding" episodes).
+        # Name the capture command that matches how the gate itself read the change.
+        _staged_now = g._git(["diff", "--staged"], cwd)
+        if g.commit_targets_worktree(command) or not _staged_now.strip():
+            diff_cmd = "git diff HEAD"
+            staging_note = (
+                "  NOTE: this command was blocked BEFORE it ran — any `git add` in it "
+                "never executed, so nothing is staged (nothing was 'reset'). Capture the "
+                "change with `git diff HEAD`; after releasing, re-run your full command.\n")
+        else:
+            diff_cmd = "git diff --staged"
+            staging_note = ""
         # Phase 9: pass the gate_context_id to audit_coding so coverage binds to the gate's OWN
         # recorded hunks — a cosmetically-drifted gate_diff (a smart-quote, an em-dash an LLM
         # courier mangled) then still releases the change instead of silently missing coverage.
         gcid_line = f'  gate_context_id = "{gcid}"  (binds coverage to THIS change)\n' if gcid else ""
+        # Wave 3 (§3.3): a MERGE commit re-presents branch content whose per-commit
+        # receipts don't hash-match the merge diff's re-hunked boundaries. Offer the
+        # first-class merge release instead of teaching the accept-risk + external-review
+        # pile the 2026-07-22 episode needed. Server-enforced merge-only; floor-denied.
+        merge_line = ""
+        if is_merge and gcid:
+            merge_line = (
+                "This is a MERGE commit. If the uncovered content was already reviewed on the "
+                "branch being merged (per-commit receipts don't hash-match a merge's re-hunked "
+                "diff), release the NON-floor hunks in ONE call: "
+                f"`record_gate_skip(branch_already_reviewed, gate_context_id=\"{gcid}\", "
+                "reason_text=<which PRs/commits reviewed it>)`. Conflict-resolution or otherwise "
+                "NEW floor content still needs a real PASS.\n")
         g.emit_deny(
             f"TruVerifAI flagged a high-risk change worth a review before it ships — this commit "
             f"touches {cats}.\n"
             + g.transparency_block(classification, resp) +
             "Run `audit_coding` with your proposed_action + relevant_code, AND pass:\n"
             f'  gate_repo = "{repo}"\n'
-            "  gate_diff = the staged diff (run: git diff --staged)\n"
-            + gcid_line +
-            "A PASS releases the commit on retry — it covers FLOOR and non-floor hunks alike, so "
+            f"  gate_diff = the change being committed (run: {diff_cmd})\n"
+            + staging_note + gcid_line + merge_line +
+            "A PASS — a review whose final action is proceed/proceed_with_caveats; a major "
+            "finding raises the action past that — releases the commit on retry. It covers FLOOR "
+            "and non-floor hunks alike, so "
             "when both are present it is the ONE call that clears everything. Re-committing after "
             # §4.I diff-delta: a prior audit PASS still covers the hunks you didn't touch.
             "fixing earlier findings? Scope `audit_coding` to the changed hunks — your prior PASS "
@@ -131,7 +166,9 @@ def main():
             "judgment reason (free, one line). Floor tools release NOTHING here.\n"
             "After ONE review, apply its findings and call "
             "`record_gate_skip(recommendations_applied, gate_context_id)` instead of re-auditing "
-            "(a FLOOR hunk still needs a real PASS at commit — it's the ship checkpoint).\n"
+            "— with your recent review on record it releases FLOOR hunks too (compliance is "
+            "never penalized: the release is lineage-verified, minutes-TTL, and logged as "
+            "'findings applied', distinct from an audited PASS).\n"
             "LAST RESORT on a FLOOR change — only after the paths above genuinely don't fit (the "
             "gate mis-fired, you're deadlocked, or you're consciously shipping un-reviewed): "
             "`record_gate_skip(accept_risk_no_review, gate_context_id, reason_text=<pre-mortem>)` "
@@ -144,6 +181,7 @@ def main():
             "uncovered' and use that bucket's tool.\n"
             + g.skip_and_signal(classification, audit=True,
                                 gate_context_id=(resp or {}).get("gate_context_id"))
+            + g.release_options_block(resp)
         )
 
     # gate_tightness 'focused' downgrade (GATE-TIGHTNESS-DESIGN.md §3/§6b): the uncovered risky
@@ -168,6 +206,17 @@ def main():
             "To block on every risky change instead, set the plugin's gate_tightness=thorough."
         )
 
+    # Fail-open must never be SILENT (2026-07-23: the gates ran dark against a wrong
+    # backend URL for a whole session — every commit sailed through with zero output).
+    # Still fail-OPEN — the commit proceeds — but with a model-visible advisory so a
+    # broken coverage path is noticed on the FIRST commit, not never.
+    if action == "allow" and detail == g.FAIL_OPEN_AUDIT_DETAIL:
+        g.emit_allow_advisory(
+            "TruVerifAI commit gate: the coverage check was UNREACHABLE, so the gate "
+            "FAILED OPEN — this commit was NOT gated. If this repeats, the gates are "
+            "not enforcing at all: verify connectivity/API key (the plugin's /setup "
+            "command includes a gate-endpoint self-check). Tell the user about this."
+        )
     # Reached only for action in {'allow', 'allow_warn'} — 'deny' and 'advise' exited above.
     g.emit_allow(detail if action == "allow_warn" else None)
 

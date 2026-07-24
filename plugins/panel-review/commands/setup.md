@@ -17,6 +17,26 @@ If the call succeeds: report "✓ Connected to TruVerifAI MCP. API key valid."
 If the call returns a 401: report "✗ API key rejected — generate a fresh key at https://truverif.ai/settings/api-keys."
 If the call times out: report "✗ Could not reach mcp.truverif.ai. Check your network connection."
 
+## Step 2b — Gate-endpoint self-check (the hooks' half)
+
+`ping` verifies only the MCP tools. The review gates POST to a different endpoint (the
+backend's `/api/mcp/*` routes), and a failure there is fail-open by design — invisible
+except for a per-event advisory. Prove that half works end-to-end:
+
+Run (Bash), from the plugin's hooks directory (`${CLAUDE_PLUGIN_ROOT}/hooks` when that
+variable is set; otherwise locate the installed plugin's `hooks/` folder):
+
+```
+TVAI_TOKEN=${user_config.api_token} python gate_selfcheck.py
+```
+
+It prints the gate `base_url` it resolved, makes one free authorized round-trip to the
+coverage endpoint, and prints PASS or a named FAIL.
+
+If PASS: report "✓ Gate endpoint reachable and authorized — the review gates are enforcing."
+If FAIL: report the printed reason verbatim and warn: "✗ The review gates are FAILING
+OPEN — they will not block anything until this is fixed."
+
 ## Step 3 — Report which skills are installed
 
 Confirm the eight skills are present and list them with one-line summaries:

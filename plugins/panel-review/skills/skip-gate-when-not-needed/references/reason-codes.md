@@ -23,7 +23,8 @@ just to shorten it. All skips are logged.
 | `disagree_with_classification` | The classifier mis-categorized the change and you disagree with the flag. | **required** |
 | `tool_unavailable` | The review tool errored / is down and you can't run it. | optional |
 | `other` | None of the above. | **required** |
-| `recommendations_applied` | You ran ONE review, applied its findings (or a PASS-then-modify re-fired the gate) and want to proceed. Server-verified against a real review. | optional |
+| `recommendations_applied` | You ran ONE review, applied its findings (or a PASS-then-modify re-fired the gate) and want to proceed. Server-verified against a real review. Releases FLOOR hunks too (lineage-verified, minutes-TTL, logged distinctly as "findings applied"). | optional |
+| `branch_already_reviewed` | MERGE commits only (server-enforced): the branch content was already reviewed per-commit, but the merge diff's re-hunked boundaries match no receipt. Releases the non-floor hunks; NEW/conflict floor content still needs a real PASS. | **required** — name where it was reviewed (PRs / commits) |
 | `review_deferred_to_commit` | Defer a batch of successive risky writes to the commit gate; releases this write + silences the write gate for the session (~1h). | optional |
 | `accept_risk_no_review` | **LAST RESORT on a FLOOR block only** — you've decided to ship the floor change un-reviewed. Logged as an accountable override to the human, not a review; bound to this one fire, expires in minutes. | **required** — a substantive pre-mortem |
 
@@ -46,11 +47,11 @@ while the gate still blocks on the ordinary hunks it never touched. Read the gat
 covers both in one call. **Once every floor hunk is covered, a judgment code here becomes
 admissible** and releases the non-floor remainder.
 
-The two **single-call** codes are **gate-dependent** on floor: `recommendations_applied` and
-`review_deferred_to_commit` release a floor change at the **write gate** (you reviewed / are
-deferring the batch) but are **denied at the commit gate**, where a shipping floor hunk needs a
-real PASS. So a floor change can be applied/deferred while you work, and the commit gate audits it
-on the real staged bytes before it ships — defer *up to* commit, never past it.
+The two **single-call** codes differ on floor (rev-3, 2026-07-23): **`recommendations_applied`**
+releases a floor change at **both** gates — lineage-verified against your recent real review,
+minutes-TTL, logged distinctly as "findings applied" (compliance is never penalized).
+**`review_deferred_to_commit`** is **write-gate-only**: it defers the batch, and the commit gate
+re-audits every floor hunk on the real staged bytes — defer *up to* commit, never past it.
 
 ### `accept_risk_no_review` — the last-rung floor override
 
@@ -118,8 +119,9 @@ Make at most **one** panel-review call per change; these two proceed on that one
   receipt (`audit` / `deliberate` / `synthesize`, any verdict) exists for this repo recently.
   It's not a free skip; it attests you ran the review and addressed it. Use it after applying a
   review's findings, or when a **PASS-then-modify** re-fired the gate (you changed the reviewed
-  bytes — even a comment — so the gate re-classifies; no second review is needed). A floor hunk is
-  still re-audited at commit.
+  bytes — even a comment — so the gate re-classifies; no second review is needed). A floor hunk
+  released this way at the **write** gate is still re-audited at commit; at the **commit** gate
+  the applied call is the final release (rev-3).
 - **`review_deferred_to_commit`** needs no prior review — it's an explicit "review later." It
   releases this write and silences the write gate for the session/area (~1h), and logs an **open
   obligation** (a later `record_gate_skip` may surface a non-blocking advisory). Use it **only when

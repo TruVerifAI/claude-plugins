@@ -62,7 +62,11 @@ def config():
     return {
         "token": os.environ.get("CLAUDE_PLUGIN_OPTION_API_TOKEN", ""),
         "enabled": os.environ.get("CLAUDE_PLUGIN_OPTION_ENABLE_GATES", "true") == "true",
-        "base_url": os.environ.get("CLAUDE_PLUGIN_OPTION_API_BASE_URL", DEFAULT_BASE_URL).rstrip("/"),
+        # `or` (not a .get default): an EMPTY env value must fall back too — a blank
+        # override would silently blank every gate POST (2026-07-23 dev-setup defect).
+        # The env override is an INTERNAL escape hatch (not a declared userConfig
+        # option — users never see it); dev builds get their URL rewritten at sync.
+        "base_url": ((os.environ.get("CLAUDE_PLUGIN_OPTION_API_BASE_URL") or "").strip() or DEFAULT_BASE_URL).rstrip("/"),
         # Borderline (low-confidence) tier routing to synthesize (design §6.5):
         # 'synthesize_gate' (soft-gate Borderline-Heavy -> synthesize_coding),
         # 'advisory' (surface a suggestion only — the default until the F-001
@@ -200,6 +204,10 @@ SKIP_REASON_CODES = (
     # accountable (distinct ACCEPT_RISK receipt, substantive pre-mortem, minutes TTL). Byte-identity
     # with mcp_server/gate_skip.REASON_CODES + the record_gate_skip tool Literal (Rule 9).
     "accept_risk_no_review",
+    # Wave 3 (gate-usability §3.3): merge-commit release for branch content whose
+    # per-commit receipts don't hash-match the merge diff. Merge fires only
+    # (server-enforced); floor-denied like every judgment skip.
+    "branch_already_reviewed",
     "already_reviewed_this_session",  # DEPRECATED alias of prior_pass_receipt_match (no longer emitted)
 )
 
@@ -313,6 +321,24 @@ def is_out_of_repo_scope(path, cwd):
             if t and (low == t or low.startswith(t + "/")):
                 return True
         return False
+    except Exception:
+        return False
+
+
+def is_merge_in_progress(cwd):
+    """Wave 3 (§3.3): True when the imminent commit is a MERGE commit (MERGE_HEAD
+    present — an in-progress `git merge` about to be concluded by `git commit`,
+    or the `git merge` command itself). Uses `git rev-parse --git-path` so
+    worktrees / submodule .git files resolve correctly. Fails CLOSED (False) on
+    any error — an ordinary commit must never gain the merge-only release."""
+    try:
+        gp = _git(["rev-parse", "--git-path", "MERGE_HEAD"], cwd)
+        if not gp:
+            return False
+        path = gp.strip()
+        if not os.path.isabs(path):
+            path = os.path.join(cwd, path)
+        return os.path.exists(path)
     except Exception:
         return False
 
@@ -866,6 +892,24 @@ def _uncovered_bucket_line(uncovered_hunks):
     return "  " + " ".join(parts) + "\n"
 
 
+def release_options_block(check_response):
+    """Gate-usability section 3.5, closing the loop: the server sends machine-readable
+    release_options (the exact releasing calls, gate_context_id pre-filled) on every
+    block — render them verbatim so the AGENT actually receives the structure, not
+    just this hook's prose. Compact one-line-JSON per option; returns "" when the
+    server (old build) didn't send any."""
+    opts = (check_response or {}).get("release_options")
+    if not isinstance(opts, list) or not opts:
+        return ""
+    lines = ["Release options (machine-readable, gate_context_id pre-filled):"]
+    for o in opts[:6]:
+        try:
+            lines.append("  " + json.dumps(o, sort_keys=True))
+        except Exception:
+            continue
+    return "\n".join(lines) + "\n"
+
+
 def transparency_block(classification, check_response, max_items=8):
     """Fix 2A: a short, LOCAL itemization of what fired vs. what's already reviewed, for the
     deny message. Uses the client-side `matched` span (identifier/keyword + 1-based line; secret
@@ -913,8 +957,13 @@ def transparency_block(classification, check_response, max_items=8):
     return (header + "\n".join(lines) + "\n") if lines else ""
 
 
-def check_audit_coverage(cfg, repo, hunk_hashes, classification=None, session_id=None):
+def check_audit_coverage(cfg, repo, hunk_hashes, classification=None, session_id=None,
+                         is_merge=False):
     body = {"repo": repo, "hunks": hunk_hashes}
+    if is_merge:
+        # Wave 3 (§3.3): stamp the fire as a merge so branch_already_reviewed is
+        # admissible on it (server-enforced; additive — old servers ignore it).
+        body["is_merge"] = True
     body.update(_classifier_meta(classification, session_id))
     # gate_tightness (GATE-TIGHTNESS-DESIGN.md §6b): send the active tightness so the server can
     # label the minted fire's gate_decision ('advisory' when uncovered-but-all-advisory under
@@ -1018,6 +1067,17 @@ def gate_context_missing(check_response):
     return isinstance(check_response, dict) and check_response.get("gate_context_minted") is False
 
 
+# Fail-open sentinels (2026-07-23 dev-setup defect follow-up): when the coverage /
+# unlock POST fails, the gates ALLOW by design ("never trap the agent") — but that
+# outage used to be COMPLETELY SILENT (the plain-allow path drops `detail`), which is
+# how the gates ran dark against a wrong backend URL for an entire smoke session with
+# nobody noticing. The entrypoints compare the returned detail against these exact
+# constants (sentinel equality) and surface a NON-blocking advisory, so fail-open stays fail-open but
+# never invisible.
+FAIL_OPEN_AUDIT_DETAIL = "coverage check unavailable; failing open"
+FAIL_OPEN_WRITE_DETAIL = "unlock check unavailable; failing open"
+
+
 def audit_decision(classification, check_response, force_risky=False, tightness=None):
     """Return (action, detail). action ∈ {'allow', 'allow_warn', 'advise', 'deny'}.
 
@@ -1040,7 +1100,7 @@ def audit_decision(classification, check_response, force_risky=False, tightness=
     if not classification.get("risky") and not force_risky:
         return ("allow", "no risky hunks")
     if check_response is None:
-        return ("allow", "coverage check unavailable; failing open")
+        return ("allow", FAIL_OPEN_AUDIT_DETAIL)
     # `covered` is only meaningful when there are hunks to cover. A gate-self
     # change may classify to zero risky hunks, and "all of [] covered" is vacuously
     # true — don't let that wave it through; require recent_pass (a real review).
@@ -1167,7 +1227,7 @@ def deliberate_decision(classification, check_response, *, force_risky=False, ti
     if not classification.get("risky") and not force_risky:
         return ("allow", "no risky design change")
     if check_response is None:
-        return ("allow", "unlock check unavailable; failing open")
+        return ("allow", FAIL_OPEN_WRITE_DETAIL)
     # Write-gate-deadlock fix: a Write/Edit is finished code, so its natural review is `audit`.
     # `covered` means every risky hunk is covered by an audit-PASS (or, for a floor hunk, an
     # audit-PASS / fresh SYNTH_CONFIRM) of THIS change — a first-class release, symmetric with
@@ -1720,7 +1780,7 @@ def skip_and_signal(classification, audit, area=None, gate_context_id=None):
             "No gate context was issued for this block, so `record_gate_skip` can't release it "
             "(a skip only releases a gate the server can verify fired). Run `audit_coding` with "
             "gate_repo + gate_diff instead — a PASS releases the change. You are not stuck.\n"
-            + gate_signal_line(classification)
+            + gate_signal_line(classification) + "\n"
         )
     lines = ["  gate_context_id = %s" % json.dumps(gate_context_id),
              gate_signal_line(classification)]
@@ -1734,7 +1794,10 @@ def skip_and_signal(classification, audit, area=None, gate_context_id=None):
         "`gate_context_id` VALUE below (copy the gc_… string verbatim), then retry. (A judgment "
         "skip is denied while a FLOOR hunk is still unreviewed — cover the floor first, then it "
         "works.)\n"
-        + "\n".join(lines)
+        # Trailing newline (smoke-fixes F3, 2026-07-24): the deny assembly appends
+        # release_options_block directly after this — without it the gate_signal line
+        # and the "Release options" header fuse into one garbled line (dev smoke 4.1).
+        + "\n".join(lines) + "\n"
     )
 
 
