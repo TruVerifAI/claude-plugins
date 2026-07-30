@@ -635,10 +635,21 @@ def _iter_file_hunks(diff_text):
 # mcp_user_routes.py is intentionally NOT here (it carries dozens of unrelated routes);
 # its /receipts/check endpoint is protected by PR review + the manual Replit deploy gate.
 _GATE_SELF_PATHS = re.compile(
+    # Basename-anchored, so the gate files match wherever they live — plugin/hooks
+    # (the generated bundle), plugin-core/gate_core (the source of truth), or a
+    # marketplace clone. Cross-platform additions (2026-07-29): the host adapter
+    # package (host/*.py can rewrite every deny), every platform's manifest dir,
+    # platforms.yaml + build_bundles.py (the generator composes what ships), and
+    # the launchers that own the fail-open exit-code contract.
     r"(^|/)(risk_signals\.json|risk_classifier\.py|gate_lib\.py|hooks\.json"
     r"|audit_gate\.py|deliberate_gate\.py"
     r"|receipt_writer\.py|receipt_coverage\.py|gate_skip\.py"
-    r"|\.claude-plugin/|\.git/hooks/)",
+    r"|post_commit_backstop\.py|stash_precommit_head\.py|gate_selfcheck\.py"
+    r"|commit-detected\.sh|run_gate\.(sh|cmd)"
+    r"|platforms\.yaml|build_bundles\.py"
+    r"|gate_core/host/|hooks/host/"
+    r"|\.claude-plugin/|\.codex-plugin/|\.cursor-plugin/|gemini-extension\.json"
+    r"|\.git/hooks/)",
     re.IGNORECASE,
 )
 
@@ -684,8 +695,17 @@ def diff_touches_gate_self(diff_text):
 # take the trivial-edit skip. Conservative: gate-core is the default; only an explicitly inert
 # edit to a non-core gate-self file skips.
 _GATE_CORE_PATHS = re.compile(
+    # Cross-platform additions (2026-07-29): the host adapters + launchers are
+    # gate-CORE — an adapter emits the deny itself (a weakened emit_deny IS a
+    # disabled gate) and the launchers own the fail-open exit-code contract; the
+    # generator + platforms.yaml decide what ships in every bundle; the other
+    # platforms' manifest dirs are the peer of .claude-plugin/.
     r"(^|/)(risk_signals\.json|risk_classifier\.py|gate_lib\.py|hooks\.json"
-    r"|audit_gate\.py|deliberate_gate\.py|\.claude-plugin/|\.git/hooks/)",
+    r"|audit_gate\.py|deliberate_gate\.py|run_gate\.(sh|cmd)"
+    r"|platforms\.yaml|build_bundles\.py"
+    r"|gate_core/host/|hooks/host/"
+    r"|\.claude-plugin/|\.codex-plugin/|\.cursor-plugin/|gemini-extension\.json"
+    r"|\.git/hooks/)",
     re.IGNORECASE,
 )
 

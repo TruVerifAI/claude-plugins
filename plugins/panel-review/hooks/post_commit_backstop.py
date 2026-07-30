@@ -248,4 +248,4 @@ def _emit_advisory(event_name, cats, pushed):
 
 
 if __name__ == "__main__":
-    main()
+    g.host_run(main)

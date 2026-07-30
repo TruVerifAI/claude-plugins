@@ -37,6 +37,13 @@ def _content_and_path(inp):
     if tool == "MultiEdit":
         edits = ti.get("edits") or []
         return path, "\n".join((e.get("new_string", "") or "") for e in edits)
+    if tool == "PrebuiltDiff":
+        # Host adapter pre-built a unified diff (e.g. Codex apply_patch). The
+        # "content" for the empty-check / gate-self hash is the ADDED lines.
+        pre = ti.get("prebuilt_diff") or ""
+        added = "\n".join(ln[1:] for ln in pre.splitlines()
+                          if ln.startswith("+") and not ln.startswith("+++"))
+        return path, added
     return path, ""
 
 
@@ -46,7 +53,9 @@ def main():
         g.emit_allow()
 
     inp = g.read_hook_input()
-    if inp.get("tool_name") not in ("Write", "Edit", "MultiEdit"):
+    # Core vocabulary post-normalization: the host adapter has already mapped its
+    # native write tools onto Write / Edit / MultiEdit / PrebuiltDiff (host/base).
+    if inp.get("tool_name") not in ("Write", "Edit", "MultiEdit", "PrebuiltDiff"):
         g.emit_allow()
 
     path, content = _content_and_path(inp)
@@ -351,4 +360,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    g.host_run(main)

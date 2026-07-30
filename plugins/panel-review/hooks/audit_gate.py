@@ -222,4 +222,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    g.host_run(main)

@@ -28,6 +28,7 @@ import tempfile
 import time
 import urllib.request
 
+import host as host_registry  # per-platform adapter layer (same dir, host/ package)
 from risk_classifier import (  # vendored, same dir
     classify_diff,
     hunk_content_hash,
@@ -55,36 +56,89 @@ DEFAULT_BASE_URL = "https://api.truverif.ai"
 
 
 # ---------------------------------------------------------------------------
-# Config (from plugin userConfig env vars, with safe fallbacks)
+# Config — cross-platform resolution chain (implementation plan §7.4 / §3.3)
 # ---------------------------------------------------------------------------
+# Every option resolves through the same three levels, first non-empty wins:
+#   1. TVAI_<NAME> env var        — explicit override (CI / Docker / MDM)
+#   2. host-native mechanism      — e.g. Claude Code's CLAUDE_PLUGIN_OPTION_<NAME>
+#   3. ~/.truverifai/config.json  — written by `tvai login` (device flow); the
+#                                   universal path for hosts with no native secrets
+# EMPTY values are treated as unset at every level and fall through — a blank
+# override must never blank a gate POST (the 2026-07-23 dev-setup defect class).
+
+_CONFIG_FILE_CACHE = None
+
+# The token's TVAI env var is TVAI_API_KEY (the canonical cross-platform name in
+# the docs/setup copy), not TVAI_API_TOKEN; the config-file key accepts both.
+_TVAI_ENV_ALIASES = {"api_token": "TVAI_API_KEY"}
+_CONFIG_FILE_ALIASES = {"api_token": ("api_key", "api_token")}
+
+
+def _user_config_file():
+    """~/.truverifai/config.json parsed once per process, {} on any error (missing,
+    corrupt, unreadable — the gate never traps the agent on its own config)."""
+    global _CONFIG_FILE_CACHE
+    if _CONFIG_FILE_CACHE is None:
+        try:
+            p = os.path.join(os.path.expanduser("~"), ".truverifai", "config.json")
+            with open(p, encoding="utf-8") as fh:
+                data = json.load(fh)
+            _CONFIG_FILE_CACHE = data if isinstance(data, dict) else {}
+        except Exception:
+            _CONFIG_FILE_CACHE = {}
+    return _CONFIG_FILE_CACHE
+
+
+def _opt(name):
+    """Resolve option `name` (lower_snake) through the chain. Returns a stripped
+    string, or None when unset at every level."""
+    env_name = _TVAI_ENV_ALIASES.get(name, "TVAI_" + name.upper())
+    val = (os.environ.get(env_name) or "").strip()
+    if val:
+        return val
+    try:
+        val = (host_registry.current().native_option(name) or "").strip()
+    except Exception:
+        val = ""  # a broken adapter must not kill config resolution — fail open
+    if val:
+        return val
+    cfg = _user_config_file()
+    for key in _CONFIG_FILE_ALIASES.get(name, (name,)):
+        v = cfg.get(key)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            v = str(v)
+        if isinstance(v, bool):
+            v = "true" if v else "false"
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+
 
 def config():
     return {
-        "token": os.environ.get("CLAUDE_PLUGIN_OPTION_API_TOKEN", ""),
-        "enabled": os.environ.get("CLAUDE_PLUGIN_OPTION_ENABLE_GATES", "true") == "true",
-        # `or` (not a .get default): an EMPTY env value must fall back too — a blank
-        # override would silently blank every gate POST (2026-07-23 dev-setup defect).
+        "token": _opt("api_token") or "",
+        # Unset -> enabled (the shipped default). Any explicit value other than the
+        # exact string "true" disables — matching v0.17.0's strict comparison.
+        "enabled": (_opt("enable_gates") or "true") == "true",
         # The env override is an INTERNAL escape hatch (not a declared userConfig
         # option — users never see it); dev builds get their URL rewritten at sync.
-        "base_url": ((os.environ.get("CLAUDE_PLUGIN_OPTION_API_BASE_URL") or "").strip() or DEFAULT_BASE_URL).rstrip("/"),
+        "base_url": ((_opt("api_base_url") or "").strip() or DEFAULT_BASE_URL).rstrip("/"),
         # Borderline (low-confidence) tier routing to synthesize (design §6.5):
         # 'synthesize_gate' (soft-gate Borderline-Heavy -> synthesize_coding),
         # 'advisory' (surface a suggestion only — the default until the F-001
         # output-quality pre-validation passes), or 'off' (ignore borderline).
-        "borderline_mode": os.environ.get("CLAUDE_PLUGIN_OPTION_BORDERLINE_MODE", "advisory"),
+        "borderline_mode": _opt("borderline_mode") or "advisory",
         # Floor-bounded trigger-threshold override (F-011, §4.3): a user may RAISE the
         # threshold to cut borderline noise in a noisy repo. clamp_threshold() pins it to
         # [borderline_low+1, ceiling] so the must-fire signals (auth/secrets/migration/
         # removed-guard) always fire — the gate can't be silently disabled this way.
         # Empty -> config default.
-        "trigger_threshold": os.environ.get("CLAUDE_PLUGIN_OPTION_GATE_THRESHOLD", ""),
+        "trigger_threshold": _opt("gate_threshold") or "",
         # §6.5 borderline throttles (only active when borderline_mode='synthesize_gate'):
         # fractional sampling of Heavy events + a per-session soft-gate budget cap. Keep
         # the trigger rate flat on a high-volume band (design §6.5 "three throttles").
-        "borderline_sampling_rate": _parse_rate(
-            os.environ.get("CLAUDE_PLUGIN_OPTION_BORDERLINE_SAMPLING_RATE", ""), 0.5),
-        "borderline_session_budget": _parse_int(
-            os.environ.get("CLAUDE_PLUGIN_OPTION_BORDERLINE_SESSION_BUDGET", ""), 3),
+        "borderline_sampling_rate": _parse_rate(_opt("borderline_sampling_rate") or "", 0.5),
+        "borderline_session_budget": _parse_int(_opt("borderline_session_budget") or "", 3),
         # Gate tightness (fatigue lever, GATE-TIGHTNESS-DESIGN.md) — governs BOTH gates now
         # (Inc 8, Fix 5: the retired deliberate_mode is subsumed here). 'focused' (default) blocks
         # only floor + high-confidence non-floor and downgrades non-floor low-confidence changes to
@@ -117,10 +171,10 @@ def _resolve_gate_tightness():
     Mapping tiered→focused (NOT thorough) is the load-bearing bit: it keeps the default unchanged so
     Fix 5 doesn't silently make the default stricter (it only adds floor-awareness — a hard-floor
     hunk now blocks the write at ANY confidence, matching the commit gate)."""
-    raw = os.environ.get("CLAUDE_PLUGIN_OPTION_GATE_TIGHTNESS", "")
+    raw = _opt("gate_tightness") or ""
     if raw.strip():
         return _parse_tightness(raw)
-    legacy = os.environ.get("CLAUDE_PLUGIN_OPTION_DELIBERATE_MODE", "").strip().lower()
+    legacy = (_opt("deliberate_mode") or "").strip().lower()
     if legacy:
         # audit F-004: the deliberate_mode userConfig is retired. If the option was dropped from
         # plugin.json but a stale saved value is still exported (Claude Code behavior varies), tell
@@ -703,6 +757,14 @@ def build_change_diff(inp, path, content):
     tool = inp.get("tool_name")
     cwd = inp.get("cwd")
     try:
+        # PrebuiltDiff: the host adapter already produced a unified diff (e.g. Codex
+        # apply_patch, whose input IS a patch). Classify it verbatim — re-deriving a
+        # delta would change the hunk hashes a natural agent gate_diff produces.
+        if tool == "PrebuiltDiff":
+            pre = (ti.get("prebuilt_diff") or "").strip()
+            if pre and "@@" in pre:
+                return pre if pre.endswith("\n") else pre + "\n"
+            return synth_write_diff(path, content)
         if tool == "Edit":
             return _unified_delta(path, ti.get("old_string", "") or "", content)
         if tool == "MultiEdit":
@@ -754,6 +816,21 @@ def _post(cfg, path, body):
     """POST JSON to the backend. Returns the parsed dict, or None on any error
     (the caller fails open)."""
     try:
+        # Cross-platform: stamp WHICH host this gate ran under on every POST.
+        # The server may ignore it today; when the fires table gains a platform
+        # column, per-platform gate-health lights up with NO client re-release
+        # (plan §2.5 forward-compatibility, applied to ourselves). PRIVACY,
+        # stated precisely (audit mcp_cd6dd4a6 F-002): the value is the host
+        # ADAPTER name from our own fixed registry ("claude_code", "codex",
+        # "cursor_cli", ...) — a coarse host-APP identifier. It is NEVER a
+        # machine hostname, username, or anything derived from the user's
+        # environment. Server-side ingestion must still allowlist/normalize
+        # when the column lands (F-006) — never trust the wire value blindly.
+        if isinstance(body, dict) and "platform" not in body:
+            try:
+                body = dict(body, platform=host_registry.current().name)
+            except Exception:
+                pass  # never let telemetry stamping break a gate POST
         req = urllib.request.Request(
             cfg["base_url"] + path,
             data=json.dumps(body).encode("utf-8"),
@@ -1823,10 +1900,19 @@ def read_hook_input():
             # (audit F-001) rather than failing. A genuinely malformed payload should raise
             # UnicodeDecodeError -> the except below returns {} -> the gate fails OPEN
             # (allow), consistent with the module's posture — never silently mutate content.
-            return json.loads(raw.decode("utf-8") or "{}")
-        return json.loads(sys.stdin.read() or "{}")
+            parsed = json.loads(raw.decode("utf-8") or "{}")
+        else:
+            parsed = json.loads(sys.stdin.read() or "{}")
     except Exception:
         return {}
+    # Normalize the host's payload onto the core vocabulary (Bash / Write / Edit /
+    # MultiEdit / PrebuiltDiff, claude-shaped tool_input). Claude Code = identity.
+    # A normalizer error fails open to the RAW payload: the gates allow any tool
+    # they don't recognize, so a broken adapter can never trap the agent.
+    try:
+        return host_registry.current().normalize_input(parsed)
+    except Exception:
+        return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -1857,14 +1943,24 @@ def _plugin_root():
 
 
 def plugin_version():
-    """The running plugin's version (from its own .claude-plugin/plugin.json), or
-    'unknown' on any error. Used to stamp deny messages / logs."""
+    """The running plugin's version (from its bundle manifest), or 'unknown' on any
+    error. Probes the host's manifest filenames in order (each platform names its
+    manifest differently — .claude-plugin/, .codex-plugin/, .cursor-plugin/, root
+    plugin.json, gemini-extension.json). Used to stamp deny messages / logs."""
+    root = _plugin_root()
     try:
-        with open(os.path.join(_plugin_root(), ".claude-plugin", "plugin.json"),
-                  encoding="utf-8") as fh:
-            return json.load(fh).get("version") or "unknown"
+        paths = host_registry.current().manifest_paths
     except Exception:
-        return "unknown"
+        paths = (os.path.join(".claude-plugin", "plugin.json"),)
+    for rel in paths:
+        try:
+            with open(os.path.join(root, rel), encoding="utf-8") as fh:
+                v = json.load(fh).get("version")
+            if v:
+                return v
+        except Exception:
+            continue
+    return "unknown"
 
 
 # Memoized: the orphaned marker can't change during a single (short-lived) hook
@@ -1913,26 +2009,35 @@ _DENY_SYSTEM_MESSAGE = (
 )
 
 
+def host_run(fn):
+    """Run a gate entrypoint under the active host's lifecycle wrapper. On the
+    fail-CLOSED host (copilot_cli) this is total exception containment; on
+    every other host it is a plain call (the launcher's exit-0 coercion is the
+    belt). Resolution failure runs bare — never trap the agent on our error."""
+    try:
+        h = host_registry.current()
+    except Exception:
+        fn()
+        return
+    h.run(fn)
+
+
 def emit_deny(reason, system_message=_DENY_SYSTEM_MESSAGE):
-    """Emit a PreToolUse deny so Claude Code blocks the tool and shows the model
-    the reason. The model still holds full context and can act on it. A short,
-    positive `systemMessage` accompanies the block for the user; the detailed
-    `reason` goes to the model."""
-    out = {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            # Stamp the running plugin version (or a staleness warning) on every deny
-            # so "which version walled this" is visible and a stale hook self-announces.
-            "permissionDecisionReason": reason + version_suffix(),
-        }
-    }
-    if system_message:
-        if is_stale_version():
-            system_message = system_message + " (Gate is on a SUPERSEDED version — /reload-plugins.)"
-        out["systemMessage"] = system_message
-    print(json.dumps(out))
-    sys.exit(0)
+    """Emit a deny so the host blocks the tool and shows the MODEL the reason
+    (the routing message — the entire product; a block without it is a wall, not
+    a router). The model still holds full context and can act on it. A short,
+    positive `system_message` accompanies the block for the user on hosts with a
+    separate user channel.
+
+    Composition happens HERE (version stamp, staleness warning); the host adapter
+    only wire-formats the final strings + exits — so adapters stay tiny and
+    dependency-free (host must not import gate_lib)."""
+    # Stamp the running plugin version (or a staleness warning) on every deny
+    # so "which version walled this" is visible and a stale hook self-announces.
+    reason = reason + version_suffix()
+    if system_message and is_stale_version():
+        system_message = system_message + " (Gate is on a SUPERSEDED version — /reload-plugins.)"
+    host_registry.current().emit_deny(reason, system_message)
 
 
 def emit_ask(reason, system_message=None):
@@ -1950,18 +2055,12 @@ def emit_ask(reason, system_message=None):
     for operators who have not disabled the safety; it does not (and cannot) override a deliberate
     bypass. `deny` is the only unconditionally non-bypassable outcome, but the floor backstop must
     NOT hard-trap a genuinely-reviewed change, so it deliberately uses `ask`, not `deny`. The
-    `reason` is hook/server-authored (never the agent's words)."""
-    out = {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "ask",
-            "permissionDecisionReason": reason + version_suffix(),
-        }
-    }
-    if system_message:
-        out["systemMessage"] = system_message
-    print(json.dumps(out))
-    sys.exit(0)
+    `reason` is hook/server-authored (never the agent's words).
+
+    Hosts without an `ask` decision override Host.emit_ask; the base contract is
+    that an unsupported ask must degrade toward allow-with-warning, never toward
+    deny (it must NOT hard-trap)."""
+    host_registry.current().emit_ask(reason + version_suffix(), system_message)
 
 
 def emit_allow(note=None):
@@ -1972,25 +2071,16 @@ def emit_allow(note=None):
     (every non-git Bash, every non-risky write) don't spam the transcript."""
     if note and is_stale_version():
         note = note + " | " + _STALE_WARNING
-    if note:
-        sys.stderr.write("TruVerifAI: " + note + "\n")
-    sys.exit(0)
+    host_registry.current().emit_allow(note)
 
 
 def emit_allow_advisory(additional_context):
-    """Allow the tool but inject a MODEL-VISIBLE advisory via PreToolUse
-    `additionalContext` (Option B). Crucially emits NO `permissionDecision`, so the
-    tool still goes through the user's normal permission flow — this does NOT
-    auto-approve (that would need permissionDecision='allow'). Unlike emit_allow's
-    stderr note (user-transcript only), additionalContext reaches the model so it can
-    choose to act. Degrades harmlessly on Claude Code builds that ignore the field, and
-    fails open (a serialization error still exits 0 — the gate never traps the agent)."""
-    try:
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "additionalContext": additional_context,
-        }}))
-        sys.stdout.flush()  # ensure the JSON lands before exit if stdout is piped/buffered
-    except Exception:
-        pass
-    sys.exit(0)
+    """Allow the tool but inject a MODEL-VISIBLE advisory (Claude Code:
+    PreToolUse `additionalContext`; hosts without an advisory channel degrade to
+    a stderr note). Crucially emits NO permission decision, so the tool still
+    goes through the user's normal permission flow — this does NOT auto-approve.
+    Unlike emit_allow's stderr note (user-transcript only), the advisory reaches
+    the model so it can choose to act. Degrades harmlessly on hosts that ignore
+    the field, and fails open (a serialization error still exits 0 — the gate
+    never traps the agent)."""
+    host_registry.current().emit_allow_advisory(additional_context)
