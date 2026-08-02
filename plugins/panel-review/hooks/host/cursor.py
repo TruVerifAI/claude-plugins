@@ -5,12 +5,12 @@ CursorHost (IDE): the marketplace plugin fires `preToolUse` for all tool types
 is ASSUMED to deny per the owner decision (plan §0) — the `write_gate_ASSUMED`
 capability drives COPY/doctor output only, never registration.
 
-CursorCliHost (cursor-agent): as of 2026-07 the CLI fires ONLY the shell
-events, and marketplace-plugin hooks don't fire at all — so `tvai init`
-writes repo-level `.cursor/hooks.json` and the CLI ships commit-gate-only.
-The write hook is REGISTERED anyway (§2.5 rule 1): the day Cursor delivers
-the event, the gate starts working with no release from us. The capability
-below is a DATED OBSERVATION, not a switch.
+CursorCliHost (cursor-agent): the 2026-07 observation was commit-gate-only
+(shell events only). That is obsolete — the 2026-08-01 C4 cert run confirmed
+the CLI fires preToolUse for Write too, so both surfaces run the full dual
+gate from the same user-level `~/.cursor/hooks.json`. The forward-compatible
+registration (§2.5 rule 1) is what made this a zero-change upgrade: the day
+Cursor delivered the event, the gate just worked.
 
 Wire contract (cursor.com/docs/agent/hooks):
 - input: snake_case (tool_name/tool_input/cwd), conversation-scoped ids; write
@@ -24,6 +24,8 @@ Wire contract (cursor.com/docs/agent/hooks):
 """
 
 import json
+import os
+import re
 import sys
 
 from host.base import Host
@@ -33,9 +35,12 @@ class CursorHost(Host):
     name = "cursor"
 
     capabilities = dict(Host.capabilities, **{
-        "install": "marketplace_plugin",
-        "write_gate": "assumed_2026_07",   # owner decision; copy/doctor only
-        "supports_ask": False,             # schema accepts, does not enforce
+        "install": "user_hooks_config",    # ~/.cursor/hooks.json via tvai init (IDE + CLI)
+        # CONFIRMED LIVE 2026-08-01 (cursor 3.14.7, Windows): preToolUse
+        # delivered a Write with claude-shaped tool_input; the write gate
+        # fired, an audit PASS released it, and the retry proceeded.
+        "write_gate": "confirmed_live_2026_08",
+        "supports_ask": True,              # "permission": "ask" is in the documented contract
         "supports_advisory_context": False,
         "separate_user_message": True,
         "stderr_reaches_model": "unknown",
@@ -47,8 +52,50 @@ class CursorHost(Host):
 
     # -- input -------------------------------------------------------------
 
+    @staticmethod
+    def _fs_path(p):
+        # Cursor's workspace_roots are URI-style on Windows ("/C:/temp/x") —
+        # invalid as a filesystem path (live capture 2026-08-01, cursor
+        # 3.14.7). Strip the leading slash ONLY for the drive-letter pattern
+        # on Windows; POSIX roots ("/home/x") have no colon and pass through.
+        if os.name == "nt" and isinstance(p, str) and \
+                re.match(r"^/[A-Za-z]:[/\\]", p):
+            return p[1:]
+        return p
+
     def normalize_input(self, raw):
         out = dict(raw or {})
+        # beforeShellExecution delivers the command TOP-LEVEL — no tool_name,
+        # no tool_input: {"command": ..., "cwd": "", ...} (live capture
+        # 2026-08-01). Synthesize the claude shape the gates key on. Guarded
+        # on tool_name being absent/empty so a named tool is never overridden;
+        # merge into any existing tool_input rather than clobbering it.
+        cmd = out.get("command")
+        if not out.get("tool_name") and isinstance(cmd, str) and cmd:
+            ti0 = dict(out.get("tool_input") or {})
+            # Precedence: an existing tool_input["command"] wins even when
+            # falsy ("" / None) — never override what the host sent.
+            ti0.setdefault("command", cmd)
+            out["tool_name"] = "Bash"
+            out["tool_input"] = ti0
+            if os.environ.get("TVAI_DEBUG"):
+                sys.stderr.write(
+                    "TruVerifAI debug: synthesized Bash from top-level "
+                    "command (event=%s)\n" % out.get("hook_event_name"))
+        # cwd insurance (docs sweep 2026-07-31): USER-level hooks execute with
+        # process cwd = ~/.cursor, so the gates depend entirely on the payload
+        # cwd. Live capture: payload cwd is an EMPTY STRING and
+        # workspace_roots is the only usable location — map the variants; a
+        # missing cwd would make the commit gate diff ~/.cursor (silent no-op).
+        if not out.get("cwd"):
+            wr = out.get("workspace_roots")
+            cand = (wr[0] if isinstance(wr, list) and wr else None) or \
+                out.get("workspace_root") or out.get("project_dir") or \
+                out.get("workspace_dir")
+            # Strings only (audit F-005): a malformed entry must not become a
+            # cwd — leave it unset and let downstream fall back safely.
+            if cand and isinstance(cand, str):
+                out["cwd"] = self._fs_path(cand)
         tool = str(out.get("tool_name") or "")
         ti = out.get("tool_input") or {}
         if tool in ("Shell", "shell"):
@@ -81,17 +128,15 @@ class CursorHost(Host):
         sys.exit(0)
 
     def emit_ask(self, reason, system_message=None):
-        # `ask` is schema-accepted but NOT enforced by Cursor — an emitted ask
-        # would silently behave as something else. Base contract: an
-        # unsupported ask degrades toward allow-with-warning, never deny.
-        # TVAI_ASK_DEGRADED is a machine-greppable marker (audit mcp_6510d831
-        # F-002): on this host the floor backstop's human-override channel
-        # degrades to a warning, and that fact must be detectable in
-        # transcripts / by tvai doctor — never silent.
-        sys.stderr.write(
-            "TruVerifAI: TVAI_ASK_DEGRADED — human-confirmation requested but "
-            "this host does not enforce 'ask'; allowing with warning: "
-            + reason + "\n")
+        # REAL ask (docs sweep 2026-07-31): "permission": "ask" is part of
+        # Cursor's documented output contract for preToolUse /
+        # beforeShellExecution — the human-confirmation channel works natively
+        # here. (The old TVAI_ASK_DEGRADED allow-with-warning predated the
+        # docs; degradation now applies only on hosts without ask.)
+        out = {"permission": "ask", "agent_message": reason}
+        if system_message:
+            out["user_message"] = system_message
+        print(json.dumps(out))
         sys.exit(0)
 
     def emit_allow_advisory(self, additional_context):
@@ -101,13 +146,25 @@ class CursorHost(Host):
             pass
         sys.exit(0)
 
+    def emit_post_advisory(self, message, event_name="PostToolUse"):
+        # Cursor postToolUse/postToolUseFailure output contract
+        # (cursor.com/docs/agent/hooks, verified 2026-08-01): snake_case
+        # additional_context injects into the conversation. afterShellExecution
+        # is observational-only — the backstop rides postToolUse instead.
+        try:
+            print(json.dumps({"additional_context": message}))
+            sys.stdout.flush()
+        except Exception:
+            pass
+
 
 class CursorCliHost(CursorHost):
     name = "cursor_cli"
 
     capabilities = dict(CursorHost.capabilities, **{
         "install": "hooks_config_file",            # .cursor/hooks.json via tvai init
-        # DATED OBSERVATION (plan §2.5 rule 2): drives copy/doctor ONLY. The
-        # write hook stays registered; delivery is Cursor's side to fix.
-        "write_gate": "not_delivered_2026_07",
+        # CONFIRMED LIVE 2026-08-01 (C4 cert run, CLI on Windows): the 2026-07
+        # "not delivered" observation is obsolete — cursor-agent now fires
+        # preToolUse for Write; the write gate denied G2 and released on audit.
+        "write_gate": "confirmed_live_2026_08",
     })

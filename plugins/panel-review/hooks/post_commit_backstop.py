@@ -5,9 +5,12 @@ Catches a floor change that reached a commit WITHOUT a review — the fused
 `create-a-file && git commit` that slips past the commit gate (the file doesn't
 exist on disk at PreToolUse time, so the gate can't classify it). This hook runs
 AFTER the command: it classifies the REAL committed diff (via git — no shell
-parsing) and, on an uncovered FLOOR hunk (auth / secrets / money / migrations /
-removed-guard with no review receipt), surfaces a NON-BLOCKING, content-based
-advisory to the agent and logs a row for the human dashboard (the real product).
+parsing, and NEVER via the hook payload's tool_output: host output capture is
+truncated/lossy, and trusting it would reintroduce the exact blind spot this
+backstop closes) and, on an uncovered FLOOR hunk (auth / secrets / money /
+migrations / removed-guard with no review receipt), surfaces a NON-BLOCKING,
+content-based advisory to the agent and logs a row for the human dashboard (the
+real product).
 
 It CANNOT block — PostToolUse runs after the tool. Registered on BOTH PostToolUse
 (exit 0) and PostToolUseFailure (non-zero exit, e.g. `commit && push` where push
@@ -238,14 +241,27 @@ def _emit_advisory(event_name, cats, pushed):
                "couldn't see this because the file was created and committed in one command.")
     ev = event_name if event_name in ("PostToolUse", "PostToolUseFailure") else "PostToolUse"
     try:
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": ev,
-            "additionalContext": msg,
-        }}))
-        sys.stdout.flush()
+        # Route through the host adapter (cursor uses snake_case
+        # additional_context; base = Claude/Codex hookSpecificOutput).
+        import host as host_registry
+        host_registry.current().emit_post_advisory(msg, ev)
     except Exception:
-        pass
+        # Fallback: the pre-adapter Claude/Codex wire, byte-identical to the
+        # original inline emit — never lose the advisory to a registry error.
+        try:
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": ev,
+                "additionalContext": msg,
+            }}))
+            sys.stdout.flush()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
+    # g must be imported HERE: main() imports it only locally, so the
+    # bare g.host_run(main) was a NameError on every live invocation —
+    # the backstop was silently dead on ALL platforms (found via the
+    # Cursor fused-commit probe, 2026-08-01).
+    import gate_lib as g
     g.host_run(main)

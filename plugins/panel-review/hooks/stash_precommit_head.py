@@ -68,4 +68,9 @@ def _record():
 
 
 if __name__ == "__main__":
+    # g must be imported HERE: main() imports it only locally, so the
+    # bare g.host_run(main) was a NameError on every live invocation —
+    # the backstop was silently dead on ALL platforms (found via the
+    # Cursor fused-commit probe, 2026-08-01).
+    import gate_lib as g
     g.host_run(main)

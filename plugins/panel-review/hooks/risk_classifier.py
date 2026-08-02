@@ -645,7 +645,7 @@ _GATE_SELF_PATHS = re.compile(
     r"|audit_gate\.py|deliberate_gate\.py"
     r"|receipt_writer\.py|receipt_coverage\.py|gate_skip\.py"
     r"|post_commit_backstop\.py|stash_precommit_head\.py|gate_selfcheck\.py"
-    r"|commit-detected\.sh|run_gate\.(sh|cmd)"
+    r"|commit-detected\.sh|run_gate\.(sh|cmd|js)"
     r"|platforms\.yaml|build_bundles\.py"
     r"|gate_core/host/|hooks/host/"
     r"|\.claude-plugin/|\.codex-plugin/|\.cursor-plugin/|gemini-extension\.json"
@@ -701,7 +701,7 @@ _GATE_CORE_PATHS = re.compile(
     # generator + platforms.yaml decide what ships in every bundle; the other
     # platforms' manifest dirs are the peer of .claude-plugin/.
     r"(^|/)(risk_signals\.json|risk_classifier\.py|gate_lib\.py|hooks\.json"
-    r"|audit_gate\.py|deliberate_gate\.py|run_gate\.(sh|cmd)"
+    r"|audit_gate\.py|deliberate_gate\.py|run_gate\.(sh|cmd|js)"
     r"|platforms\.yaml|build_bundles\.py"
     r"|gate_core/host/|hooks/host/"
     r"|\.claude-plugin/|\.codex-plugin/|\.cursor-plugin/|gemini-extension\.json"

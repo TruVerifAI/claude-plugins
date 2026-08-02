@@ -1900,10 +1900,26 @@ def read_hook_input():
             # (audit F-001) rather than failing. A genuinely malformed payload should raise
             # UnicodeDecodeError -> the except below returns {} -> the gate fails OPEN
             # (allow), consistent with the module's posture — never silently mutate content.
-            parsed = json.loads(raw.decode("utf-8") or "{}")
+            # utf-8-sig, not utf-8: Cursor (3.14.7, Windows) BOM-prefixes the
+            # hook's stdin JSON — plain utf-8 keeps U+FEFF, json.loads raises,
+            # and the gate silently fails open (live capture 2026-08-01; JS
+            # trim() in the debug canary HID the BOM for two rounds). utf-8-sig
+            # strips a leading BOM and is byte-identical to utf-8 without one.
+            parsed = json.loads(raw.decode("utf-8-sig") or "{}")
         else:
-            parsed = json.loads(sys.stdin.read() or "{}")
-    except Exception:
+            # Parity with utf-8-sig: strip at most ONE leading BOM (lstrip
+            # would eat repeats, which utf-8-sig treats as malformed).
+            text = sys.stdin.read() or "{}"
+            if text.startswith("\ufeff"):
+                text = text[1:]
+            parsed = json.loads(text)
+    except Exception as _e:
+        if os.environ.get("TVAI_DEBUG"):
+            try:
+                sys.stderr.write("TruVerifAI debug: hook stdin parse "
+                                 "failed (fail-open): %r\n" % (_e,))
+            except Exception:
+                pass
         return {}
     # Normalize the host's payload onto the core vocabulary (Bash / Write / Edit /
     # MultiEdit / PrebuiltDiff, claude-shaped tool_input). Claude Code = identity.

@@ -62,8 +62,51 @@ class CodexHost(Host):
 
     capabilities = dict(Host.capabilities, **{
         "install": "marketplace_plugin",   # codex plugin marketplace add TruVerifAI/codex-plugins
-        "stability": "beta",               # upstream hooks are beta
+        "stability": "beta",               # upstream hooks are beta, OFF by default
+        # Requires [features] hooks = true in ~/.codex/config.toml —
+        # without it hooks are silent no-ops (docs review 2026-07-31). tvai
+        # init writes it; doctor checks it.
+        "requires_feature_flag": "hooks",  # was codex_hooks (deprecated upstream 2026-07)
+        # PreToolUse fires for the SHELL tool only today (openai/codex issues
+        # #16732/#18491): commit gate live, write hook registered forward-
+        # compatibly for when apply_patch events ship.
+        "write_gate": "not_delivered_2026_07",
     })
+
+    def emit_deny(self, reason, system_message=None):
+        # SCHEMA-EXACT deny (live finding 2026-07-31: Codex parses hook output
+        # STRICTLY — unknown fields make the whole output "invalid pre-tool-use
+        # JSON" and the hook fails open. A superset with top-level fields +
+        # systemMessage was rejected in a real session). Official contract
+        # (learn.chatgpt.com/docs/hooks): ONLY the nested hookSpecificOutput
+        # with these three fields. The systemMessage banner goes to stderr.
+        import json
+        if system_message:
+            sys.stderr.write("TruVerifAI: " + system_message + "\n")
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }))
+        sys.exit(0)
+
+    def emit_ask(self, reason, system_message=None):
+        # Codex parses permissionDecision "ask" but does not support it yet —
+        # behavior undefined. A decisive deny (with the reason) is the safe
+        # degradation for confirmation-requiring moments.
+        self.emit_deny("[requires confirmation] " + reason, system_message)
+
+    def emit_allow_advisory(self, additional_context):
+        # additionalContext is not in Codex's documented output schema; under
+        # strict parsing it would mark the hook failed on every advisory.
+        # Surface it on stderr and allow silently (exit 0, empty stdout).
+        try:
+            sys.stderr.write("TruVerifAI: " + str(additional_context) + "\n")
+        except Exception:
+            pass
+        sys.exit(0)
 
     manifest_paths = (
         "/".join((".codex-plugin", "plugin.json")),

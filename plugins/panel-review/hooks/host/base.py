@@ -168,3 +168,18 @@ class Host(object):
         except Exception:
             pass
         sys.exit(0)
+
+    def emit_post_advisory(self, message, event_name="PostToolUse"):
+        """POST-hook model-visible advisory (the post-commit backstop). Base =
+        Claude Code / Codex wire; hosts with a different post contract override.
+        Does NOT exit — post hooks fall through to their own exit 0."""
+        try:
+            ev = event_name if event_name in ("PostToolUse",
+                                              "PostToolUseFailure") else "PostToolUse"
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": ev,
+                "additionalContext": message,
+            }}))
+            sys.stdout.flush()
+        except Exception:
+            pass

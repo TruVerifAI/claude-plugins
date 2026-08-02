@@ -56,9 +56,14 @@ class GeminiHost(Host):
         return out
 
     def emit_deny(self, reason, system_message=None):
-        # `reason` is surfaced to the agent as the tool error; system_message
-        # has no separate channel here and reason already carries the routing.
-        print(json.dumps({"decision": "deny", "reason": reason}))
+        # Official contract (gemini-cli docs/hooks/reference.md, verified
+        # 2026-07-31): {"decision": "deny", "reason": ...} on stdout, exit 0.
+        # systemMessage IS a documented common output field (shown to the user
+        # in the terminal), so the banner rides along when present.
+        out = {"decision": "deny", "reason": reason}
+        if system_message:
+            out["systemMessage"] = system_message
+        print(json.dumps(out))
         sys.exit(0)
 
     def emit_ask(self, reason, system_message=None):
