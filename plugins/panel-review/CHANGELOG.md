@@ -1,6 +1,25 @@
 # Changelog — AI Panel Review (Claude Code plugin)
 
-## 0.18.0 (unreleased)
+## 0.19.15
+
+**Fix: the post-commit backstop was silently dead — resurrected.** An
+entry-point bug (`g.host_run(main)` with `gate_lib` imported only inside
+`main()`) made the backstop and its pre-side HEAD stash crash with a
+NameError on every invocation since the cross-platform refactor; the
+fail-open design masked it completely. The fused `create-a-file && git
+commit` bypass advisory works again. A new regression suite executes every
+gate script as a real subprocess so this class of bug cannot ship again.
+
+Also in this release (shared gate core, aligned with CLI 0.19.15):
+- Hook stdin is decoded with `utf-8-sig` — hosts that BOM-prefix the
+  payload (observed on Cursor/Windows) no longer cause a silent fail-open.
+- Cursor host adapter: top-level `command` payloads normalized, URI-style
+  `workspace_roots` (`/C:/...`) mapped to real paths, strings-only cwd
+  hardening, native `ask` support, and a `post_commit_backstop` advisory
+  channel via `postToolUse` (`additional_context`).
+- `run_gate.js` node launcher vendored for shell-agnostic hook commands.
+
+## 0.18.0 (unreleased) — superseded by 0.19.15
 
 Cross-platform gate core (phase 0). Gate **decisions, wire format, and defaults
 are preserved** relative to 0.17.0 under a default environment — with **three
