@@ -130,7 +130,15 @@ Tool invocations are billed against your TruVerifAI account. Pricing at https://
 
 ## Cross-platform install (non-Claude-Code users)
 
-For Codex CLI / Gemini CLI / Cursor: see `install-cross-platform.sh` in the plugin directory. Cursor users invoke skills manually (`/skill-name`) — Cursor doesn't have native auto-discovery yet, so the plugin's value on Cursor is reduced to "well-curated reference material for invoking TruVerifAI MCP via your existing MCP client."
+One command sets up every supported platform — Codex CLI, Gemini CLI, Cursor (IDE + CLI), GitHub Copilot CLI, VS Code agent, and Google Antigravity:
+
+```
+npx @truverifai/init
+```
+
+It connects the review tools (MCP), installs the gate code, writes each platform's hook config (user- or repo-level as that platform requires), and offers the proactive-invocation rules. `npx @truverifai/init doctor` verifies gates and tools separately per platform. Full per-platform walkthroughs: https://truverif.ai/settings/mcp.
+
+The review gates and the post-commit backstop were live-certified on all of the platforms above (2026-08). Cursor note: skills don't auto-activate there (invoke `/skill-name` manually); the rules file init writes covers proactive invocation instead.
 
 ## Known limitations
 
