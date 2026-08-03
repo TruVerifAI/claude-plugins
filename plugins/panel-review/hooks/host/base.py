@@ -114,7 +114,11 @@ class Host(object):
         new = ti.get("new_string") if ti.get("new_string") is not None else (
             ti.get("newText") if ti.get("newText") is not None else ti.get("new_str"))
         content = ti.get("content") if ti.get("content") is not None else (
-            ti.get("contents") if ti.get("contents") is not None else ti.get("text"))
+            ti.get("contents") if ti.get("contents") is not None else (
+                ti.get("text") if ti.get("text") is not None else
+                # Copilot CLI's `create` tool (live capture 2026-08-02):
+                # {"path": ..., "file_text": ...}
+                ti.get("file_text")))
         if path and old is not None and new is not None:
             return "Edit", {"file_path": path, "old_string": old, "new_string": new}
         if path and content is not None:

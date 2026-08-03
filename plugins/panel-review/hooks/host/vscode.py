@@ -27,9 +27,15 @@ class VsCodeHost(Host):
     name = "vscode"
 
     capabilities = dict(Host.capabilities, **{
-        "install": "agent_plugin",               # Chat: Install Plugin From Source
+        # Docs sweep 2026-08-02: VS Code auto-loads .github/hooks/*.json (no
+        # trust prompt, no enable flag) — tvai init writes a PascalCase
+        # config there; the bundled-plugin hook channel was stripped
+        # (unverified ${CLAUDE_PLUGIN_ROOT} substitution + wrong schema).
+        "install": "hooks_config_file",
         "generic_nonzero_fails_closed": False,   # OPPOSITE of copilot_cli
-        "supports_advisory_context": False,      # not documented; degrade
+        "supports_advisory_context": False,      # PRE advisory undocumented
+        # PostToolUse hookSpecificOutput.additionalContext IS documented
+        # (2026-08-02) -> base emit_post_advisory works as-is.
         "stderr_reaches_model": "unknown",
         "stability": "preview",
     })
@@ -37,10 +43,16 @@ class VsCodeHost(Host):
     manifest_paths = ("plugin.json",) + Host.manifest_paths
 
     def normalize_input(self, raw):
-        out = self._camel_common(raw)
+        # _destring_args: the copilot family stringifies toolArgs (live
+        # capture 2026-08-02 on the CLI; assume the same family quirk here —
+        # a no-op when tool_input is already an object).
+        from host.copilot_cli import CopilotCliHost
+        out = CopilotCliHost._destring_args(self._camel_common(raw))
         tool = str(out.get("tool_name") or "")
         low = tool.lower()
         ti = out.get("tool_input") or {}
+        if not isinstance(ti, dict):
+            ti = {}
         if low in _SHELL_NAMES:
             out["tool_name"] = "Bash"
             if "command" not in ti:

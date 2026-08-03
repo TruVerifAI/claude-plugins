@@ -22,6 +22,7 @@ from host.base import Host
 
 
 class GeminiHost(Host):
+
     name = "gemini"
 
     capabilities = dict(Host.capabilities, **{
@@ -65,6 +66,21 @@ class GeminiHost(Host):
             out["systemMessage"] = system_message
         print(json.dumps(out))
         sys.exit(0)
+
+    def emit_post_advisory(self, message, event_name="PostToolUse"):
+        # AfterTool output contract (docs/hooks/reference.md, verified
+        # 2026-08-01): claude-shaped hookSpecificOutput.additionalContext,
+        # documented as "appended to the tool result for the agent" — but
+        # Gemini's only post event is AfterTool, so stamp THAT event name
+        # rather than the base's PostToolUse normalization.
+        try:
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "AfterTool",
+                "additionalContext": message,
+            }}))
+            sys.stdout.flush()
+        except Exception:
+            pass
 
     def emit_ask(self, reason, system_message=None):
         sys.stderr.write(

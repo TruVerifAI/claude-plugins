@@ -13,8 +13,11 @@ Wire differences from the base (Claude Code) contract:
 - stdin is camelCase: sessionId / toolName / toolArgs / cwd (+ timestamp).
 - deny is a TOP-LEVEL {"permissionDecision": "deny",
   "permissionDecisionReason": ...} — not nested under hookSpecificOutput.
-- there is no documented advisory (additionalContext) channel -> advisory
-  degrades to a stderr note.
+- preToolUse has no documented advisory channel -> emit_allow_advisory
+  degrades to a stderr note. postToolUse DOES document a model-visible
+  channel (hooks-reference, verified 2026-08-02): TOP-LEVEL
+  {"additionalContext": ...}, appended to model context, 10 KB cap ->
+  emit_post_advisory uses it (the post-commit backstop).
 - `ask` IS a documented permissionDecision value; kept top-level like deny.
 
 Tool names on this host are not exhaustively documented; normalization is
@@ -40,7 +43,21 @@ from host.base import Host
 # surface stabilizes, tighten these lists and re-date this comment — silent
 # accumulation here is un-gated tool surface.
 _SHELL_NAMES = {"bash", "shell", "run_in_terminal", "execute", "exec",
-                "run_command", "terminal"}
+                "run_command", "terminal",
+                # VS Code's documented shell tool (agent-hooks docs example,
+                # verified 2026-08-02) — lowered from "runTerminalCommand".
+                # Without it the commit gate silently allowed everything on
+                # VS Code (docs-sweep catch, no live test needed).
+                "runterminalcommand", "run_terminal_command",
+                # Copilot CLI on Windows names its shell tool by the SHELL.
+                # "powershell" is EVIDENCE-BACKED (live capture 2026-08-02:
+                # it carried the git commands; every commit sailed through
+                # the C5 cert run because it wasn't in this allowlist).
+                # "pwsh"/"cmd" are CONVENTION aliases, not captured — if
+                # their toolArgs lack a `command` field, extraction finds
+                # nothing and the gate allows (the no-command path is pinned
+                # by test_malformed_string_args_fail_open; audit F-001).
+                "powershell", "pwsh", "cmd"}
 _WRITE_HINTS = ("edit", "write", "create", "replace", "str_replace", "patch",
                 "apply")
 
@@ -93,11 +110,29 @@ class CopilotCliHost(Host):
 
     # -- input -------------------------------------------------------------
 
+    @staticmethod
+    def _destring_args(out):
+        # Copilot sends toolArgs as a JSON-ENCODED STRING, not an object
+        # (live capture 2026-08-02: "toolArgs":"{\"command\":...}") — without
+        # this parse, tool_input.get(...) finds nothing and every gate
+        # silently allows. Fail open on any parse error (leave the string).
+        ti = out.get("tool_input")
+        if isinstance(ti, str):
+            try:
+                parsed = json.loads(ti)
+                if isinstance(parsed, dict):
+                    out["tool_input"] = parsed
+            except Exception:
+                pass
+        return out
+
     def normalize_input(self, raw):
-        out = self._camel_common(raw)
+        out = self._destring_args(self._camel_common(raw))
         tool = str(out.get("tool_name") or "")
         low = tool.lower()
         ti = out.get("tool_input") or {}
+        if not isinstance(ti, dict):
+            ti = {}
         if low in _SHELL_NAMES:
             out["tool_name"] = "Bash"
             if "command" not in ti:
@@ -133,11 +168,22 @@ class CopilotCliHost(Host):
         sys.exit(0)
 
     def emit_allow_advisory(self, additional_context):
-        # No documented model-visible advisory channel: degrade to stderr.
+        # preToolUse has no documented model-visible advisory channel:
+        # degrade to stderr.
         try:
             sys.stderr.write("TruVerifAI: " + additional_context + "\n")
         except Exception:
             pass
         sys.exit(0)
+
+    def emit_post_advisory(self, message, event_name="PostToolUse"):
+        # postToolUse output contract (hooks-reference, verified 2026-08-02):
+        # TOP-LEVEL additionalContext, "appends guidance for the model",
+        # 10 KB cap — not hookSpecificOutput, not modifiedResult.
+        try:
+            print(json.dumps({"additionalContext": message}))
+            sys.stdout.flush()
+        except Exception:
+            pass
 
 

@@ -548,6 +548,22 @@ def parse_git_add_targets(command):
     _ADD_ALL for `git add .` / `-A` / `--all`. Else the explicit path tokens. Robust to
     git global options. Conservative: an unparseable `git add` -> _ADD_ALL (recall-safe).
     """
+    # Windows shells (PowerShell/cmd) use backslash as the PATH SEPARATOR,
+    # never an escape — but the POSIX tokenizer swallows it, so
+    # `git add migrations\999.sql` yields the token "migrations999.sql",
+    # the untracked sweep matches nothing, and a brand-new risky file
+    # commits ungated (C5 dbg6 live miss, 2026-08-02). Normalize to forward
+    # slashes BEFORE tokenizing — git accepts them on every OS. POSIX is
+    # untouched: backslash escapes (`git add my\ file`) are real there.
+    # os.name is the right discriminator because the hook runs on the same
+    # OS as the invoking shell; a WSL2 shell reports posix and takes the
+    # posix path, correct for ITS shell semantics. `command` is the FULL
+    # (possibly compound) string by design — the replace also touches
+    # backslashes in non-path positions (e.g. a commit message), which is
+    # harmless here: only add-target tokens are extracted, and
+    # over-inclusion is the safe direction for a risk gate.
+    if os.name == "nt":
+        command = command.replace("\\", "/")
     saw_add = False
     targets = []
     for sub, args in _iter_git_subcommands(command, ("add",)):
@@ -2051,6 +2067,15 @@ def emit_deny(reason, system_message=_DENY_SYSTEM_MESSAGE):
     # Stamp the running plugin version (or a staleness warning) on every deny
     # so "which version walled this" is visible and a stale hook self-announces.
     reason = reason + version_suffix()
+    if system_message:
+        # Some hosts surface ONLY the short user banner to the agent (observed
+        # live on Cursor, G6 cert 2026-08-01: the agent saw user_message, not
+        # the full routing text, and had to re-trigger the gate to read the
+        # gate_context_id). Carry the id on the banner too, so even the short
+        # path is actionable in one shot. No-op when the deny has no context id.
+        m = re.search(r"gc_[0-9a-f]{8,}", reason)
+        if m:
+            system_message = system_message + " gate_context_id = " + m.group(0)
     if system_message and is_stale_version():
         system_message = system_message + " (Gate is on a SUPERSEDED version — /reload-plugins.)"
     host_registry.current().emit_deny(reason, system_message)
