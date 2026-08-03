@@ -1,6 +1,37 @@
 # Changelog — AI Panel Review (Claude Code plugin)
 
-## 0.18.0 (unreleased)
+## 0.19.20
+
+- **Fix (Windows): backslash paths in `git add` bypassed the commit gate's
+  untracked-file sweep** — `git add migrations\999.sql; git commit` landed
+  ungated (the tokenizer swallowed the backslash). Found live during the
+  Copilot certification; fixed with Windows-scoped path normalization and
+  regression-pinned. Affected every Windows host.
+- The short deny banner now carries the `gate_context_id`, so hosts that
+  surface only the one-line banner to the agent stay actionable without
+  re-triggering the gate.
+- Vendored rules gain a compact "How to operate the tools" section for
+  hosts without a skills framework.
+- Copilot-family host adapters: shell tools named by shell (powershell/
+  pwsh/cmd), JSON-string toolArgs parsing, `file_text` write alias,
+  VS Code `runTerminalCommand`. Antigravity: toolCall payload
+  normalization, schema-exact deny, dashboard-only backstop emit.
+
+## 0.19.15
+
+- **Fix: the post-commit backstop was silently dead — resurrected.** An
+  entry-point bug (`gate_lib` imported only inside `main()`) crashed the
+  backstop and its pre-side HEAD stash on every invocation since the
+  cross-platform refactor; fail-open masked it. The fused
+  `create-a-file && git commit` advisory works again, with a subprocess
+  regression suite so the class can't ship again.
+- Hook stdin decoded with `utf-8-sig` (BOM-prefixing hosts no longer cause
+  a silent fail-open).
+- Cursor host adapter: top-level `command` payloads, URI-style
+  `workspace_roots` mapping, native `ask`, `postToolUse` backstop channel.
+- `run_gate.js` node launcher vendored for shell-agnostic hook commands.
+
+## 0.18.0 — superseded; see 0.19.15/0.19.20
 
 Cross-platform gate core (phase 0). Gate **decisions, wire format, and defaults
 are preserved** relative to 0.17.0 under a default environment — with **three
