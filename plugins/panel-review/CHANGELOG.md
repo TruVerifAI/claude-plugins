@@ -1,5 +1,17 @@
 # Changelog — AI Panel Review (Claude Code plugin)
 
+## 0.19.23
+
+- **Auto-mode classifier allowlist.** Claude Code 2.1.221 added an
+  intent-shaped auto-mode permission classifier that can deny the free
+  gate-release calls (`record_gate_skip` pre-review reasons, defers) —
+  they pattern-match "skip a safety review". The one-command setup
+  (`npx @truverifai/init` 0.19.23+) now writes the fix: a server-scoped
+  `permissions.allow` rule (`mcp__plugin_panel-review_truverifai`) in
+  `~/.claude/settings.json`, never created/overwritten, additive-only,
+  effective in new sessions. `doctor` warns when the rule is missing.
+  Manual path: `/permissions` -> allow that rule. No gate-code changes.
+
 ## 0.19.22
 
 - **The gates now self-announce updates.** Coverage responses carry an

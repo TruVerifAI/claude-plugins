@@ -45,7 +45,9 @@ Submit each of these slash commands on its own — Claude Code parses one slash 
 
 **5. Enable auto-update (recommended).** While you're in the `/plugin` UI, click the **Marketplaces** tab, select **truverifai**, and toggle **Enable auto-update** on. This is a one-time setting — once enabled, future plugin updates (new skills, bug fixes, new tools) flow in automatically on the next Claude Code session start. Without this, you'd have to run `/plugin marketplace update truverifai && /plugin install panel-review@truverifai && /reload-plugins` manually every time a new version ships.
 
-**6. Verify everything's wired up:** run `/panel-review:setup`. It pings the MCP server, confirms the API key is valid, and reports which skills are loaded.
+**6. If you use Claude's auto mode**, allow the plugin's MCP server in `/permissions` (add an **allow** rule for `mcp__plugin_panel-review_truverifai`) so Claude Code's auto-mode permission classifier (2.1.221+) doesn't deny the free gate-release calls — it is intent-shaped and can block `record_gate_skip`/defer calls because they pattern-match "skip a safety review". The one-command setup (`npx @truverifai/init`) writes this rule for you; it takes effect in new sessions.
+
+**7. Verify everything's wired up:** run `/panel-review:setup`. It pings the MCP server, confirms the API key is valid, and reports which skills are loaded.
 
 ## Uninstall
 
