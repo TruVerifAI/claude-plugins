@@ -14,6 +14,11 @@ from host.base import Host
 class ClaudeCodeHost(Host):
     name = "claude_code"
 
+    # The marketplace plugin updates via the /plugin UI (no CLI surface for
+    # a running session) — the agent surfaces this to the human.
+    update_instruction = ("To update, ask the user to update panel-review in "
+                          "/plugin, then run /reload-plugins.")
+
     capabilities = dict(Host.capabilities, **{
         # `additionalContext` + `ask` are documented; whole surface identical to base.
         "install": "marketplace_plugin",

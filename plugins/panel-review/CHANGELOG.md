@@ -1,5 +1,19 @@
 # Changelog — AI Panel Review (Claude Code plugin)
 
+## 0.19.22
+
+- **The gates now self-announce updates.** Coverage responses carry an
+  additive `gate_update` flag when a newer release exists (the server
+  checks the npm registry, cached ~1h, strictly validated); stale clients
+  append a one-line, host-aware, agent-actionable nudge to deny messages
+  and backstop advisories — at most once per 24h per machine, never
+  blocking, fail-silent on every error. `doctor` gains an update row.
+  Operator note: the TruVerifAI backend performs a best-effort version
+  check against registry.npmjs.org at most ~once per hour per process on a
+  background thread (3s timeout, silent on failure) — the gate request
+  path never blocks on it. Design: OPTION-B-GATE-UPDATE-NUDGE.md
+  (deliberated, unanimous; audit-hardened).
+
 ## 0.19.21
 
 - **P1 fix: commits made through Claude Code's native PowerShell tool

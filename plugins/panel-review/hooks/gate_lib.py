@@ -857,7 +857,17 @@ def _post(cfg, path, body):
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            parsed = json.loads(resp.read().decode("utf-8"))
+            # Option B (update nudge): stash the server's staleness flag for
+            # this hook process; emit_deny / the backstop render it later.
+            # Best-effort — a nudge must never affect a gate POST.
+            try:
+                if isinstance(parsed, dict) and isinstance(parsed.get("gate_update"), dict):
+                    global _GATE_UPDATE
+                    _GATE_UPDATE = parsed["gate_update"]
+            except Exception:
+                pass
+            return parsed
     except Exception:
         return None
 
@@ -1053,6 +1063,9 @@ def transparency_block(classification, check_response, max_items=8):
 def check_audit_coverage(cfg, repo, hunk_hashes, classification=None, session_id=None,
                          is_merge=False):
     body = {"repo": repo, "hunks": hunk_hashes}
+    # Option B (update nudge): report our version so the server can flag
+    # staleness in the response. Additive; old servers ignore it.
+    body["gate_version"] = plugin_version()
     if is_merge:
         # Wave 3 (§3.3): stamp the fire as a merge so branch_already_reviewed is
         # admissible on it (server-enforced; additive — old servers ignore it).
@@ -1077,6 +1090,7 @@ def check_deliberate_unlock(cfg, repo, area, session_id, classification=None,
                             gate_type="deliberate"):
     # session_id already rides in the body, so don't duplicate it via _classifier_meta.
     body = {"repo": repo, "area": area, "session_id": session_id}
+    body["gate_version"] = plugin_version()  # Option B update nudge (additive)
     body.update(_classifier_meta(classification, session_id=None))
     # The write gate splits into a deliberate tier (high-confidence fork) and a
     # synthesize tier (borderline); the caller knows which fired, so the fire records
@@ -2054,6 +2068,79 @@ def host_run(fn):
     h.run(fn)
 
 
+# ---------------------------------------------------------------------------
+# Option B — server-driven gate update nudge (design doc:
+# docs/MCP/Cross platform adoption/OPTION-B-GATE-UPDATE-NUDGE.md).
+# The coverage response may carry {"gate_update": {"latest_version", "is_stale"}}
+# (stashed by _post). Rendering rules: model-visible channels only (deny +
+# backstop advisory), at most once per 24h per machine, host-aware text,
+# client-side strict re-validation of the version string (the server field is
+# treated as untrusted input), and fail-silent on absolutely everything.
+
+_GATE_UPDATE = None
+_NUDGE_CAP_SECONDS = 86400
+# CLIENT-SIDE TWIN of mcp_server/client_update._SEMVER_RE — keep identical
+# (audit F-004): strictly X.Y.Z BY DESIGN; pre-release/v-prefixed versions
+# are intentionally never advertised. If the release scheme changes, both
+# regexes and both test vector sets change together.
+_NUDGE_SEMVER_RE = re.compile(r"^\d{1,5}\.\d{1,5}\.\d{1,5}$")
+
+
+def _nudge_state_path():
+    return os.path.join(os.path.expanduser("~"), ".truverifai", ".nudge_state.json")
+
+
+def _should_nudge():
+    """True when the 24h cap has expired (or no valid marker exists). The cap
+    deliberately does NOT reset on a newer version — rapid-release days would
+    become nudge storms; last_version_shown is stored anyway so that policy is
+    a one-line change later. Fail-open to 'nudge' on any read problem — a
+    corrupt marker SELF-HEALS because _record_nudge rewrites it after the
+    render (audit F-005); the residual (writes persistently failing too ->
+    a nudge per deny) is the accepted fail-open posture."""
+    try:
+        with open(_nudge_state_path(), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return (time.time() - float(data.get("last_shown_at", 0))) >= _NUDGE_CAP_SECONDS
+    except Exception:
+        return True
+
+
+def _record_nudge(latest):
+    try:
+        p = _nudge_state_path()
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as fh:
+            json.dump({"last_shown_at": time.time(),
+                       "last_version_shown": latest}, fh)
+    except Exception:
+        pass  # best-effort; never affects the gate
+
+
+def update_nudge_line():
+    """The one-line agent-actionable update nudge, or None. Renders only on
+    the server's is_stale flag (the client never compares versions — the
+    server owns the comparison); re-validates the version shape client-side;
+    respects the 24h cap and records the render."""
+    try:
+        upd = _GATE_UPDATE
+        if not (isinstance(upd, dict) and upd.get("is_stale") is True):
+            return None
+        latest = upd.get("latest_version")
+        if not (isinstance(latest, str) and _NUDGE_SEMVER_RE.fullmatch(latest)):
+            return None
+        if not _should_nudge():
+            return None
+        instruction = host_registry.current().update_instruction
+        line = ("TruVerifAI gate update available: v" + latest +
+                " (this machine runs v" + plugin_version() +
+                "; releases may include gate security fixes). " + instruction)
+        _record_nudge(latest)
+        return line
+    except Exception:
+        return None
+
+
 def emit_deny(reason, system_message=_DENY_SYSTEM_MESSAGE):
     """Emit a deny so the host blocks the tool and shows the MODEL the reason
     (the routing message — the entire product; a block without it is a wall, not
@@ -2067,6 +2154,9 @@ def emit_deny(reason, system_message=_DENY_SYSTEM_MESSAGE):
     # Stamp the running plugin version (or a staleness warning) on every deny
     # so "which version walled this" is visible and a stale hook self-announces.
     reason = reason + version_suffix()
+    nudge = update_nudge_line()
+    if nudge:
+        reason = reason + "\n" + nudge
     if system_message:
         # Some hosts surface ONLY the short user banner to the agent (observed
         # live on Cursor, G6 cert 2026-08-01: the agent saw user_message, not

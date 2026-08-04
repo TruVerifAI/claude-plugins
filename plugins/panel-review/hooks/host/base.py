@@ -31,6 +31,12 @@ import sys
 
 
 class Host(object):
+
+    # Option B update nudge: the per-host, AGENT-ACTIONABLE instruction the
+    # nudge line ends with. Base = every vendored-gate host (the agent can run
+    # the command itself); hosts with a different update path override.
+    update_instruction = ("To update, run: npx @truverifai/init@latest "
+                          "(refreshes the TruVerifAI gates on this machine).")
     name = "base"
 
     # -- capabilities ------------------------------------------------------

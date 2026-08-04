@@ -241,6 +241,15 @@ def _emit_advisory(event_name, cats, pushed):
                "couldn't see this because the file was created and committed in one command.")
     ev = event_name if event_name in ("PostToolUse", "PostToolUseFailure") else "PostToolUse"
     try:
+        # Option B: the backstop advisory is a model-visible channel, so the
+        # update nudge rides here too (same 24h cap; fail-silent).
+        import gate_lib as g
+        nudge = g.update_nudge_line()
+        if nudge:
+            msg = msg + "\n" + nudge
+    except Exception:
+        pass
+    try:
         # Route through the host adapter (cursor uses snake_case
         # additional_context; base = Claude/Codex hookSpecificOutput).
         import host as host_registry

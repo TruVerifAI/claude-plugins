@@ -128,6 +128,11 @@ Advanced (rarely changed):
 
 Tool invocations are billed against your TruVerifAI account. Pricing at https://truverif.ai/pricing. Approximate per-call cost: synthesize ~$0.04, deliberate ~$0.20, audit ~$0.20. Latencies: synthesize ~15-30s, deliberate/audit ~2-5 min.
 
+**Updates:** the gates self-announce new releases — when a newer version
+exists, deny messages and backstop advisories carry a one-line update
+instruction (at most once per day; never blocking). `npx @truverifai/init
+doctor` also reports update status.
+
 ## Cross-platform install (non-Claude-Code users)
 
 One command sets up every supported platform — Codex CLI, Gemini CLI, Cursor (IDE + CLI), GitHub Copilot CLI, VS Code agent, and Google Antigravity:
