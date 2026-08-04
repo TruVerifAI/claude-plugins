@@ -26,6 +26,21 @@ def main():
 
     inp = g.read_hook_input()
     if inp.get("tool_name") != "Bash":
+        # Observability for the PowerShell-bypass class (audit F-002,
+        # 2026-08-03): a tool we don't recognize as a shell but whose input
+        # carries a `command` field is exactly how the last silent bypass
+        # looked from the inside. Still fail open — but say so on stderr,
+        # so the NEXT new shell tool is a greppable line, not a void.
+        ti = inp.get("tool_input")
+        if isinstance(ti, dict) and isinstance(ti.get("command"), str):
+            try:
+                import sys as _sys
+                _sys.stderr.write(
+                    "TruVerifAI: unrecognized shell-like tool %r passed "
+                    "ungated (fail-open) — if this is a real shell, the "
+                    "gate needs a mapping for it\n" % (inp.get("tool_name"),))
+            except Exception:
+                pass
         g.emit_allow()
 
     command = (inp.get("tool_input") or {}).get("command", "") or ""

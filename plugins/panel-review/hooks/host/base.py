@@ -83,7 +83,20 @@ class Host(object):
         Base = Claude Code shape = identity. Adapters translate tool names, field
         casing, and write-tool input shapes; an unrecognized tool passes through
         untouched (the gates allow anything they don't recognize — fail open)."""
-        return raw or {}
+        out = dict(raw or {})
+        # Claude Code ships a native PowerShell tool on Windows (v2.1.84,
+        # PRIMARY shell since ~v2.1.139) — found live 2026-08-03 as a P1:
+        # the "Bash"-matched hooks never fired for it, so PowerShell-routed
+        # commits ran UNGATED. Widening the matcher alone would not fix it
+        # (audit_gate keys on tool_name == "Bash"), so the rename happens
+        # here too. The PowerShell tool's input carries the same {command}
+        # field as Bash, making the rename the entire mapping.
+        if out.get("tool_name") == "PowerShell":
+            # Provenance (audit F-001): keep the real tool name so logs and
+            # any downstream consumer can distinguish PowerShell commits.
+            out["original_tool_name"] = "PowerShell"
+            out["tool_name"] = "Bash"
+        return out
 
     # -- helpers shared by camelCase hosts ----------------------------------
 

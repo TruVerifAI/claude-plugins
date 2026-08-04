@@ -1,5 +1,20 @@
 # Changelog — AI Panel Review (Claude Code plugin)
 
+## 0.19.21
+
+- **P1 fix: commits made through Claude Code's native PowerShell tool
+  bypassed the commit gate AND the post-commit backstop.** Claude Code on
+  Windows ships a PowerShell tool (v2.1.84; the PRIMARY shell since
+  ~v2.1.139) but every shell hook matcher said only `Bash`, and the gate
+  additionally keyed on `tool_name == "Bash"` — so a PowerShell-routed
+  `git commit` matched no hook and would have been allowed even if it had.
+  Both layers fixed: matchers widened to `Bash|PowerShell` (commit gate,
+  HEAD stash, backstop, commit-detected) and the host adapter renames the
+  PowerShell tool to Bash (same `{command}` input shape). The write gate
+  was never affected (tool-based, not shell-based). Codex's installer
+  matchers widened as insurance. Found by owner-run thorough prod testing,
+  2026-08-03.
+
 ## 0.19.20
 
 - **Fix (Windows): backslash paths in `git add` bypassed the commit gate's

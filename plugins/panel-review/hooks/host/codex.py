@@ -114,6 +114,12 @@ class CodexHost(Host):
 
     def normalize_input(self, raw):
         out = dict(raw or {})
+        # Mirrors the base PowerShell->Bash mapping (2026-08-03): this
+        # override does not call super(), so the insurance is repeated here
+        # in case Codex ever ships a PowerShell-named shell tool on Windows.
+        if out.get("tool_name") == "PowerShell":
+            out["original_tool_name"] = "PowerShell"
+            out["tool_name"] = "Bash"
         if out.get("tool_name") == "apply_patch":
             ti = out.get("tool_input") or {}
             patch = ti.get("input") or ti.get("patch") or ""
