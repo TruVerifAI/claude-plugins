@@ -50,7 +50,11 @@ def main():
     if not g.command_invokes_git(command, ("commit", "merge")):
         g.emit_allow()  # not a commit/merge
 
-    cwd = inp.get("cwd") or os.getcwd()
+    # Effective cwd — NOT the raw payload cwd. Hosts can run the command
+    # elsewhere via a workdir-style tool argument (Codex — the 2026-08-05
+    # nested-repo fail-open), a cd-chain, or `git -C`; the resolver emulates
+    # that resolution and falls back to the payload cwd on any ambiguity.
+    cwd, cwd_source = g.resolve_effective_cwd(inp)
     session_id = inp.get("session_id")
     diff = g.staged_diff(cwd, command)
     if not diff.strip():

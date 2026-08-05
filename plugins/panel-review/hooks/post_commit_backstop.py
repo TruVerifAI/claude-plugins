@@ -52,7 +52,11 @@ def main():
         if not cfg["enabled"] or not cfg["token"]:
             return  # feature off / not configured
         inp = g.read_hook_input()
-        cwd = (inp.get("cwd") or os.getcwd())
+        # Effective cwd — emulates workdir args / cd-chains / `git -C`, so the
+        # backstop classifies the repo the commit actually landed in, not the
+        # session root (the 2026-08-05 Codex incident: sub-repo commits made
+        # the backstop re-report the PARENT's unrelated HEAD).
+        cwd, _ = g.resolve_effective_cwd(inp)
         decision = evaluate(g, cfg, inp, cwd)
         if not decision:
             return

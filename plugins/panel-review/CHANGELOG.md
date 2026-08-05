@@ -1,5 +1,33 @@
 # Changelog — AI Panel Review (Claude Code plugin)
 
+## 0.19.24
+
+- **The commit gate now follows the commit to the right repo.** Hosts can
+  run a shell command somewhere other than the session root — a per-call
+  working-directory argument (Codex `workdir`, Gemini `dir_path`, Cursor
+  `cwd`, Antigravity `Cwd`), a `cd X && git commit` chain, a
+  `cmd /c "cd X && ..."` subshell wrapper (Copilot CLI / VS Code), or
+  `git -C`. The gates previously inspected only the session root, so
+  commits into nested repos could pass unreviewed (found live on Codex,
+  2026-08-05). The gate now emulates the shell's own resolution, validated
+  at every step, and falls back to exactly the old behavior on anything
+  ambiguous — fail open, never a new block. Receipts bind to the repo
+  actually inspected. `tvai doctor` gains a nested-repo drift alarm, and a
+  `TVAI_PAYLOAD_LOG` env flag records raw hook payloads for diagnosis.
+- **Known behavior:** a subshell command whose quoting is malformed (nested
+  unescaped quotes that cmd.exe itself rejects) conservatively keeps the
+  old resolution — such commands fail in the shell anyway, so nothing ships
+  unreviewed. Not a regression if you see `cwd_source: payload` on them.
+- **Deferred:** the `cwd_source` tag is recorded in the local
+  `TVAI_PAYLOAD_LOG` only; server-side telemetry needs a paired backend
+  change and ships separately. When filing a resolution bug, include the
+  payload-log lines.
+- **Known limitation:** the VS Code agent's default "new branch" sessions
+  run in a git WORKTREE, which only contains TRACKED files — if the
+  `.github/hooks/` gate configs are untracked, that session has NO gates.
+  Commit the hook config files to your repo to keep worktree sessions
+  gated.
+
 ## 0.19.23
 
 - **Auto-mode classifier allowlist.** Claude Code 2.1.221 added an

@@ -51,7 +51,9 @@ def _record():
     if not g.command_invokes_git(command, ("commit", "merge")):
         return  # only a commit/merge command is worth stashing for
 
-    cwd = inp.get("cwd") or os.getcwd()
+    # Effective cwd: emulate workdir args / cd-chains / `git -C` so the stash
+    # records HEAD of the repo the commit will actually land in (mcp_45f1a19b).
+    cwd, _ = g.resolve_effective_cwd(inp)
     # Pre-command HEAD. Empty (no commits yet / not a repo) → "ROOT" sentinel so the post hook
     # diffs against the empty tree for a first commit.
     head = (g._git(["rev-parse", "HEAD"], cwd) or "").strip() or "ROOT"

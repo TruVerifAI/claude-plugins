@@ -52,6 +52,15 @@ class Host(object):
         "supports_advisory_context": True,
         "generic_nonzero_fails_closed": False,
         "stderr_reaches_model": "yes",
+        # Effective-cwd resolver stage-1 opt-out (audit mcp_a91ec2e1 F-001): a
+        # host may carry a directory-ish shell-tool argument it does NOT honor
+        # (Cursor's working_directory is documented-ignored in multi-root
+        # workspaces). A Phase-2 payload capture proving that sets this False
+        # on that host's adapter, and the resolver skips the dir-arg stage
+        # there — falling back to the payload cwd (fail-open, today's
+        # behavior), never fail-closed. cd-chain and `git -C` stages are
+        # command-authored, not host-forwarded, so they stay active.
+        "honors_dir_arg": True,
     }
 
     # Manifest filenames plugin_version() probes, relative to the plugin root

@@ -179,6 +179,14 @@ We've added the `anthropic/expandByDefault: true` `_meta` annotation to all tool
 
 The agent then calls the **same tool** again with **only** that `continuation_token` (no other arguments), repeating until the final verdict returns. The orchestration keeps running on the server between calls — each call just waits up to the client's budget — and credits are charged once, on completion. The token is scoped to your API key and the specific tool; an unknown / expired / not-yours token returns `{ "status": "expired" }`, meaning re-run from scratch. Most agents handle this re-invocation automatically from the `next_step` instruction — you don't need to do anything.
 
+### VS Code agent worktree sessions need the hook configs COMMITTED
+
+The VS Code agent's default sessions run in a git worktree, which contains
+only tracked files. If the `.github/hooks/` gate configs written by
+`npx @truverifai/init` are untracked, those sessions have no gates at all.
+Commit the hook config files (`git add .github/hooks && git commit`) so
+worktree sessions inherit them.
+
 ### Cursor: no native skill auto-discovery
 
 Cursor (as of 2026-05) doesn't auto-activate skills. The skills install correctly under `~/.cursor/skills/` but you have to invoke them manually (`/audit-before-commit`). The references and examples files give Cursor the context it needs once invoked. Auto-discovery may land in a future Cursor release.
