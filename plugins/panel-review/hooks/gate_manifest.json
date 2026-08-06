@@ -1,0 +1,97 @@
+{
+  "files": {
+    "audit_gate.py": {
+      "sha256": "fb164fd2699573f2a43c8911d81b77f8026756a9a73f6cd25623ff3b13630b6e",
+      "text": true
+    },
+    "commit-detected.sh": {
+      "sha256": "ecb9a228ae3d084ad0d6549b7e807ffa8f061fce445ecc0dc45e75006ff0b452",
+      "text": true
+    },
+    "deliberate_gate.py": {
+      "sha256": "156a4d1001ceba85bf6301d2492486cd3161ee61741bea651bbcaf7536eecbbf",
+      "text": true
+    },
+    "gate_lib.py": {
+      "sha256": "64ecc77a5363b5f9899831792e51a5dd5db65026d1c5db65c4958369a778ec8c",
+      "text": true
+    },
+    "gate_selfcheck.py": {
+      "sha256": "ea453960952c5f22c5992372f92bdbf45314ce760f86d583a0b1a443570f9b2c",
+      "text": true
+    },
+    "host/__init__.py": {
+      "sha256": "92744a3ad8ed49501088cae30a6420b2d9b8a2489e80a9e03e103dd399c39bc3",
+      "text": true
+    },
+    "host/antigravity.py": {
+      "sha256": "35561cce22ed55160e437891b68bfa1727748213337c6091e6ec8bb2f3d56e91",
+      "text": true
+    },
+    "host/base.py": {
+      "sha256": "a15114fd1b0dc2abdac89b0bccb0f13c7e27a0038a8e42d96f7ef00c7180b05e",
+      "text": true
+    },
+    "host/claude_code.py": {
+      "sha256": "5d819fa0674173290255cb3fad5bfc9e399955120850463ae17a2a19c47d284c",
+      "text": true
+    },
+    "host/codex.py": {
+      "sha256": "8100b41563397213da3056cae743e99954088f076b8b45b5a609fb2151d94da1",
+      "text": true
+    },
+    "host/copilot_cli.py": {
+      "sha256": "f25d4cc3a9e320ae49fbdf760d9b4141678d2ba8728b0e32e50f11f505233e3b",
+      "text": true
+    },
+    "host/cursor.py": {
+      "sha256": "26d00b1076265449952555d9026b9efaa975da7d44f4a29fde4920680955740b",
+      "text": true
+    },
+    "host/gemini.py": {
+      "sha256": "e19f61d0be2287bdcb2a4a53f3b354fa6a79e4da9322e05cf2aff5ed7b9ed0f9",
+      "text": true
+    },
+    "host/git_precommit.py": {
+      "sha256": "d02014000f4e6283fe4ebf3538fff2a6cd7b16bf9169109e8bf431838ae60b05",
+      "text": true
+    },
+    "host/vscode.py": {
+      "sha256": "4bfe093e64bdc4000b0d2df5cb9ba369250ecd054c69484e30df9bff03675da3",
+      "text": true
+    },
+    "integrity.py": {
+      "sha256": "eada8afd3d46edfee017e69316c2f2c689379fd5479fc2ea8fbc19ec29853031",
+      "text": true
+    },
+    "post_commit_backstop.py": {
+      "sha256": "acc95bb5bbf5b7b885143b17c878ece92bc8200198c739e67af53951c7f232c9",
+      "text": true
+    },
+    "risk_classifier.py": {
+      "sha256": "af4967d5e66e8bf6204ac8dfaf10ff784ae48f10a45f439cf8e6606ab8b98417",
+      "text": true
+    },
+    "risk_signals.json": {
+      "sha256": "4bc1b02c44e03297c96b5d203985c93673e0680936d22d8f8d1d04da70456722",
+      "text": true
+    },
+    "run_gate.cmd": {
+      "sha256": "b58d9cdcd7508c9972d0c43d2d6139211dc79a0733c90d5542ab191013278e08",
+      "text": true
+    },
+    "run_gate.js": {
+      "sha256": "de4da70f27e8d2a7436dae3f9eeccb89fba339954f998c12f33f9456e4109b1c",
+      "text": false
+    },
+    "run_gate.sh": {
+      "sha256": "b6bb69ccc182c9e715bb24b6090bcae8c645d6784ca4252114b2fc1457292993",
+      "text": true
+    },
+    "stash_precommit_head.py": {
+      "sha256": "30f20fbb778b21634d218a0b65d91c65b3963ebd288829a1f8f8f2c0a0794b83",
+      "text": true
+    }
+  },
+  "version": 1
+}

@@ -29,6 +29,18 @@ import time
 import urllib.request
 
 import host as host_registry  # per-platform adapter layer (same dir, host/ package)
+
+# Tamper-evidence self-check (deliberation mcp_516e5fa1). Runs ONCE at first
+# gate load, cached, NEVER raises: if an installed gate file was modified since
+# install it warns loudly on stderr and we tag the coverage POST — but we FAIL
+# OPEN (never block). Import defensively so a missing/older integrity module
+# (or any error) degrades to no check, exactly like an old install.
+try:
+    import integrity as _integrity          # vendored, same dir
+    _GATE_INTEGRITY = _integrity.check_gate_integrity()
+except Exception:
+    _integrity = None
+    _GATE_INTEGRITY = "unchecked"
 from risk_classifier import (  # vendored, same dir
     classify_diff,
     hunk_content_hash,
@@ -1392,6 +1404,7 @@ def check_audit_coverage(cfg, repo, hunk_hashes, classification=None, session_id
     # Option B (update nudge): report our version so the server can flag
     # staleness in the response. Additive; old servers ignore it.
     body["gate_version"] = plugin_version()
+    body["gate_integrity"] = _GATE_INTEGRITY  # tamper-evidence flag (additive)
     if is_merge:
         # Wave 3 (§3.3): stamp the fire as a merge so branch_already_reviewed is
         # admissible on it (server-enforced; additive — old servers ignore it).
@@ -1417,6 +1430,7 @@ def check_deliberate_unlock(cfg, repo, area, session_id, classification=None,
     # session_id already rides in the body, so don't duplicate it via _classifier_meta.
     body = {"repo": repo, "area": area, "session_id": session_id}
     body["gate_version"] = plugin_version()  # Option B update nudge (additive)
+    body["gate_integrity"] = _GATE_INTEGRITY  # tamper-evidence flag (additive)
     body.update(_classifier_meta(classification, session_id=None))
     # The write gate splits into a deliberate tier (high-confidence fork) and a
     # synthesize tier (borderline); the caller knows which fired, so the fire records

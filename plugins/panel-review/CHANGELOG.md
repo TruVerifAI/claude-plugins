@@ -1,5 +1,16 @@
 # Changelog — AI Panel Review (Claude Code plugin)
 
+## 0.19.27
+
+- **Gate-code tamper-evidence self-check.** The plugin now ships a
+  `gate_manifest.json` (sha256 of every gate file) and self-verifies on each
+  gate invocation. If an installed gate file was modified since install
+  (accidental corruption, or an edit outside the review path), the gate warns
+  loudly and FAILS OPEN — it never blocks your work, and it reports the state
+  to the server so the maintainer can see it. Silent no-op on a clean install;
+  older installs (no manifest) are unaffected. No change to the gate contract
+  or the classifier.
+
 ## 0.19.24
 
 - **The commit gate now follows the commit to the right repo.** Hosts can

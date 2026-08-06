@@ -645,6 +645,9 @@ _GATE_SELF_PATHS = re.compile(
     r"|audit_gate\.py|deliberate_gate\.py"
     r"|receipt_writer\.py|receipt_coverage\.py|gate_skip\.py"
     r"|post_commit_backstop\.py|stash_precommit_head\.py|gate_selfcheck\.py"
+    # integrity.py is the tamper-evidence self-check; gate_manifest.json is its
+    # hash anchor — both must be gate-self (editing them is a gate mutation).
+    r"|integrity\.py|gate_manifest\.json"
     r"|commit-detected\.sh|run_gate\.(sh|cmd|js)"
     r"|platforms\.yaml|build_bundles\.py"
     r"|gate_core/host/|hooks/host/"
@@ -702,6 +705,9 @@ _GATE_CORE_PATHS = re.compile(
     # platforms' manifest dirs are the peer of .claude-plugin/.
     r"(^|/)(risk_signals\.json|risk_classifier\.py|gate_lib\.py|hooks\.json"
     r"|audit_gate\.py|deliberate_gate\.py|run_gate\.(sh|cmd|js)"
+    # integrity.py is enforcement + gate_manifest.json is its hash anchor: any
+    # edit is load-bearing, so gate-CORE (always reviewed, even an inert edit).
+    r"|integrity\.py|gate_manifest\.json"
     r"|platforms\.yaml|build_bundles\.py"
     r"|gate_core/host/|hooks/host/"
     r"|\.claude-plugin/|\.codex-plugin/|\.cursor-plugin/|gemini-extension\.json"

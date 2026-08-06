@@ -1,8 +1,8 @@
 {
   "name": "panel-review",
   "displayName": "AI Panel Review",
-  "version": "0.19.24",
-  "description": "Multi-model second-opinion deliberation for high-stakes coding and financial decisions. Eight skills across two profiles — coding and financial (audit / deliberate / synthesize per profile), plus shared record-outcome and skip-gate — route to the TruVerifAI MCP server, where four frontier models reason independently and conflict-target each other's positions to produce decision-grade output. Outcome reporting closes the loop — the dashboard shows what % of MCP calls actually changed the agent's decision.",
+  "version": "0.19.27",
+  "description": "Multi-model second-opinion deliberation for high-stakes coding and financial decisions. Eight skills across two profiles \u2014 coding and financial (audit / deliberate / synthesize per profile), plus shared record-outcome and skip-gate \u2014 route to the TruVerifAI MCP server, where four frontier models reason independently and conflict-target each other's positions to produce decision-grade output. Outcome reporting closes the loop \u2014 the dashboard shows what % of MCP calls actually changed the agent's decision.",
   "author": {
     "name": "TruVerifAI",
     "email": "support@truverif.ai",
@@ -22,7 +22,9 @@
   ],
   "mcpServers": "./.mcp.json",
   "skills": "./skills/",
-  "commands": ["./commands/setup.md"],
+  "commands": [
+    "./commands/setup.md"
+  ],
   "hooks": "./hooks.json",
   "userConfig": {
     "api_token": {
@@ -35,31 +37,31 @@
     "enable_gates": {
       "type": "boolean",
       "title": "Enable the proactive review gates",
-      "description": "When enabled, a PreToolUse gate runs before a risky git commit (the commit gate) or a risky Write/Edit (the write gate), plus a non-blocking post-commit backstop that catches a floor change created-and-committed in one shell command (which slips past both gates). A local classifier scores the change across many domains (auth, billing, migrations, secrets, infra-as-code, and more — including risky DELETIONS like a removed permission check) and sends TruVerifAI only a repo fingerprint + hunk content hashes — never source, paths, or diffs. If the change isn't already covered the gate asks the agent to run one review — audit_coding for finished code (a PASS releases it, covering floor and non-floor hunks alike), or deliberate_coding for a still-open design — OR to record a one-line skip-with-reason. On a FLOOR block (auth, secrets, money, migrations, a removed guard) the one-line skip is denied while the floor hunk is unreviewed: release it with an audit_coding PASS, or with confirm_floor (free) / synthesize_coding if you believe the gate mis-fired; the one exception is recommendations_applied after a real review (applying the review's findings releases the re-fired floor too - lineage-verified, minutes-TTL, logged distinctly). Fails open on any error and never deadlocks. Set to false to disable the gates (and the backstop) entirely. Default true. To change it, type true or false.",
+      "description": "When enabled, a PreToolUse gate runs before a risky git commit (the commit gate) or a risky Write/Edit (the write gate), plus a non-blocking post-commit backstop that catches a floor change created-and-committed in one shell command (which slips past both gates). A local classifier scores the change across many domains (auth, billing, migrations, secrets, infra-as-code, and more \u2014 including risky DELETIONS like a removed permission check) and sends TruVerifAI only a repo fingerprint + hunk content hashes \u2014 never source, paths, or diffs. If the change isn't already covered the gate asks the agent to run one review \u2014 audit_coding for finished code (a PASS releases it, covering floor and non-floor hunks alike), or deliberate_coding for a still-open design \u2014 OR to record a one-line skip-with-reason. On a FLOOR block (auth, secrets, money, migrations, a removed guard) the one-line skip is denied while the floor hunk is unreviewed: release it with an audit_coding PASS, or with confirm_floor (free) / synthesize_coding if you believe the gate mis-fired; the one exception is recommendations_applied after a real review (applying the review's findings releases the re-fired floor too - lineage-verified, minutes-TTL, logged distinctly). Fails open on any error and never deadlocks. Set to false to disable the gates (and the backstop) entirely. Default true. To change it, type true or false.",
       "default": true
     },
     "gate_tightness": {
       "type": "string",
       "title": "Gate tightness (how often the gates block)",
-      "description": "Controls which changes BOTH gates BLOCK — the commit (audit) gate and the write (Write/Edit) gate, which now share this single setting. 'focused' (default) blocks only the highest-stakes changes: the floor classes (auth, secrets, billing, migrations, a removed safety check — blocked at ANY confidence) and high-confidence security signals (crypto, unsafe exec, deserialization, dependency changes, IaC exposure, SQL) — lower-confidence 'code-review' changes (API routes, concurrency, network calls, large refactors, error handling) become a non-blocking advisory instead. 'thorough' blocks on ANY risky change that isn't covered by a review. The floor always blocks at BOTH levels — you cannot disable it this way (use enable_gates=false for that). To change it, type one of: focused, or thorough.",
+      "description": "Controls which changes BOTH gates BLOCK \u2014 the commit (audit) gate and the write (Write/Edit) gate, which now share this single setting. 'focused' (default) blocks only the highest-stakes changes: the floor classes (auth, secrets, billing, migrations, a removed safety check \u2014 blocked at ANY confidence) and high-confidence security signals (crypto, unsafe exec, deserialization, dependency changes, IaC exposure, SQL) \u2014 lower-confidence 'code-review' changes (API routes, concurrency, network calls, large refactors, error handling) become a non-blocking advisory instead. 'thorough' blocks on ANY risky change that isn't covered by a review. The floor always blocks at BOTH levels \u2014 you cannot disable it this way (use enable_gates=false for that). To change it, type one of: focused, or thorough.",
       "default": "focused"
     },
     "borderline_mode": {
       "type": "string",
       "title": "Borderline (low-confidence) tier",
-      "description": "How to handle borderline changes — consequential but not high-confidence-risky (e.g. a new public API surface, a notable refactor). 'advisory' (default) surfaces a fast synthesize_coding suggestion to the agent without blocking (shown once per area per session for the highest-signal 'heavy' spikes); 'synthesize_gate' soft-gates the highest-signal borderline changes (releasable by running synthesize_coding OR calling record_gate_skip with a reason_code); 'off' ignores borderline entirely. Never hard-blocks like the write/commit gates. To change it, type one of: advisory, synthesize_gate, or off.",
+      "description": "How to handle borderline changes \u2014 consequential but not high-confidence-risky (e.g. a new public API surface, a notable refactor). 'advisory' (default) surfaces a fast synthesize_coding suggestion to the agent without blocking (shown once per area per session for the highest-signal 'heavy' spikes); 'synthesize_gate' soft-gates the highest-signal borderline changes (releasable by running synthesize_coding OR calling record_gate_skip with a reason_code); 'off' ignores borderline entirely. Never hard-blocks like the write/commit gates. To change it, type one of: advisory, synthesize_gate, or off.",
       "default": "advisory"
     },
     "gate_threshold": {
       "type": "string",
       "title": "Gate trigger threshold (advanced)",
-      "description": "Raise this to make the gates fire less often in a noisy repo. Higher = fewer borderline triggers. It is FLOOR-BOUNDED: the value is clamped to a safe ceiling, so genuinely high-stakes changes (auth, secrets, migrations, removed permission/validation checks) ALWAYS fire and hardcoded secrets always fire — you cannot silently disable the gate this way (use enable_gates=false for that, which is visible). Leave blank for the calibrated default. To change it, type a whole number (e.g. 28).",
+      "description": "Raise this to make the gates fire less often in a noisy repo. Higher = fewer borderline triggers. It is FLOOR-BOUNDED: the value is clamped to a safe ceiling, so genuinely high-stakes changes (auth, secrets, migrations, removed permission/validation checks) ALWAYS fire and hardcoded secrets always fire \u2014 you cannot silently disable the gate this way (use enable_gates=false for that, which is visible). Leave blank for the calibrated default. To change it, type a whole number (e.g. 28).",
       "default": ""
     },
     "borderline_sampling_rate": {
       "type": "string",
       "title": "Borderline soft-gate sampling rate (advanced)",
-      "description": "Only used when borderline_mode='synthesize_gate'. The fraction (0.0–1.0) of borderline-heavy changes that actually soft-gate; the rest get an advisory nudge. Keeps the soft-gate from over-firing on a high-volume band. Default 0.5. To change it, type a decimal between 0 and 1.",
+      "description": "Only used when borderline_mode='synthesize_gate'. The fraction (0.0\u20131.0) of borderline-heavy changes that actually soft-gate; the rest get an advisory nudge. Keeps the soft-gate from over-firing on a high-volume band. Default 0.5. To change it, type a decimal between 0 and 1.",
       "default": "0.5"
     },
     "borderline_session_budget": {
