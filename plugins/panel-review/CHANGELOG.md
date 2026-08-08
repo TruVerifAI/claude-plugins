@@ -1,5 +1,21 @@
 # Changelog — AI Panel Review (Claude Code plugin)
 
+## 0.19.28
+
+- **Gate-self WRITE-gate deadlock fixed.** The write gate hashed the absolute
+  tool-input path into the gate-self self-coverage hash, while the server
+  mints its receipt hash from the reviewer's repo-relative diff — so a
+  gate-self write could never be released by a real `audit_coding` PASS and
+  deadlocked. It now relativizes the path against the git root before hashing
+  (`gate_lib.repo_relative_path`), so client and server hashes match. The deny
+  message also states the exact all-adds, repo-relative diff shape to submit.
+  Total/never-raises and fail-safe: any relativization failure reproduces the
+  old mismatch (re-review), never an over-release. The commit gate was
+  unaffected. See docs/MCP/Architecture/gate-self-write-deadlock-postmortem.md.
+- **Tamper advisory clears user-wide on a verified clean check.** A clean
+  reinstall now clears the "gate tampered" advisory promptly instead of
+  lingering up to 48h; the post-commit backstop carries the integrity flag.
+
 ## 0.19.27
 
 - **Gate-code tamper-evidence self-check.** The plugin now ships a

@@ -221,6 +221,12 @@ def _post_dashboard_event(g, cfg, repo, uncovered_floor, session_id, pushed):
             "hunk_hashes": [h.get("content_hash") for h in uncovered_floor if h.get("content_hash")],
             "pushed": bool(pushed),
             "session_id": session_id,
+            # Tamper-evidence flag rides free on this existing wire (status label
+            # only, same as the coverage POSTs). getattr covers two distinct cases
+            # that both map to a server-side no-op: an older gate_lib without the
+            # symbol (compat default) and gate_lib's own import-failure fail-open
+            # state. Keep them no-ops together if server handling ever changes.
+            "gate_integrity": getattr(g, "_GATE_INTEGRITY", "unchecked"),
         }
         g._post(cfg, "/api/mcp/usage/unreviewed-floor-commit", body)
     except Exception:

@@ -1040,6 +1040,39 @@ def file_content_fetcher(cwd):
 # unhook it) — always-risky regardless of content (design §6.1, audit F-005).
 
 
+def repo_relative_path(path, cwd):
+    """`path` relativized against the repo root (forward slashes), or the
+    forward-slashed original when it can't be. Used by the gate-self write
+    branch so the synthesized self-coverage diff carries the SAME path a
+    reviewer's unified diff carries (repo-relative). The absolute tool-input
+    path made the gself hash unmatchable by any server receipt — the wire
+    protocol never carries local paths, so the server can never mint a hash
+    containing one (gate-self-write-deadlock-postmortem, 2026-08-08).
+
+    TOTAL / never-raises (it runs on the gate path): a broad `except` returns
+    the forward-slashed input on any failure (git absent, subprocess error,
+    _git returning None so .strip() would AttributeError, cross-drive ValueError
+    from relpath). FAIL-SAFE by construction: any wrong result here (bad cwd,
+    outside-repo, `..`, or the `.`-at-root degenerate) just reproduces the OLD
+    mismatch (coverage misses -> re-review) — it can NEVER over-release, and it
+    NEVER touches a non-gate-self change."""
+    if not isinstance(path, str) or not path:
+        return ""            # non-str/empty -> safe no-op (server never matches -> re-review)
+    p = path.replace("\\", "/")
+    try:
+        root = _git(["rev-parse", "--show-toplevel"], cwd).strip()
+        if root:
+            rel = os.path.relpath(path, root)
+            # Guard the degenerate cases: outside the repo (`..`) and path==root
+            # (`.`, which would synth a malformed `+++ b/.` header) — both fall
+            # through to the original path (F-002).
+            if rel != "." and not rel.startswith(".."):
+                return rel.replace("\\", "/")
+    except Exception:
+        pass
+    return p
+
+
 def synth_write_diff(path, added_text):
     """Synthesize a unified diff for a Write/Edit so the classifier (which speaks
     unified-diff) can score the content being written. All-adds shape (`@@ -0,0

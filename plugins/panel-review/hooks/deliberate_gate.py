@@ -104,7 +104,14 @@ def main():
     # 2026-06-17). The authoritative gate-self control is the commit gate; this is the
     # symmetric pre-write layer. Still fails OPEN on infra error (no deadlock).
     if gate_self:
-        write_diff = g.synth_write_diff(path, content)
+        # Repo-relative path (postmortem fix, 2026-08-08): the self-coverage hash
+        # includes the diff's file path, and the server mints its hash from the
+        # reviewer's unified diff whose paths are repo-relative. Hashing the
+        # absolute tool-input path made the gself hash unmatchable on every host
+        # (gate-self-write-deadlock-postmortem.md). Fail-safe: a bad relativize
+        # can only reproduce the old mismatch (re-review), never over-release.
+        rel_path = g.repo_relative_path(path, cwd)
+        write_diff = g.synth_write_diff(rel_path, content)
         # Phase 9 (inc 5): a purely INERT gate-self write (comment/whitespace only) to a
         # NON-gate-core file releases without a review (same rule as the commit gate). gate-CORE
         # always reviews. (For a whole-file Write this rarely fires — the content has code — so
@@ -116,18 +123,23 @@ def main():
         gs_action, gs_detail = g.audit_decision_gate_self(gs_resp)
         if gs_action == "deny":
             g.emit_deny(
-                "TruVerifAI flagged a high-risk change for a quick review before it ships — "
+                "TruVerifAI flagged a high-risk change for a quick review before it ships \u2014 "
                 "this write edits the review gate's own settings (risk_signals.json / "
                 "risk_classifier.py / gate_lib.py / hooks.json / .claude-plugin), the "
                 "highest-stakes area, so the review can't be skipped.\n"
                 "This is finished code, so run `audit_coding` with your proposed_action + "
                 "relevant_code, AND pass:\n"
                 f'  gate_repo = "{repo}"\n'
-                "  gate_diff = a unified diff ADDING the file's new contents "
-                "(the change you're about to write)\n"
+                "  gate_diff = an ALL-ADDS unified diff of exactly the content this write "
+                "puts in the file:\n"
+                f"    header:  --- /dev/null   then   +++ b/{rel_path}   "
+                "(this exact repo-relative path)\n"
+                "    body:    every line of the new content prefixed with '+' \u2014 for an "
+                "Edit the new_string, for a Write the whole file, for a MultiEdit each "
+                "edit's new text in order\n"
                 "TruVerifAI records the result and the write proceeds on retry. "
                 "(`deliberate_coding` is accepted if it's still an open design. Gate-self "
-                "changes need a real review of THIS change — they can't be skipped, and an "
+                "changes need a real review of THIS change \u2014 they can't be skipped, and an "
                 "unrelated recent review won't release them.)"
             )
         g.emit_allow(gs_detail)  # covered / fail-open
