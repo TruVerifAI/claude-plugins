@@ -1,5 +1,10 @@
 # Changelog — AI Panel Review (Claude Code plugin)
 
+## 0.19.29
+
+- **Fixed a false-positive "gate integrity" tamper warning on Windows (no actual tampering occurred).** `run_gate.js` was hashed raw (not line-ending-normalized) in the tamper-evidence manifest, so a clean install whose `run_gate.js` landed with CRLF line endings falsely reported `modified:run_gate.js` on every invocation. It is now normalized like every other gate file, so a clean install verifies clean. Informational only (the gate always enforced and failed open). **Upgrading resolves it automatically** — the new manifest ships with the update and the self-check re-runs on the next gate invocation; no reinstall step needed.
+
+
 ## 0.19.28
 
 - **Gate-self WRITE-gate deadlock fixed.** The write gate hashed the absolute

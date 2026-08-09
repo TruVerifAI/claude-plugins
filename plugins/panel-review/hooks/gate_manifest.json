@@ -82,7 +82,7 @@
     },
     "run_gate.js": {
       "sha256": "de4da70f27e8d2a7436dae3f9eeccb89fba339954f998c12f33f9456e4109b1c",
-      "text": false
+      "text": true
     },
     "run_gate.sh": {
       "sha256": "b6bb69ccc182c9e715bb24b6090bcae8c645d6784ca4252114b2fc1457292993",
