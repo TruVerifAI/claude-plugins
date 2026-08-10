@@ -1,5 +1,23 @@
 # Changelog — AI Panel Review (Claude Code plugin)
 
+## 0.19.30
+
+- **Gate-self WRITE-gate deadlock fully fixed.** 0.19.28 relativized the
+  self-coverage hash path but the deny message's diff spec dropped the `@@`
+  hunk header, so an agent that followed it verbatim submitted a diff the
+  classifier parses to zero content — an audit PASS could never release the
+  write. The deny now prescribes the required `@@ -0,0 +1,N @@` line, so the
+  reviewed diff hashes identically to the change the gate recorded and the
+  write releases on a real PASS. Fail-safe unchanged (any mismatch re-reviews,
+  never over-releases). See docs/MCP/Architecture/gate-self-write-deadlock-postmortem.md.
+- **Server hardening (defense in depth).** The receipt writer now refuses to
+  mint releasing coverage for a degenerate gate-self diff — one that presents
+  content headers yet carries no reviewable lines — so a malformed submission
+  fails toward a real review instead of a misleading "released". A legitimate
+  rename/mode-only gate-self change (no content headers) still releases on a
+  PASS as before.
+
+
 ## 0.19.29
 
 - **Fixed a false-positive "gate integrity" tamper warning on Windows (no actual tampering occurred).** `run_gate.js` was hashed raw (not line-ending-normalized) in the tamper-evidence manifest, so a clean install whose `run_gate.js` landed with CRLF line endings falsely reported `modified:run_gate.js` on every invocation. It is now normalized like every other gate file, so a clean install verifies clean. Informational only (the gate always enforced and failed open). **Upgrading resolves it automatically** — the new manifest ships with the update and the self-check re-runs on the next gate invocation; no reinstall step needed.
