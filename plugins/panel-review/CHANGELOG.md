@@ -1,5 +1,25 @@
 # Changelog — AI Panel Review (Claude Code plugin)
 
+## 0.19.31
+
+- **Server identity is now declared properly instead of inferred.** The plugin
+  declared no icon of its own, so a client that wanted one had to scrape the
+  `homepage` page for its icon links — and that page, `truverif.ai/mcp`, now
+  308-redirects to the Panel Review landing page and served a 15-byte stub with
+  no icon links at all. `homepage` now points at the canonical
+  `truverif.ai/panel-review`, and the MCP server additionally declares its
+  icons and website URL directly in the initialize handshake
+  (`serverInfo.icons` / `websiteUrl`, per the MCP spec), so clients are handed
+  the URLs rather than left to infer them.
+- **Whether that is visible anywhere is client-side and mostly not implemented
+  yet.** Most MCP clients do not render icons for third-party servers: Cursor
+  staff have confirmed their UI does not render custom MCP server icons, and
+  Claude's own surfaces show letter placeholders for custom connectors. This
+  release makes the metadata correct and available so it renders wherever
+  support lands; it does not by itself put a mark on your screen. No behaviour
+  change to the gates or the tools.
+
+
 ## 0.19.30
 
 - **Gate-self WRITE-gate deadlock fully fixed.** 0.19.28 relativized the
