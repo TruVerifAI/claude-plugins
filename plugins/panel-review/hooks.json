@@ -6,11 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/commit-detected.sh"
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run_gate.sh post_commit_backstop.py"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run_gate.js\" claude_code post_commit_backstop.py"
           }
         ]
       }
@@ -21,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run_gate.sh post_commit_backstop.py"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run_gate.js\" claude_code post_commit_backstop.py"
           }
         ]
       }
@@ -32,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run_gate.sh audit_gate.py"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run_gate.js\" claude_code audit_gate.py"
           }
         ]
       },
@@ -41,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run_gate.sh stash_precommit_head.py"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run_gate.js\" claude_code stash_precommit_head.py"
           }
         ]
       },
@@ -50,7 +46,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run_gate.sh deliberate_gate.py"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run_gate.js\" claude_code deliberate_gate.py"
           }
         ]
       }

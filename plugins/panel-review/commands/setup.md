@@ -23,11 +23,21 @@ If the call times out: report "✗ Could not reach mcp.truverif.ai. Check your n
 backend's `/api/mcp/*` routes), and a failure there is fail-open by design — invisible
 except for a per-event advisory. Prove that half works end-to-end:
 
-Run (Bash), from the plugin's hooks directory (`${CLAUDE_PLUGIN_ROOT}/hooks` when that
-variable is set; otherwise locate the installed plugin's `hooks/` folder):
+Run it from the plugin's hooks directory (`${CLAUDE_PLUGIN_ROOT}/hooks` when that
+variable is set; otherwise locate the installed plugin's `hooks/` folder).
 
+Use the interpreter name that exists on this machine — do NOT assume `python`, which
+does not exist on macOS 12.3+ or on Debian/Ubuntu without `python-is-python3`. Try
+`python3` first, then `python`, then `py` (the Windows launcher):
+
+```bash
+# macOS / Linux / Git Bash
+TVAI_TOKEN=${user_config.api_token} python3 gate_selfcheck.py
 ```
-TVAI_TOKEN=${user_config.api_token} python gate_selfcheck.py
+
+```powershell
+# Windows PowerShell (no inline env-var prefix; `py` is the most reliable there)
+$env:TVAI_TOKEN = "${user_config.api_token}"; py gate_selfcheck.py
 ```
 
 It prints the gate `base_url` it resolved, makes one free authorized round-trip to the

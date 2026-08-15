@@ -7,8 +7,11 @@ is fail-open by design — so a wrong URL / bad key on the gate half is otherwis
 invisible until the fail-open advisory fires. This script proves the gate half
 end-to-end in one call: config resolution -> base_url -> auth -> routing.
 
-Run it from the plugin's hooks directory (the setup command does this):
-    python gate_selfcheck.py
+Run it from the plugin's hooks directory (the setup command does this), using
+whichever interpreter this machine has — `python` does NOT exist on macOS 12.3+
+or on Debian/Ubuntu without python-is-python3:
+    python3 gate_selfcheck.py     # macOS / Linux
+    py gate_selfcheck.py          # Windows
 Token resolution: CLAUDE_PLUGIN_OPTION_API_TOKEN, or TVAI_TOKEN, or argv[1].
 Exit 0 = gate endpoint reachable + authorized; exit 1 = a problem it names.
 """

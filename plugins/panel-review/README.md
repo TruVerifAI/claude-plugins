@@ -19,6 +19,19 @@ Each of the six primary skills (three per profile) calls the matching MCP tool w
 
 Three tools are **free (no credits)** and the agent can call them directly: **`record_outcome`** (reports whether a prior call changed the agent's decision — powers the Impact card), **`record_gate_skip`** (releases a proactive review gate by logging a reason instead of running the review — see Review gates below), and **`confirm_floor`** (clears a suspected FALSE *floor* gate with one cheap budget model — a low-risk verdict releases it). `record_outcome` and `record_gate_skip` each also back a skill; `confirm_floor` has none. `confirm_floor` invokes a model, so its calls count against the daily cap; `record_outcome` and `record_gate_skip` don't. (All three are burst-rate-limited.)
 
+## Requirements
+
+The review gates run locally on your machine and need two runtimes on `PATH`:
+
+- **Python 3** (`python3`, or `py` on Windows) — the gates themselves.
+- **Node 18+** — every hook command launches a gate via
+  `node "${CLAUDE_PLUGIN_ROOT}/hooks/run_gate.js" …`. Node ships with Claude
+  Code's own npm install, so it is almost always already present; if you
+  installed Claude Code by another route, make sure `node` resolves.
+
+Both are checked by `npx @truverifai/init doctor`, which reports a named
+failure rather than letting a missing runtime silently disable the gates.
+
 ## Install
 
 Submit each of these slash commands on its own — Claude Code parses one slash command per submission, so pasting them all in a single block produces a malformed-URL error.
@@ -116,7 +129,7 @@ A **purely inert** edit (comment/whitespace only) to one of the gate's *own* fil
 
 Options, set in `/plugin` → **Installed** → **AI Panel Review** → **Configure options** (type the value, then `/reload-plugins`):
 
-- **`enable_gates`** (`true` / `false`, default `true`) — turns the gates on or off.
+- **`enable_gates`** (`true` / `false`, default `true`) — turns the gates on or off **for Claude Code's own hooks**. It is delivered as an environment variable to the hooks Claude Code spawns, so it cannot reach any other gate: if you also installed via `npx @truverifai/init`, the git pre-commit hook and the Cursor / Codex / Copilot / VS Code / Gemini / Antigravity hooks keep enforcing. **One switch for all of them:** `npx @truverifai/init gates off` (`on`, `status`). `tvai gates status` reports it when the two disagree.
 - **`gate_tightness`** (`focused` / `thorough`, default `focused`) — how often **both gates** block (the commit gate *and* the write gate now share this one setting). `focused` blocks only the highest-stakes changes — the floor classes (auth, secrets, billing, migrations, a removed safety check, and other high-severity domains — blocked at **any** confidence) and high-confidence security signals — and downgrades lower-confidence "code-review" changes (API routes, concurrency, network calls, large refactors, error handling) to a non-blocking advisory; `thorough` blocks any risky change that isn't covered. The floor always blocks at both levels.
 - **`borderline_mode`** (`advisory` / `synthesize_gate` / `off`, default `advisory`) — how borderline (low-confidence) changes are handled: `advisory` surfaces a fast `synthesize_coding` suggestion **to the agent** (non-blocking; shown once per area per session for the highest-signal "heavy" spikes); `synthesize_gate` soft-gates the highest-signal borderline changes (releasable by a quick `synthesize_coding` or a one-line skip); `off` ignores them. Never hard-blocks.
 

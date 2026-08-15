@@ -1,5 +1,31 @@
 # Changelog — AI Panel Review (Claude Code plugin)
 
+## 0.19.32
+
+- **The gates now run through Node, not a bare shell script — this fixes the
+  gates being silently dead on macOS and Linux.** `hooks.json` invoked
+  `${CLAUDE_PLUGIN_ROOT}/hooks/run_gate.sh` with no interpreter, but that file
+  ships non-executable (git on Windows cannot record an exec bit), so on any
+  POSIX machine the shell answered `Permission denied` — which Claude Code
+  treats as a non-blocking error. Every gate allowed everything, with no error
+  shown. Windows was unaffected, which is why it went unnoticed. Commands are
+  now `node "${CLAUDE_PLUGIN_ROOT}/hooks/run_gate.js" claude_code <gate>.py`,
+  the same form Anthropic's own plugins use.
+- **`enable_gates` is Claude-Code-scoped, and now says so.** It is delivered as
+  an environment variable to the hooks Claude Code spawns, so it cannot reach
+  the git pre-commit hook or the Cursor / Codex / Copilot / VS Code / Gemini /
+  Antigravity hooks. If you installed those via `npx @truverifai/init`, one
+  switch covers all of them: `npx @truverifai/init gates off` (`on`, `status`).
+- **`/panel-review:setup` no longer tells the agent to run `python`**, which
+  does not exist on macOS 12.3+ or on Debian/Ubuntu without `python-is-python3`.
+- **Requirements are now stated:** Python 3 and Node 18+ must be on `PATH`.
+- The inert `commit-detected.sh` hook was unhooked (its config option was
+  removed some releases ago, so it exited immediately on every invocation).
+- **Behavior change for anyone scripting `tvai doctor`:** an intentionally
+  disabled gate is now a `!` warning rather than a `✗` failure, so `doctor` no
+  longer exits 1 for a supported user choice. Genuine faults still exit 1. If
+  you gate CI on `tvai doctor`, check the row text, not only the exit code.
+
 ## 0.19.31
 
 - **Server identity is now declared properly instead of inferred.** The plugin
