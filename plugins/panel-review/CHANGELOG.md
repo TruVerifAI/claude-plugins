@@ -1,5 +1,17 @@
 # Changelog — AI Panel Review (Claude Code plugin)
 
+## 0.19.36
+
+- **Packaging fix, no behaviour change.** `hooks/run_gate.cmd` had been
+  published LF-only. The rule that keeps it CRLF lived in the monorepo's root
+  `.gitattributes`, which is never copied into this repo — so git stored the
+  file LF and every published copy since has been LF. `cmd.exe` cannot parse an
+  LF-only batch file; it executes fragments of it. The rule now ships inside the
+  bundle, so the published copy is CRLF again.
+- Nothing else in this release differs from 0.19.32. `run_gate.cmd` is not
+  invoked by anything today — hook commands run `node run_gate.js` — so this
+  corrects a latent packaging defect rather than a live failure.
+
 ## 0.19.32
 
 - **The gates now run through Node, not a bare shell script — this fixes the

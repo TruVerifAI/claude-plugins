@@ -1,0 +1,12 @@
+# Line-ending rules for the PUBLISHED bundle repo.
+#
+# This file must ship INSIDE the bundle, because the publish copies only the
+# bundle directory into the target repo — the monorepo's root .gitattributes
+# never gets there. Without these rules git normalizes run_gate.cmd to LF on
+# commit, and cmd.exe cannot parse an LF-only batch file (it executes fragments
+# of it). Found 2026-08-15; the marketplace had been storing it LF-only.
+#
+# Generated bundles are LF everywhere else, deliberately.
+*               text=auto eol=lf
+*.cmd           text eol=crlf
+*.bat           text eol=crlf
