@@ -648,7 +648,15 @@ _GATE_SELF_PATHS = re.compile(
     # integrity.py is the tamper-evidence self-check; gate_manifest.json is its
     # hash anchor — both must be gate-self (editing them is a gate mutation).
     r"|integrity\.py|gate_manifest\.json"
-    r"|commit-detected\.sh|run_gate\.(sh|cmd|js)"
+    # resolve_python.js decides WHICH interpreter every gate runs under, so an
+    # edit to it is a gate mutation in the fullest sense: change the resolution
+    # and you change (or silence) every gate on the machine.
+    # cacert.pem is the vendored TLS trust anchor the gates FALL BACK to when
+    # the system store is broken; swapping it swaps what the gates trust, so
+    # editing it is a gate mutation (its NOTICE rides along - it carries the
+    # tamper-seal hash the tests verify the pem against).
+    r"|commit-detected\.sh|run_gate\.(sh|cmd|js)|resolve_python\.js"
+    r"|cacert\.pem|CACERT-NOTICE\.md"
     r"|platforms\.yaml|build_bundles\.py"
     r"|gate_core/host/|hooks/host/"
     r"|\.claude-plugin/|\.codex-plugin/|\.cursor-plugin/|gemini-extension\.json"

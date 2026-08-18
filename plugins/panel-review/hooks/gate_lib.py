@@ -21,11 +21,13 @@ import os
 import random
 import re
 import shlex
+import ssl
 import stat
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 
 import host as host_registry  # per-platform adapter layer (same dir, host/ package)
@@ -1199,9 +1201,174 @@ def build_change_diff(inp, path, content):
 # Backend coverage calls (fail-open on any error)
 # ---------------------------------------------------------------------------
 
+# Why the last backend POST failed, for the fail-open advisory and the
+# self-check. Process-global: a hook is a single-shot process, so there is no
+# lifetime to manage and no cross-request bleed.
+_LAST_POST_ERROR = None
+
+
+def _redact(text, secret=None):
+    """Strip anything secret from an error before it can be shown.
+
+    The fail-open advisory is MODEL-VISIBLE, so this runs at the point of
+    CAPTURE rather than at each render site — one place to get right, and no way
+    for a future caller to forget it.
+
+    Defence in depth, strongest first:
+
+    1. The ACTUAL key, when we have it. Pattern-matching a credential is
+       guesswork; removing the exact string we are holding is not. This is what
+       catches the shapes no denylist anticipates — percent-encoded, split
+       across a query string, embedded in JSON.
+    2. Credential-shaped patterns, for anything we are not holding.
+    3. URLs collapse to scheme+host. The host is the useful diagnostic ("it
+       tried api.truverif.ai"); the path and query are not, and a query string
+       is exactly where a credential hides. Deliberately FIRST among the
+       patterns, so a credential inside a URL is destroyed with the URL rather
+       than being partially matched and leaving the rest visible.
+    4. Control characters are stripped and whitespace collapsed: this lands in
+       an agent's context, where CR/LF and terminal escapes are a formatting
+       and injection surface that ensure_ascii does not address.
+    """
+    s = str(text or "")
+    try:
+        if secret and len(str(secret)) >= 8:
+            sec = str(secret)
+            s = s.replace(sec, "<key>")
+            try:
+                s = s.replace(urllib.parse.quote(sec, safe=""), "<key>")
+            except Exception:
+                pass
+        s = re.sub(r"(https?://[^/\s]+)\S*", r"\1", s)
+        s = re.sub(r"tvai_[A-Za-z0-9_\-]+", "<key>", s)
+        s = re.sub(r"(?i)\b(bearer|basic)[\s%]+\S+", r"\1 <key>", s)
+        s = re.sub(r"(?i)(token|api[_-]?key|secret|password)"
+                   r"([\"']?\s*[:=]\s*[\"']?)\S+", r"\1\2<key>", s)
+        s = "".join(ch if ch.isprintable() else " " for ch in s)
+        s = re.sub(r"\s+", " ", s).strip()
+    except Exception:
+        return "unavailable"
+    return s[:180]
+
+
+def _exception_summary(exc):
+    """A short, SAFE description of an exception.
+
+    HTTPError is special-cased on purpose: `str(HTTPError)` renders as
+    "HTTP Error <code>: <reason>", and that reason phrase comes from the SERVER.
+    Since this string is injected into an agent's context, a compromised or
+    hostile backend would otherwise have a channel straight into it. The status
+    code carries the same diagnostic value and is ours, not theirs.
+
+    The same rule extends to the whole http.client family (review finding I):
+    BadStatusLine/RemoteDisconnected/etc. embed RAW SERVER BYTES in str(exc) —
+    e.g. BadStatusLine carries the malformed status line verbatim. For those,
+    the class NAME is the diagnostic ("the server spoke broken HTTP") and the
+    payload is exactly what must not reach the model."""
+    name = type(exc).__name__
+    try:
+        code = getattr(exc, "code", None)
+        if code is not None and isinstance(code, int):
+            return name + ": HTTP " + str(code)
+        if type(exc).__module__ == "http.client":
+            return name  # str(exc) is server-controlled here — drop it
+    except Exception:
+        pass
+    return name + ": " + str(exc)
+
+
+def _remember_post_error(exc, secret=None):
+    """Record the reason the last POST failed. Never raises.
+
+    Totality matters more than it looks: this is called from inside `_post`'s
+    `except` block, where the handler is already spent — anything raising here
+    would propagate and turn a fail-OPEN into a crash, which is the one outcome
+    the gates may never produce. Hence the internal catch, and a test that
+    drives it with an exception whose __str__ raises.
+
+    NOTE it does not CLEAR on success. The reason is only ever rendered on a
+    fail-open path, so what we want there is "the last failure in this process",
+    not "the most recent event". Clearing on a later, unrelated successful POST
+    would silently take the explanation away at exactly the moment it is needed."""
+    global _LAST_POST_ERROR
+    if exc is None:
+        return
+    try:
+        _LAST_POST_ERROR = _redact(_exception_summary(exc), secret)
+    except Exception:
+        _LAST_POST_ERROR = "unavailable"
+
+
+def last_post_error():
+    """The redacted reason the last backend POST failed, or None."""
+    return _LAST_POST_ERROR
+
+
+def fail_open_reason_suffix():
+    """The ' (reason: …)' fragment appended to every fail-open advisory.
+
+    ONE implementation, shared by the commit gate, the write gate and the
+    backstop, so the three cannot drift in whether — or how — they tell the user
+    why the gates are not enforcing (Rule 8)."""
+    reason = last_post_error()
+    return (" The underlying error was: " + reason + ".") if reason else ""
+
+
+# --- TLS trust-store fallback (roadmap 1b.1, owner-approved option A) --------
+#
+# Some machines cannot verify ANY certificate with their own trust store. The
+# documented case: Homebrew Python on macOS with the openssl@3 cert.pem symlink
+# missing — Python had no CA bundle at all, every backend call died with
+# SSLCertVerificationError, and every gate silently failed open for hours
+# (REPORT-MAC-m34-FINAL.md §3). certifi was NOT installed on that machine, so
+# "import certifi" would not have helped; only a bundle WE ship can.
+#
+# cacert.pem beside this file is Mozilla's CA list, vendored byte-identical
+# from certifi (MPL-2.0 — see CACERT-NOTICE.md, including the refresh
+# obligation). STRICTLY A FALLBACK: the system store is always tried first, and
+# the bundle is consulted only after a CERTIFICATE-VERIFICATION failure. A
+# machine with a working store never reads it, which bounds the cost of it
+# aging — a stale copy can only affect machines that otherwise have no working
+# TLS at all. The fallback still performs FULL verification against Mozilla's
+# roots; it is an alternate trust anchor, never a bypass.
+
+_VENDORED_CA_CONTEXT = None  # created lazily, once per process
+
+
+def _vendored_ca_context():
+    """An SSLContext trusting the vendored Mozilla bundle, or None if the
+    bundle is missing/unloadable (then the fallback simply never engages)."""
+    global _VENDORED_CA_CONTEXT
+    if _VENDORED_CA_CONTEXT is None:
+        try:
+            pem = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cacert.pem")
+            _VENDORED_CA_CONTEXT = ssl.create_default_context(cafile=pem)
+        except Exception:
+            _VENDORED_CA_CONTEXT = False  # tried and failed — do not retry per call
+    return _VENDORED_CA_CONTEXT or None
+
+
+def _is_trust_store_failure(exc):
+    """Only a CERTIFICATE-VERIFICATION failure qualifies for the fallback.
+
+    Deliberately narrow: a handshake/protocol error, a hostname mismatch or a
+    server-side rejection must NOT be retried against a different trust anchor
+    — retrying those would at best mask a real problem and at worst hand a
+    mis-presented certificate a second chance. URLError is unwrapped because
+    urllib wraps the SSL error in it."""
+    seen = exc
+    for _ in range(3):  # exc -> URLError.reason -> the SSL error
+        if isinstance(seen, ssl.SSLCertVerificationError):
+            return True
+        seen = getattr(seen, "reason", None)
+        if seen is None:
+            return False
+    return False
+
+
 def _post(cfg, path, body):
     """POST JSON to the backend. Returns the parsed dict, or None on any error
-    (the caller fails open)."""
+    (the caller fails open, and `last_post_error()` says why)."""
     try:
         # Cross-platform: stamp WHICH host this gate ran under on every POST.
         # The server may ignore it today; when the fires table gains a platform
@@ -1227,7 +1394,17 @@ def _post(cfg, path, body):
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        try:
+            resp_ctx = urllib.request.urlopen(req, timeout=5)
+        except Exception as tls_exc:
+            # The fallback engages HERE and only here: the system trust store
+            # just failed to verify the certificate. Anything else re-raises to
+            # the outer handler unchanged.
+            ctx = _vendored_ca_context() if _is_trust_store_failure(tls_exc) else None
+            if ctx is None:
+                raise
+            resp_ctx = urllib.request.urlopen(req, timeout=5, context=ctx)
+        with resp_ctx as resp:
             parsed = json.loads(resp.read().decode("utf-8"))
             # Option B (update nudge): stash the server's staleness flag for
             # this hook process; emit_deny / the backstop render it later.
@@ -1236,10 +1413,28 @@ def _post(cfg, path, body):
                 if isinstance(parsed, dict) and isinstance(parsed.get("gate_update"), dict):
                     global _GATE_UPDATE
                     _GATE_UPDATE = parsed["gate_update"]
+                    # Cross-process delivery (review finding D): persist the
+                    # verdict so the backstop's clean path — a different
+                    # process that made no POST — can render the nudge.
+                    _persist_gate_update(_GATE_UPDATE)
             except Exception:
                 pass
             return parsed
-    except Exception:
+    except Exception as exc:
+        # KEEP THE REASON (roadmap 1b.2). This used to be a bare
+        # `except Exception: return None`, which collapsed DNS failure, timeout,
+        # 401, 500 and a broken TLS trust store into one indistinguishable
+        # silence. Callers treat None as "the endpoint didn't answer" and fail
+        # open by design, so a total machine-wide gate outage presented as a
+        # per-event advisory naming four possible causes, none of them right.
+        #
+        # On the 2026-08-17 macOS round that cost hours: the real reason was
+        # `SSLCertVerificationError`, the server was healthy the whole time, and
+        # our own diagnostics pointed at the server.
+        #
+        # Still returns None — the fail-open contract is unchanged. The only
+        # difference is that we can now say why.
+        _remember_post_error(exc, (cfg or {}).get("token"))
         return None
 
 
@@ -2488,25 +2683,107 @@ def _record_nudge(latest):
     try:
         p = _nudge_state_path()
         os.makedirs(os.path.dirname(p), exist_ok=True)
+        # MERGE, don't clobber: this file also carries cached_update (the
+        # cross-process staleness flag). Overwriting it here would erase the
+        # cache at the exact moment it was first used.
+        data = {}
+        try:
+            with open(p, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if not isinstance(data, dict):
+                data = {}
+        except Exception:
+            data = {}
+        data["last_shown_at"] = time.time()
+        data["last_version_shown"] = latest
         with open(p, "w", encoding="utf-8") as fh:
-            json.dump({"last_shown_at": time.time(),
-                       "last_version_shown": latest}, fh)
+            json.dump(data, fh)
     except Exception:
         pass  # best-effort; never affects the gate
+
+
+# Cache validity for the persisted staleness flag. Long enough that a quiet
+# machine still hears; short enough that a machine that stops POSTing entirely
+# does not nudge from ancient data forever.
+_NUDGE_CACHE_TTL_SECONDS = 7 * 86400
+
+
+def _persist_gate_update(upd):
+    """Persist the server's gate_update verdict so OTHER processes can render
+    the nudge (adversarial review 2026-08-18, finding D).
+
+    _GATE_UPDATE is per-process, and the backstop — the one hook with a
+    model-visible channel on ORDINARY activity — only makes its own POST for
+    floor-containing commits. So the 4.3 nudge as first shipped fired for
+    users whose gates kept engaging, and never for the quiet-safe-code user it
+    was aimed at: exactly the backwards delivery it existed to fix. Persisting
+    the flag whenever ANY process's POST sees it (a write-gate advisory, an
+    audit evaluation, doctor's [gate endpoint] row) lets the backstop's clean
+    path render from the cache. Verdicts are persisted BOTH ways, so a
+    now-current machine clears the flag on its next flagged response rather
+    than nudging from stale data. Fail-silent everywhere."""
+    try:
+        if not isinstance(upd, dict):
+            return
+        p = _nudge_state_path()
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        data = {}
+        try:
+            with open(p, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if not isinstance(data, dict):
+                data = {}
+        except Exception:
+            data = {}
+        data["cached_update"] = {
+            "is_stale": upd.get("is_stale") is True,
+            "latest_version": upd.get("latest_version"),
+            "fetched_at": time.time(),
+        }
+        with open(p, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+    except Exception:
+        pass
+
+
+def _cached_gate_update():
+    """The persisted staleness verdict, or None when absent/expired. The same
+    strict validation update_nudge_line applies to the fresh flag applies
+    downstream — this only decides whether a cached candidate exists."""
+    try:
+        with open(_nudge_state_path(), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        cu = data.get("cached_update")
+        if not isinstance(cu, dict):
+            return None
+        if (time.time() - float(cu.get("fetched_at", 0))) > _NUDGE_CACHE_TTL_SECONDS:
+            return None
+        return cu
+    except Exception:
+        return None
 
 
 def update_nudge_line():
     """The one-line agent-actionable update nudge, or None. Renders only on
     the server's is_stale flag (the client never compares versions — the
     server owns the comparison); re-validates the version shape client-side;
-    respects the 24h cap and records the render."""
+    respects the 24h cap and records the render.
+
+    Falls back to the PERSISTED flag when this process made no POST of its own
+    (finding D above) — with one extra suppression for the cached path's tail:
+    if this machine now RUNS the advertised version, the nudge's goal is met
+    and rendering from a not-yet-expired cache would nag about an update the
+    user already did. (That equality check is cache invalidation, not a
+    staleness comparison — the server still owns "is it stale".)"""
     try:
-        upd = _GATE_UPDATE
+        upd = _GATE_UPDATE or _cached_gate_update()
         if not (isinstance(upd, dict) and upd.get("is_stale") is True):
             return None
         latest = upd.get("latest_version")
         if not (isinstance(latest, str) and _NUDGE_SEMVER_RE.fullmatch(latest)):
             return None
+        if latest == plugin_version():
+            return None  # already on the advertised version — goal met
         if not _should_nudge():
             return None
         instruction = host_registry.current().update_instruction

@@ -1,4 +1,53 @@
-# Changelog — AI Panel Review (Claude Code plugin)
+# Changelog
+
+## 0.19.37 (cross-OS round 2)
+
+The reliability release for the failures found by the first external installs
+(Windows Store-alias crash X13, the macOS trust-store outage, the Mac
+review-tools disconnect).
+
+- **The launcher never searches for Python in its own process.** `init`
+  resolves the interpreter once (sacrificial child probes; the MS Store
+  placeholder is rejected by its 9009 exit), proves it can run real gate code,
+  and records ONE absolute path in `~/.truverifai/python-path.json`. Hooks
+  read the record; a stale record heals out-of-process (fingerprint + time +
+  failure-cap back-off, heal-and-continue) — the crash path that killed every
+  gate on one external user's machine is structurally unreachable.
+- **Fail-open messages now say WHY.** `gate_lib` keeps the last transport
+  error (secret-redacted, URL reduced to host) and appends it to every
+  fail-open advisory and the self-check — the macOS
+  `CERTIFICATE_VERIFY_FAILED` mystery becomes a one-line read.
+- **Vendored Mozilla CA bundle as a TLS fallback** — engages only on
+  certificate-verification failure, so a machine with a broken Python trust
+  store still reaches the gate endpoint.
+- **`init` runs the gate self-check at install** and fails loudly instead of
+  printing success over a dead install.
+- **Mac review-tools connect honestly**: the Keychain is probed
+  (found/absent/unavailable) instead of inferring "Claude Code has not run"
+  from a missing `.credentials.json`; failures are a `✗` with a true cause and
+  a working instruction.
+- **Antigravity gets its own review-tools entry**
+  (`~/.gemini/config/mcp_config.json`, `serverUrl`) and its own doctor row —
+  no more gates-without-exits on that platform.
+- The plugin panel now holds only `api_token`; all gate behaviour moved to
+  `npx @truverifai/init gates ...` / the `/panel-review:gates` command (X10).
+- Gate code installs are now staged, verified, and swapped in two renames — an
+  interrupted install can no longer leave the machine silently ungated; `init`
+  recovers leftover swap state on startup.
+- The post-commit backstop notice now carries the `(TruVerifAI gate vX)` stamp,
+  and the update nudge renders on ordinary clean commits (24h-capped, verdict
+  cached across processes), not only when a gate blocks you.
+- **`run_gate.sh` removed** (it has been dead weight since 0.19.32, when the
+  launcher moved to `node run_gate.js`). If your hook configs predate 0.19.32
+  and still reference the `.sh`, those hooks were ALREADY broken — re-run
+  `npx @truverifai/init@latest` to rewrite every config.
+- `doctor`: reports the recorded absolute interpreter path (a bare `python3`
+  is now a failure), labels the node-client connectivity rows, and adds a
+  `[gate endpoint]` row measured over the exact route the gates use.
+- Hardening from the round's adversarial review: the launcher fails open (not
+  exit 1) when its resolver module is missing; a gate script that crashes at
+  runtime can no longer defeat the repair back-off; apostrophe-safe
+  interpreter probes; installer cleanup can never throw from a catch block.
 
 ## 0.19.36
 

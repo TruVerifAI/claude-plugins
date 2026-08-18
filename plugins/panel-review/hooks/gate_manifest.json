@@ -1,23 +1,31 @@
 {
   "files": {
-    "audit_gate.py": {
-      "sha256": "fb164fd2699573f2a43c8911d81b77f8026756a9a73f6cd25623ff3b13630b6e",
+    "CACERT-NOTICE.md": {
+      "sha256": "3b021090a9a2142fdeaa34a1b9b2cb72ac85cca7e7445020fb27cab9e1bd5923",
       "text": true
+    },
+    "audit_gate.py": {
+      "sha256": "d77201d443ed1b0a7d7f3e6b8b8ddb8364029ccaa641285b867c99ece227c32e",
+      "text": true
+    },
+    "cacert.pem": {
+      "sha256": "fc9165a12403263e7ebfbdad7be7a3eac0fa5d325d3c70465f28d3690072ca28",
+      "text": false
     },
     "commit-detected.sh": {
       "sha256": "ecb9a228ae3d084ad0d6549b7e807ffa8f061fce445ecc0dc45e75006ff0b452",
       "text": true
     },
     "deliberate_gate.py": {
-      "sha256": "16c2145e6d5e7407dbf547e01c1ceb8b57f2003c472fa442eab57469865feba3",
+      "sha256": "04745ee64333f03611584e6e14eac3fb55c21fffd624971ae7e4ddf0feb5cfce",
       "text": true
     },
     "gate_lib.py": {
-      "sha256": "1f40bb991f22563f174ce6f59907e81487766712310e33f3d4db4667a2a870c5",
+      "sha256": "2b8fdc57bbe34c8af3bac5200330cf8f02dfd4bd72a5c1ba5a7bca55156d5eb1",
       "text": true
     },
     "gate_selfcheck.py": {
-      "sha256": "54b4fc7a79b0c4d779b9b1ef9a2c3fd0fdbd5c89abba9b4e3824667501ecb971",
+      "sha256": "69c655d87f59b43ac0480bf10ef4dd86ea7f4efba1499b4e49cbd2a1ba669c92",
       "text": true
     },
     "host/__init__.py": {
@@ -65,11 +73,15 @@
       "text": true
     },
     "post_commit_backstop.py": {
-      "sha256": "7fdf642ebe8e350b07632a5ff830eb04fbe47d528f95ecce89034cff35957d53",
+      "sha256": "3e4e788ef8438d7e3f4bf3a72ecab745327bc22dd56be04fb0c630b134183e6b",
+      "text": true
+    },
+    "resolve_python.js": {
+      "sha256": "baf361ee3b2c09c4ed5113ac732151a8bc9239de8f7a53cb0edd95cbae4f2fa3",
       "text": true
     },
     "risk_classifier.py": {
-      "sha256": "af4967d5e66e8bf6204ac8dfaf10ff784ae48f10a45f439cf8e6606ab8b98417",
+      "sha256": "e66084716a38486ae1c203158b1345ea021090977b491209ec19c6830217e89c",
       "text": true
     },
     "risk_signals.json": {
@@ -81,11 +93,7 @@
       "text": true
     },
     "run_gate.js": {
-      "sha256": "de4da70f27e8d2a7436dae3f9eeccb89fba339954f998c12f33f9456e4109b1c",
-      "text": true
-    },
-    "run_gate.sh": {
-      "sha256": "b6bb69ccc182c9e715bb24b6090bcae8c645d6784ca4252114b2fc1457292993",
+      "sha256": "0493aebdcac3bc62d1255f4aedab267e7198f36ca39ff28b192d8c29740826af",
       "text": true
     },
     "stash_precommit_head.py": {

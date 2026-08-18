@@ -285,6 +285,7 @@ def main():
             "gate FAILED OPEN — this write was NOT gated. If this repeats, the gates "
             "are not enforcing: verify connectivity/API key (the plugin's /setup "
             "command includes a gate-endpoint self-check). Tell the user about this."
+            + g.fail_open_reason_suffix()
         )
     if action == "allow_warn":
         g.emit_allow(detail)  # recent_pass escape valve

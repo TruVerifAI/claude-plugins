@@ -59,6 +59,22 @@ def main():
         cwd, _ = g.resolve_effective_cwd(inp)
         decision = evaluate(g, cfg, inp, cwd)
         if not decision:
+            # The update nudge on ORDINARY activity (roadmap 4.3). Until now it
+            # rendered in exactly two places — a gate DENY and this backstop's
+            # unreviewed-floor advisory — so the users who heard about updates
+            # were the ones whose gates kept firing, and someone writing safe
+            # code drifted the furthest behind. The nudge's own wording is
+            # "releases may include gate security fixes"; if that sentence is
+            # true, deny-only delivery is exactly backwards.
+            #
+            # A CLEAN commit is ordinary activity with two properties that make
+            # it the right carrier: the coverage POST it just made means the
+            # server's staleness flag is already in hand (no extra request),
+            # and PostToolUse is a model-visible channel here. Non-commit
+            # commands made no POST, so update_nudge_line() is naturally None
+            # for them — and its 24h cap plus the fail-silent contract are the
+            # same ones the deny path uses. One mechanism, third render site.
+            _emit_nudge_only(g, inp.get("hook_event_name"))
             return
         # Human dashboard row (the real product — agents rationalize past nudges). Best-effort.
         _post_dashboard_event(g, cfg, decision["repo"], decision["uncovered_floor"],
@@ -233,6 +249,31 @@ def _post_dashboard_event(g, cfg, repo, uncovered_floor, session_id, pushed):
         pass
 
 
+def _emit_nudge_only(g, event_name):
+    """Emit JUST the update nudge as a post advisory (roadmap 4.3), when — and
+    only when — update_nudge_line() says so. That one call carries the whole
+    policy: server-owned staleness, semver re-validation, the 24h cap, and
+    fail-silence. No nudge -> no output at all (the common case: this runs
+    after every clean commit and must almost always be a no-op)."""
+    try:
+        nudge = g.update_nudge_line()
+        if not nudge:
+            return
+        ev = event_name if event_name in ("PostToolUse", "PostToolUseFailure") else "PostToolUse"
+        try:
+            import host as host_registry
+            host_registry.current().emit_post_advisory(nudge, ev)
+        except Exception:
+            import json
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": ev,
+                "additionalContext": nudge,
+            }}))
+            sys.stdout.flush()
+    except Exception:
+        pass  # a nudge must never break the backstop
+
+
 def _emit_advisory(event_name, cats, pushed):
     """Non-blocking, model-visible advisory via hookSpecificOutput.additionalContext. Cannot
     block (post-hoc). Degrades harmlessly if a CC build ignores the field (the dashboard row is
@@ -251,9 +292,12 @@ def _emit_advisory(event_name, cats, pushed):
                "couldn't see this because the file was created and committed in one command.")
     ev = event_name if event_name in ("PostToolUse", "PostToolUseFailure") else "PostToolUse"
     try:
+        # Mac A11: the backstop notice was the ONE gate message with no version
+        # stamp, so it was the one message you could not trace to a release.
+        import gate_lib as g
+        msg = msg + g.version_suffix()
         # Option B: the backstop advisory is a model-visible channel, so the
         # update nudge rides here too (same 24h cap; fail-silent).
-        import gate_lib as g
         nudge = g.update_nudge_line()
         if nudge:
             msg = msg + "\n" + nudge

@@ -127,17 +127,36 @@ A **purely inert** edit (comment/whitespace only) to one of the gate's *own* fil
 
 **The gate aims to fire only when it should (precision, recall-safe).** It **ignores writes outside your repo** and to scratch/temp dirs (they can't ship — except a real secret value, which always fires). **Docs and prose don't fire** on a keyword unless they contain a real secret value. And an auth *mention* — a `role`/`session`/`permission` identifier in ordinary code — is at most an advisory nudge, while an auth *action* (a permission decorator, an auth/credential check, a real secret) still blocks. These cut the false-positive walls without lowering recall on genuine risk.
 
-Options, set in `/plugin` → **Installed** → **AI Panel Review** → **Configure options** (type the value, then `/reload-plugins`):
+**Configuring gate behaviour — one switch, one place.** The plugin's settings
+panel holds only your **`api_token`**. The behaviour settings that used to live
+there (`enable_gates`, `gate_tightness`, `borderline_mode`, `gate_threshold`,
+`borderline_sampling_rate`, `borderline_session_budget`) were removed
+deliberately: a plugin setting is delivered only to the hooks Claude Code
+itself spawns, so it could never reach the git pre-commit hook or the Cursor /
+Codex / Copilot / VS Code / Gemini / Antigravity gates — one switch that
+silently governed a seventh of your gates. The X8 incident (gates "off" in the
+panel, commits still blocked by the git hook) is what that design does in
+practice.
 
-- **`enable_gates`** (`true` / `false`, default `true`) — turns the gates on or off **for Claude Code's own hooks**. It is delivered as an environment variable to the hooks Claude Code spawns, so it cannot reach any other gate: if you also installed via `npx @truverifai/init`, the git pre-commit hook and the Cursor / Codex / Copilot / VS Code / Gemini / Antigravity hooks keep enforcing. **One switch for all of them:** `npx @truverifai/init gates off` (`on`, `status`). `tvai gates status` reports it when the two disagree.
-- **`gate_tightness`** (`focused` / `thorough`, default `focused`) — how often **both gates** block (the commit gate *and* the write gate now share this one setting). `focused` blocks only the highest-stakes changes — the floor classes (auth, secrets, billing, migrations, a removed safety check, and other high-severity domains — blocked at **any** confidence) and high-confidence security signals — and downgrades lower-confidence "code-review" changes (API routes, concurrency, network calls, large refactors, error handling) to a non-blocking advisory; `thorough` blocks any risky change that isn't covered. The floor always blocks at both levels.
-- **`borderline_mode`** (`advisory` / `synthesize_gate` / `off`, default `advisory`) — how borderline (low-confidence) changes are handled: `advisory` surfaces a fast `synthesize_coding` suggestion **to the agent** (non-blocking; shown once per area per session for the highest-signal "heavy" spikes); `synthesize_gate` soft-gates the highest-signal borderline changes (releasable by a quick `synthesize_coding` or a one-line skip); `off` ignores them. Never hard-blocks.
+All gate behaviour now lives at the machine level, where **every** delivery
+reads it:
 
-Advanced (rarely changed):
+```
+npx @truverifai/init gates status            # what is in force, and which level decided
+npx @truverifai/init gates off | on          # the one switch that reaches everything
+npx @truverifai/init gates set <key> <val>   # gate_tightness, borderline_mode, …
+```
 
-- **`gate_threshold`** (a whole number entered as text; blank = the built-in per-category thresholds) — a manual override for the classifier's fire threshold. Floor classes always fire regardless.
-- **`borderline_sampling_rate`** (`0.0`–`1.0`, default `0.5`) — fraction of the highest-signal borderline spikes that soft-gate when `borderline_mode='synthesize_gate'`; the rest degrade to advisory.
-- **`borderline_session_budget`** (integer, default `3`) — max borderline soft-gates per session before the rest degrade to advisory (only applies under `synthesize_gate`).
+Inside a Claude Code session, `/panel-review:gates` runs the same commands for
+you (status by default; `off` / `on` as arguments). The CLI validates values
+and reports the *effective* state including any `TVAI_*` env var that outranks
+the file — two things the free-text panel never did.
+
+If you configured `enable_gates` in the panel **before** it was removed, the
+stored value may still be exported to Claude Code's hooks until you clear it
+(`/plugin` → panel-review → Configure, or edit `~/.claude/settings.json`
+`pluginConfigs`, then `/reload-plugins`). `gates status` calls this out when it
+sees one.
 
 ## Pricing
 

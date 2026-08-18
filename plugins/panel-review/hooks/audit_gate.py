@@ -235,6 +235,7 @@ def main():
             "FAILED OPEN — this commit was NOT gated. If this repeats, the gates are "
             "not enforcing at all: verify connectivity/API key (the plugin's /setup "
             "command includes a gate-endpoint self-check). Tell the user about this."
+            + g.fail_open_reason_suffix()
         )
     # Reached only for action in {'allow', 'allow_warn'} — 'deny' and 'advise' exited above.
     g.emit_allow(detail if action == "allow_warn" else None)
