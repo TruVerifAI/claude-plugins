@@ -28,7 +28,7 @@ import os
 import re
 import sys
 
-from host.base import Host
+from host.base import Host, brand
 
 
 class CursorHost(Host):
@@ -141,7 +141,7 @@ class CursorHost(Host):
 
     def emit_allow_advisory(self, additional_context):
         try:
-            sys.stderr.write("TruVerifAI: " + additional_context + "\n")
+            sys.stderr.write(brand(additional_context) + "\n")
         except Exception:
             pass
         sys.exit(0)

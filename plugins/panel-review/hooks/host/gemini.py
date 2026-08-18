@@ -18,7 +18,7 @@ Wire contract (google-gemini/gemini-cli docs/hooks/reference.md):
 import json
 import sys
 
-from host.base import Host
+from host.base import Host, brand
 
 
 class GeminiHost(Host):
@@ -91,7 +91,7 @@ class GeminiHost(Host):
 
     def emit_allow_advisory(self, additional_context):
         try:
-            sys.stderr.write("TruVerifAI: " + additional_context + "\n")
+            sys.stderr.write(brand(additional_context) + "\n")
         except Exception:
             pass
         sys.exit(0)

@@ -103,6 +103,51 @@ function repair() {
  *  SAME outcome as the crash — no gate, no signal — only politely. Every
  *  give-up leaves a reason `tvai doctor` can read, and one stderr line so it is
  *  visible in the moment too. */
+// Set by main() so give-up paths know which host/script they are failing
+// open FOR (round-3 item 10).
+// Zero value suppresses the advisory — correct for library-style use; every
+// test exercises the launcher end-to-end through main(), which sets it first
+// thing (audit mcp_c6c48301 F-002).
+let ADVISORY_CTX = { host: "", script: "" };
+// The two PreToolUse gate scripts (F-006): rename a gate, update this set.
+const PRETOOLUSE_SCRIPTS = { "audit_gate.py": true, "deliberate_gate.py": true };
+
+// The git_precommit adapter signals a DENY as exit 21 with the reason on
+// stderr and NOTHING on stdout (item 12). Two consequences here:
+//  - 21 is a MEANINGFUL exit, never a silent failure -- failedSilently must
+//    not treat a legitimate block as a crashed script (it would repair-loop
+//    and eventually gateCrash-mark the gate on every deny);
+//  - for host git_precommit ONLY, the launcher propagates 21 so the sh hook
+//    can block; every other outcome (and every other host) stays exit 0,
+//    preserving the fail-open contract on hook hosts.
+// PROTOCOL CONSTANT (audit mcp_9e0da2ce F-002): exit 21 is RESERVED for an
+// intentional gate deny, across every layer that touches it — the python
+// git_precommit adapter emits it, this launcher propagates it (git_precommit
+// host ONLY), the sh hook maps it to exit 1, and every silent-failure
+// heuristic must exclude it. No adapter may exit 21 for any other reason.
+const DENY_STATUS = 21;
+let FINAL_STATUS = 0;
+
+/** Model-visible fail-open advisory (round-3 item 10). On Claude Code a
+ *  PreToolUse hook's stderr never reaches the model, so a dead gate script
+ *  produced NO signal anywhere the agent looks (Mac C-1; the raw
+ *  "can't open file" stderr was confirmed model-invisible on two more
+ *  hosts). PreToolUse gates on claude_code get the additionalContext wire
+ *  shape; every OTHER host's advisory channel already IS stderr (matching
+ *  the python adapters), which the callers write. Restricted to the two
+ *  PreToolUse gate scripts — emitting PreToolUse JSON from the
+ *  PostToolUse backstop would be wrong-shaped. */
+function emitModelAdvisory(text) {
+  if (ADVISORY_CTX.host !== "claude_code") return;
+  if (!PRETOOLUSE_SCRIPTS[ADVISORY_CTX.script]) return;
+  try {
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: {
+      hookEventName: "PreToolUse", additionalContext: text } }) + "\n");
+  } catch (e) {
+    /* stdout may be closed -- stderr already carries the reason */
+  }
+}
+
 function giveUp(reason, detail) {
   try {
     // Do NOT clobber an existing reason. When a repair ran, resolve_python has
@@ -123,6 +168,9 @@ function giveUp(reason, detail) {
   } catch (e) {
     /* stderr may be closed */
   }
+  emitModelAdvisory(
+    "TruVerifAI: the gate could not run (" + reason + ") — this action was "
+    + "NOT gated (fail-open). Tell the user; re-run npx @truverifai/init@latest to repair.");
 }
 
 /** Mark / clear "this GATE SCRIPT crashes with a healthy interpreter" on the
@@ -173,6 +221,7 @@ function clearGateCrash(rec, script) {
 function main() {
   const host = process.argv[2] || "";
   const script = process.argv[3] || "";
+  ADVISORY_CTX = { host: host, script: script };
   if (!script) return;
 
   if (!R) {
@@ -253,7 +302,7 @@ function main() {
   // Neither retry can be the Windows abort: we launch a recorded ABSOLUTE path,
   // never the Store placeholder. Repair runs at most ONCE per invocation, so
   // this cannot loop.
-  const failedSilently = (res) => !res.error && res.status !== 0 && !String(res.stdout || "").trim();
+  const failedSilently = (res) => !res.error && res.status !== 0 && res.status !== DENY_STATUS && !String(res.stdout || "").trim();
   const startedButFailed = failedSilently(r);
 
   // Finding B: when a recent repair already proved the interpreter healthy and
@@ -263,6 +312,9 @@ function main() {
   if (startedButFailed && gateCrashActive(rec, script)) {
     if (r.stdout) process.stdout.write(r.stdout);
     if (r.stderr) process.stderr.write(r.stderr);
+    emitModelAdvisory(
+      "TruVerifAI: " + script + " is crashing (known, repair suppressed) — this "
+      + "action was NOT gated (fail-open). Tell the user; re-run npx @truverifai/init@latest.");
     return;
   }
 
@@ -298,6 +350,10 @@ function main() {
       } catch (e) {
         /* stderr may be closed */
       }
+      emitModelAdvisory(
+        "TruVerifAI: " + script + " could not run (interpreter is healthy — the gate "
+        + "script is broken). This action was NOT gated (fail-open). Tell the user; "
+        + "re-run npx @truverifai/init@latest to repair.");
     }
   } else if (r.status === 0 && rec && rec.gateCrash && rec.gateCrash.script === script) {
     clearGateCrash(rec, script); // the script works again — lift the suppression
@@ -305,6 +361,7 @@ function main() {
 
   if (r.stdout) process.stdout.write(r.stdout);
   if (r.stderr) process.stderr.write(r.stderr);
+  FINAL_STATUS = (r && typeof r.status === "number") ? r.status : 0;
 }
 
 try {
@@ -312,4 +369,5 @@ try {
 } catch (e) {
   /* fail open */
 }
-process.exit(0);
+process.exit(ADVISORY_CTX.host === "git_precommit" && FINAL_STATUS === DENY_STATUS
+  ? DENY_STATUS : 0);

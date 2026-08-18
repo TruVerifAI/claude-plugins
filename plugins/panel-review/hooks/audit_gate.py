@@ -95,7 +95,7 @@ def main():
                 "highest-stakes area, so the review can't be skipped.\n"
                 "Run `audit_coding` with your proposed_action + relevant_code, AND pass:\n"
                 f'  gate_repo = "{repo}"\n'
-                + ("  gate_diff = the change being committed (run: git diff HEAD)\n"
+                + ("  gate_diff = the change being committed (run: git add -N . && git diff HEAD)\n"
                    if (g.commit_targets_worktree(command)
                        or not g._git(["diff", "--staged"], cwd).strip())
                    else "  gate_diff = the staged diff (run: git diff --staged)\n") +
@@ -135,11 +135,14 @@ def main():
         # Name the capture command that matches how the gate itself read the change.
         _staged_now = g._git(["diff", "--staged"], cwd)
         if g.commit_targets_worktree(command) or not _staged_now.strip():
-            diff_cmd = "git diff HEAD"
+            diff_cmd = "git add -N . && git diff HEAD"
             staging_note = (
                 "  NOTE: this command was blocked BEFORE it ran — any `git add` in it "
                 "never executed, so nothing is staged (nothing was 'reset'). Capture the "
-                "change with `git diff HEAD`; after releasing, re-run your full command.\n")
+                "change with `git add -N . && git diff HEAD` (the -N is intent-to-add: it "
+                "makes brand-new untracked files APPEAR in the diff without staging any "
+                "content — plain `git diff HEAD` prints NOTHING for an untracked file); "
+                "after releasing, re-run your full command.\n")
         else:
             diff_cmd = "git diff --staged"
             staging_note = ""
@@ -222,7 +225,9 @@ def main():
             "non-floor changes, so the gate is NOT blocking (floor classes — auth / secrets / money / "
             "migrations / removed-guard — and high-confidence security changes still block). If any of "
             "this is genuinely consequential, consider running `audit_coding` before you rely on it. "
-            "To block on every risky change instead, set the plugin's gate_tightness=thorough."
+            "To block on every risky change instead, the USER can raise gate_tightness to "
+            "'thorough' in the TruVerifAI CLI's gates settings (a user-run switch; it no "
+            "longer lives in the plugin panel)."
         )
 
     # Fail-open must never be SILENT (2026-07-23: the gates ran dark against a wrong

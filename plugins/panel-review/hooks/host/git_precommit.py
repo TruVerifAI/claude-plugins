@@ -23,7 +23,7 @@ DENY_EXIT_CODE = 21  # mapped to 1 by the wrapper; every other exit -> 0
 import os
 import sys
 
-from host.base import Host
+from host.base import Host, brand
 
 
 class GitPrecommitHost(Host):
@@ -70,7 +70,7 @@ class GitPrecommitHost(Host):
 
     def emit_allow_advisory(self, additional_context):
         try:
-            sys.stderr.write("TruVerifAI: " + additional_context + "\n")
+            sys.stderr.write(brand(additional_context) + "\n")
         except Exception:
             pass
         sys.exit(0)

@@ -30,6 +30,22 @@ import os
 import sys
 
 
+def brand(text):
+    """Prefix \"TruVerifAI: \" for the stderr channels -- UNLESS the message
+    already leads with the product name (most gate messages do), which
+    produced the doubled 'TruVerifAI: TruVerifAI ...' seen on three hosts in
+    round 3 (item 7). Checks the HEAD of the string so a mid-text mention
+    doesn't suppress a legitimate prefix (the backstop's warning-emoji lead
+    still counts as branded)."""
+    t = str(text)
+    # ANCHORED check (audit mcp_7462b793 F-001): the message counts as branded
+    # only when it STARTS with the product name, after any leading whitespace
+    # and the warning-emoji lead the backstop uses. An early mid-text mention
+    # ("see TruVerifAI docs...") still gets the prefix.
+    head = t.lstrip().lstrip("⚠️").lstrip()
+    return t if head.startswith("TruVerifAI") else "TruVerifAI: " + t
+
+
 class Host(object):
 
     # Option B update nudge: the per-host, AGENT-ACTIONABLE instruction the
@@ -184,7 +200,7 @@ class Host(object):
 
     def emit_allow(self, note=None):
         if note:
-            sys.stderr.write("TruVerifAI: " + note + "\n")
+            sys.stderr.write(brand(note) + "\n")
         sys.exit(0)
 
     def emit_allow_advisory(self, additional_context):

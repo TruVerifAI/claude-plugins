@@ -50,7 +50,7 @@ not an adapter default.
 
 import sys
 
-from host.base import Host
+from host.base import Host, brand
 
 # Machine-greppable marker for the parse-failure fail-open (mirrors the
 # registry's TVAI_GATE_MISCONFIGURED pattern; `tvai doctor` greps for it).
@@ -82,7 +82,7 @@ class CodexHost(Host):
         # with these three fields. The systemMessage banner goes to stderr.
         import json
         if system_message:
-            sys.stderr.write("TruVerifAI: " + system_message + "\n")
+            sys.stderr.write(brand(system_message) + "\n")
         print(json.dumps({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
@@ -103,7 +103,7 @@ class CodexHost(Host):
         # strict parsing it would mark the hook failed on every advisory.
         # Surface it on stderr and allow silently (exit 0, empty stdout).
         try:
-            sys.stderr.write("TruVerifAI: " + str(additional_context) + "\n")
+            sys.stderr.write(brand(str(additional_context)) + "\n")
         except Exception:
             pass
         sys.exit(0)

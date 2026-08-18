@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.19.38 (round-3 findings batch)
+
+Every finding from the four-platform 0.19.37 test round, fixed:
+
+- **One paid review now covers both gates, from any session.** The write
+  gate keys review receipts to the TARGET file's repo instead of the
+  session's working directory — a session rooted outside the repo no longer
+  double-charges a second audit for the same change.
+- **The git pre-commit hook runs the shared launcher** (`node run_gate.js`)
+  — interpreter record + self-heal + honest give-ups, replacing the hook's
+  own python search (which silently allowed on python2 boxes and exhausted
+  searches). A real deny blocks (exit 21 through the stack); any ERROR still
+  fails open — but loudly, printing why into git's own output.
+- **Dead gate code is loud now**: with gate code missing or crashing, Claude
+  Code gets a model-visible "this action was NOT gated (fail-open)"
+  advisory; other hosts keep a clear stderr line.
+- **Advisories carry the version stamp** (fail-open + tightness), the
+  doubled "TruVerifAI: TruVerifAI" prefix is gone on every host, and the
+  tightness advisory points at the real user-run switch.
+- **macOS: init sets the plugin api_token automatically** (guarded Keychain
+  write, verified after write; falls back to a manual path that names the
+  true cause) — and doctor reads the Keychain, so the tools row is finally
+  honest (present / missing / cannot-verify).
+- **init enables marketplace auto-update** (respecting an explicit off) and
+  **updates an existing Claude plugin install** (`claude plugin update`) —
+  re-running `npx @truverifai/init@latest` now refreshes every layer.
+- Empty MCP config files (Antigravity's zero-byte stub) initialize instead
+  of being refused; a genuinely corrupt file refuses loudly (✗).
+- The commit-block recovery instruction is untracked-aware
+  (`git add -N . && git diff HEAD`).
+- `doctor`/`init` exit 0 when the gates are healthy (tools rows can be ✗
+  without failing scripts); `--strict` restores any-✗ = 1.
+- Cursor install copy matches verified delivery (the IDE write gate denies
+  first).
+
+
 ## 0.19.37 (cross-OS round 2)
 
 The reliability release for the failures found by the first external installs

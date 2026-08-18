@@ -94,7 +94,12 @@ def main():
     if not classification["risky"] and not gate_self:
         g.emit_allow()
 
-    repo = g.repo_fingerprint(cwd)
+    # F-1 (round-3 Mac): receipts identity comes from the TARGET FILE's repo, not the
+    # session cwd — otherwise a write-gate PASS is filed under a repo id the commit gate
+    # never looks in and the free release rung fails closed. Detection (above) and the
+    # P6.3 scope suppression keep session-cwd semantics on purpose.
+    repo_cwd = g.receipt_repo_cwd(path, cwd)
+    repo = g.repo_fingerprint(repo_cwd)
     session_id = inp.get("session_id")
 
     # Gate self-mutation (§6.1, audit F-005): writing the gate's own config/hooks is
@@ -110,7 +115,7 @@ def main():
         # absolute tool-input path made the gself hash unmatchable on every host
         # (gate-self-write-deadlock-postmortem.md). Fail-safe: a bad relativize
         # can only reproduce the old mismatch (re-review), never over-release.
-        rel_path = g.repo_relative_path(path, cwd)
+        rel_path = g.repo_relative_path(path, repo_cwd)
         write_diff = g.synth_write_diff(rel_path, content)
         # Phase 9 (inc 5): a purely INERT gate-self write (comment/whitespace only) to a
         # NON-gate-core file releases without a review (same rule as the commit gate). gate-CORE
@@ -163,7 +168,7 @@ def main():
     # downgrade / area-unlock were silently dead (prod runbook 2026-07-13; deliberation
     # mcp_fd6de1da). Falls back to the absolute '/'-form if the repo root can't be resolved; the
     # server reconciles that against a relative receipt area.
-    area = g.repo_relative_area(path, cwd)
+    area = g.repo_relative_area(path, repo_cwd)
     gate_type = {"high": "deliberate", "low": "synthesize"}.get(
         classification.get("max_confidence"))
     resp = g.check_deliberate_unlock(cfg, repo, area, session_id,

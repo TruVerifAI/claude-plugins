@@ -315,6 +315,52 @@ def repo_fingerprint(cwd):
     return "repo_" + hashlib.sha256(basis.encode("utf-8", "replace")).hexdigest()[:24]
 
 
+def receipt_repo_cwd(path, cwd):
+    """The cwd to use for RECEIPTS-IDENTITY purposes on the WRITE gate, derived from
+    the TARGET FILE, not the session. All three receipt-coherent derivations MUST use
+    this same base — repo_fingerprint (where receipts are filed), repo_relative_path
+    (the gate-self coverage hash), repo_relative_area (area-unlock matching) — because
+    a receipt filed under one repo basis is only findable under that same basis; each
+    of those functions probes git itself (`rev-parse --show-toplevel`), so a SUBDIR of
+    the repo is a valid base.
+
+    Round-3 Mac finding F-1: the write gate keyed receipts by the SESSION cwd. With the
+    session rooted outside the target repo (e.g. a docs folder that isn't a git repo),
+    the fingerprint fell through to the raw session path while the commit gate hashed
+    the repo toplevel — so an audit PASS earned at the write gate was filed under a
+    repo id the commit gate never looks in, the free `recommendations_applied` rung
+    failed closed, and the user paid a second review for identical bytes.
+
+    The target file's own directory resolves to the SAME toplevel/origin basis the
+    commit gate uses whenever the file is in a repo. The directory may not exist yet
+    (the write usually creates it — `migrations/999.sql` before `migrations/` exists),
+    so walk up to the nearest EXISTING ancestor before letting git answer.
+
+    Scope: receipts identity ONLY. Risk detection stays payload-content-driven, and
+    the P6.3 out-of-repo-scope suppression deliberately keeps SESSION-cwd semantics —
+    both are untouched by this helper. Fail-safe: any surprise here degrades to a
+    fingerprint mismatch (a re-review), never an over-release."""
+    try:
+        if path and os.path.isabs(path):
+            # realpath, not abspath (audit mcp_d4cf42b5 F-001): macOS tempdirs are
+            # symlinks (/var -> /private/var) and git returns the RESOLVED toplevel —
+            # an unresolved base would re-create the exact mismatch this fixes.
+            d = os.path.dirname(os.path.realpath(path))
+            while d and not os.path.isdir(d):
+                parent = os.path.dirname(d)
+                if parent == d:
+                    break
+                d = parent
+            if d and os.path.isdir(d):
+                return d
+    except Exception:
+        # Deliberately silent (this layer has no logger and runs per tool-call):
+        # the fallback below reproduces the OLD behavior — a fingerprint mismatch
+        # and a re-review — never an over-release (audit mcp_d4cf42b5 F-004).
+        pass
+    return cwd
+
+
 def repo_relative_area(path, cwd):
     """The gate's `area` for a write: the target's directory, REPO-RELATIVE and `/`-separated.
 
@@ -2607,6 +2653,15 @@ _STALE_WARNING = (
 )
 
 
+def _has_version_stamp(t):
+    """Does this advisory text already carry a version stamp (or the stale-
+    version warning)? A substring scan, wrapped so the contract is named in
+    one place (audit mcp_7462b793 F-003) — if advisory COPY ever needs to
+    mention "TruVerifAI gate v..." in prose, tighten this to match the exact
+    suffix block version_suffix() emits instead of loosening the copy."""
+    return "TruVerifAI gate v" in t or _STALE_WARNING in t
+
+
 def version_suffix():
     """A short version stamp for a deny message — or a loud staleness warning when the
     running hook is a superseded (orphaned) version (2a)."""
@@ -2868,5 +2923,24 @@ def emit_allow_advisory(additional_context):
     Unlike emit_allow's stderr note (user-transcript only), the advisory reaches
     the model so it can choose to act. Degrades harmlessly on hosts that ignore
     the field, and fails open (a serialization error still exits 0 — the gate
-    never traps the agent)."""
+    never traps the agent).
+
+    Stamps the version centrally (round-3 item 6): the two fail-open
+    advisories and the focused-tightness advisory were the last gate messages
+    without a `(TruVerifAI gate vX)` trailer — and the fail-open advisory is
+    the one message a user on a broken machine most needs a version on.
+    Idempotent: text that already carries a stamp (or the stale-version
+    warning) is left alone, so a caller that stamps itself (the backstop)
+    can never be double-stamped."""
+    try:
+        t = str(additional_context)
+        if not _has_version_stamp(t):
+            additional_context = t + version_suffix()
+    except Exception:
+        # Fail-open justifies not CRASHING, not silence (audit mcp_7462b793
+        # F-002): an unstamped advisory should at least say so somewhere.
+        try:
+            sys.stderr.write("TruVerifAI warn: advisory version stamp failed\n")
+        except Exception:
+            pass
     host_registry.current().emit_allow_advisory(additional_context)

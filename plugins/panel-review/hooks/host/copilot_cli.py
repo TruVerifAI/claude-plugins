@@ -33,7 +33,7 @@ input casing, OPPOSITE exit-code semantics (vscode.py).
 import json
 import sys
 
-from host.base import Host
+from host.base import Host, brand
 
 # Lowercased tool names that mean "run a shell command" on this host family.
 # DATED POLICY DEBT MARKER (2026-07, audit mcp_6510d831 F-006): Copilot's tool
@@ -171,7 +171,7 @@ class CopilotCliHost(Host):
         # preToolUse has no documented model-visible advisory channel:
         # degrade to stderr.
         try:
-            sys.stderr.write("TruVerifAI: " + additional_context + "\n")
+            sys.stderr.write(brand(additional_context) + "\n")
         except Exception:
             pass
         sys.exit(0)

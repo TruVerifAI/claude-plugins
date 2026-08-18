@@ -19,7 +19,7 @@ semantics — which is precisely why they are two adapters, not one with flags
 (the difference is load-bearing and must be impossible to blur).
 """
 
-from host.base import Host
+from host.base import Host, brand
 from host.copilot_cli import _SHELL_NAMES, _WRITE_HINTS
 
 
@@ -72,7 +72,7 @@ class VsCodeHost(Host):
     def emit_allow_advisory(self, additional_context):
         import sys
         try:
-            sys.stderr.write("TruVerifAI: " + additional_context + "\n")
+            sys.stderr.write(brand(additional_context) + "\n")
         except Exception:
             pass
         sys.exit(0)
