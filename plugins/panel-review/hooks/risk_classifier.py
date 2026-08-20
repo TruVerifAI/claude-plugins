@@ -1203,8 +1203,15 @@ def _signal_first_match(signal, path, added, removed, sk_added, sk_removed):
         return (None, None)
     m = signal["match"]
     if m == "path":
+        # Normalize separators before matching (Layer 0b, custom-floor `^file$`
+        # silent-gap fix): mirror the gate-self checks (is_gate_self_mutation does
+        # the same `\\`->`/`). Belt-and-suspenders for any caller that reaches this
+        # matcher with a backslash path without passing through build_change_diff's
+        # canonicalization. Forward-slash paths are unchanged, so built-in path
+        # signals and the server's own repo-relative diffs are unaffected.
+        norm_path = (path or "").replace("\\", "/")
         for pat in signal["patterns"]:
-            hit = pat.search(path or "")
+            hit = pat.search(norm_path)
             if hit:
                 return (hit.group(0), None)
         return (None, None)
@@ -2062,6 +2069,22 @@ def preview_repo_floors(floors, path_list):
     return out
 
 
+def _bare_anchor_paths(compiled_paths):
+    """Lint: flag `^<filename>$` path regexes that anchor a BARE filename (no `/`).
+    Post the write-gate canonicalization fix these now fire correctly, but a bare
+    `^tier_config\\.py$` still matches ONLY a root-level file and would silently miss
+    the same name nested (e.g. `pkg/tier_config.py`). The boundary-tolerant `(^|/)`
+    form catches both, so the linter suggests it. A `^`-anchored pattern that already
+    contains a `/` (e.g. `^config/models\\.yml$`) is a deliberate repo-root path and is
+    NOT flagged. Returns [{pattern, suggest}]."""
+    out = []
+    for r in compiled_paths:
+        pat = getattr(r, "pattern", "")
+        if pat.startswith("^") and "/" not in pat:
+            out.append({"pattern": pat, "suggest": "(^|/)" + pat[1:]})
+    return out
+
+
 def check_repo_floors(repo_root, preview_paths=None):
     """Offline validation report for `tvai floors check` (the CLI shells out to
     `python -m mcp_server.risk_classifier --check-floors <repo>` so there is exactly
@@ -2091,6 +2114,10 @@ def check_repo_floors(repo_root, preview_paths=None):
             "test_exempt": f["test_exempt"],
             "paths": len(f["paths"]), "keywords": len(f["keywords"]),
             "patterns": len(f["patterns"]), "exclude_paths": len(f["exclude_paths"]),
+            # Lint (custom-floor `^file$` follow-up): bare `^filename$` anchors that
+            # would miss nested occurrences — the CLI surfaces these with the `(^|/)`
+            # rewrite so a preview can never quietly bless a fragile path form.
+            "bare_anchor_paths": _bare_anchor_paths(f["paths"]),
         })
     if preview_paths is not None:
         try:

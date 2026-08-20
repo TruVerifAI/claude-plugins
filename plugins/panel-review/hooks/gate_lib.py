@@ -1244,6 +1244,26 @@ def build_change_diff(inp, path, content):
     ti = inp.get("tool_input") or {}
     tool = inp.get("tool_name")
     cwd = inp.get("cwd")
+    # Path canonicalization (custom-floor `^file$` silent-gap fix, 2026-08-20). The
+    # write gate passes an ABSOLUTE tool_input.file_path, but the classifier's
+    # custom-floor path matcher — and the fire's normalized_hash — must see the SAME
+    # repo-relative path the commit gate (git diff) and the CLI preview (git ls-files)
+    # see. Otherwise a user's `^tier_config\.py$` floor matches the preview and the
+    # commit gate but SILENTLY misses the write gate (the anchor can't match an
+    # absolute string). `hdr` is the classifier-visible IDENTITY path for every synth
+    # header; every emitter below uses it so all signal types inherit the fix.
+    #   IDENTITY vs IO (audit F-002): this canonicalization is for the diff HEADER only.
+    #   Filesystem reads (_read_file_safe below) MUST keep the raw `path`, because
+    #   repo_relative_path is relative to the repo ROOT while `cwd` may be a subdirectory
+    #   — reading the relativized path against a subdir cwd would miss the file and drop
+    #   the overwrite real-delta back to all-adds (regressing the deadlock fix).
+    # repo_relative_path is total/fail-safe (returns the forward-slashed original on any
+    # failure — the OLD behavior, a conservative miss that re-reviews, never a false
+    # release); the explicit guard here (audit F-003) makes the never-raise a code fact.
+    try:
+        hdr = repo_relative_path(path, cwd)
+    except Exception:
+        hdr = (path or "").replace("\\", "/")
     try:
         # PrebuiltDiff: the host adapter already produced a unified diff (e.g. Codex
         # apply_patch, whose input IS a patch). Classify it verbatim — re-deriving a
@@ -1252,9 +1272,9 @@ def build_change_diff(inp, path, content):
             pre = (ti.get("prebuilt_diff") or "").strip()
             if pre and "@@" in pre:
                 return pre if pre.endswith("\n") else pre + "\n"
-            return synth_write_diff(path, content)
+            return synth_write_diff(hdr, content)
         if tool == "Edit":
-            return _unified_delta(path, ti.get("old_string", "") or "", content)
+            return _unified_delta(hdr, ti.get("old_string", "") or "", content)
         if tool == "MultiEdit":
             # ONE file header, then every edit's @@ block — the shape git itself emits for a
             # single file with several changed regions. Concatenating the per-edit diffs
@@ -1271,7 +1291,7 @@ def build_change_diff(inp, path, content):
                 o = e.get("old_string", "") or ""
                 n = e.get("new_string", "") or ""
                 if n.strip() or o.strip():
-                    delta = _unified_delta(path, o, n)
+                    delta = _unified_delta(hdr, o, n)
                     body = _hunk_body(delta)
                     if delta.strip() and not body.strip():
                         # An edit produced content we could not turn into a hunk. Dropping it
@@ -1279,21 +1299,21 @@ def build_change_diff(inp, path, content):
                         # the global `@@` check below would not notice, because the OTHER edits
                         # still supply a `@@`. Fall back to all-adds over the whole content: it
                         # over-marks, which only ever over-blocks.
-                        return synth_write_diff(path, content)
+                        return synth_write_diff(hdr, content)
                     bodies.append(body)
             joined = "\n".join(b for b in bodies if b.strip())
             if "@@" not in joined:
-                return synth_write_diff(path, content)
-            p = path or "unknown"
+                return synth_write_diff(hdr, content)
+            p = hdr or "unknown"
             return "--- a/%s\n+++ b/%s\n%s\n" % (p, p, joined)
         if tool == "Write":
-            old = _read_file_safe(path, cwd)
+            old = _read_file_safe(path, cwd)                 # RAW path for IO (audit F-002)
             if old is not None:
-                return _unified_delta(path, old, content)   # overwrite → real delta
-            return synth_write_diff(path, content)           # new file → all-adds is correct
+                return _unified_delta(hdr, old, content)     # overwrite → real delta
+            return synth_write_diff(hdr, content)            # new file → all-adds is correct
     except Exception:
         pass
-    return synth_write_diff(path, content)
+    return synth_write_diff(hdr, content)
 
 
 # ---------------------------------------------------------------------------

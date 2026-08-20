@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.19.42 (custom-floor `^file$` write-gate fix)
+- **FIX (silent coverage gap):** a custom floor whose `paths` used an exact-file
+  anchor (`^tier_config\.py$`) matched the CLI preview and the COMMIT gate but
+  SILENTLY missed the WRITE gate — the write gate classified against the absolute
+  file path while the preview (`git ls-files`) and commit gate (`git diff`) use
+  repo-relative paths, so a start-anchored regex never matched. `build_change_diff`
+  now canonicalizes the classifier-visible path to repo-relative at the emission
+  choke point (identity only — filesystem reads keep the raw path). `^file$` floors
+  now fire at the write gate, matching the preview and commit gate.
+- `floors check --preview` now flags a bare `^filename$` anchor with the exact
+  `(^|/)…` rewrite (loud, non-failing — advisories keep exit 0), so a fragile path
+  form is never silently blessed.
+- `define-custom-floors` skill: explicit `(^|/)` path-anchor rule + resolve every
+  preview advisory before showing the user.
+
 ## 0.19.41 (authoring experience)
 - `define-custom-floors` skill: the workflow now leads with the whole-codebase
   scan (Step 1) and presents the FULL candidate floor list up front, so the user
