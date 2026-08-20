@@ -107,6 +107,58 @@ FLOOR_CATEGORIES = frozenset({
 # (empty) mechanism so the soft-floor code paths stay available for a future member.
 SOFT_FLOOR = frozenset()
 
+# ---------------------------------------------------------------------------
+# Custom floor classes (repo-defined; docs/MCP/Custom floors/CUSTOM-FLOORS-DESIGN.md).
+# A customer commits `.truverifai/risk.json` at their repo toplevel declaring
+# domain-critical floors ("tax rules are critical here"). The compiler (end of this
+# module) turns each entry into generated trigger signals whose CATEGORY carries a
+# reserved prefix — the category STRING is the only thing that crosses the wire
+# (hunk_categories), so the prefix is how the server recognizes a custom category as
+# floor with zero payload changes and zero per-customer deploys.
+#
+# TWO reserved prefixes encode the §4.C-x test/docs-exemption hybrid end-to-end:
+#   custom_floor_<name>         — floor, ELIGIBLE for the test/docs heuristic exemption
+#                                 (the default for content/keyword signals);
+#   custom_floor_strict_<name>  — floor, NEVER heuristic-exempt (path signals — the
+#                                 customer explicitly named those paths — and
+#                                 test_exempt:false content signals).
+# Both start with CUSTOM_FLOOR_PREFIX, so a single prefix check answers "is floor".
+# Floor names starting with `strict_` are validator-rejected to keep the encoding
+# collision-free, and risk_signals.json signals may never use the prefix (loader
+# assertion in _compile_config) so a built-in can't collide with the namespace.
+# ---------------------------------------------------------------------------
+CUSTOM_FLOOR_PREFIX = "custom_floor_"
+CUSTOM_FLOOR_STRICT_PREFIX = "custom_floor_strict_"
+
+# Hard guarantee (audit mcp_ea90ef02 F-005): the reserved prefix can never collide with
+# a built-in floor category. A violation is a developer error in THIS file (gate-core,
+# so the edit is always reviewed) and trips instantly in CI — every test run imports
+# this module. Explicit raise, not `assert`, so `python -O` can't strip it.
+if any(c.startswith(CUSTOM_FLOOR_PREFIX) for c in FLOOR_CATEGORIES):
+    raise ValueError("FLOOR_CATEGORIES entry uses the reserved custom-floor prefix")
+
+
+def is_custom_floor_category(category) -> bool:
+    """True if `category` is a repo-defined custom floor (reserved prefix — both the
+    exemption-eligible and the strict form). isinstance guard (audit mcp_ea90ef02
+    F-004): a non-string category is False, matching the silent-False set-membership
+    behavior the built-in check has always had — never an AttributeError in the gate
+    path. A malformed prefixed name (a bare 'custom_floor_') still counts as floor:
+    fail-closed / tightening-only; name validity is the loader/validator's job."""
+    return isinstance(category, str) and category.startswith(CUSTOM_FLOOR_PREFIX)
+
+
+def is_floor_category(category) -> bool:
+    """True if `category` is ANY floor class — a built-in FLOOR_CATEGORIES member or a
+    repo-defined custom floor. The single floor-membership predicate shared by the
+    client tightness partition and the server floor derivation (gate_fire_models
+    delegates here in this same commit — audit mcp_ea90ef02 F-002: the two must never
+    diverge, even between commits), so client and server can never drift."""
+    if not category:
+        return False
+    return category in FLOOR_CATEGORIES or is_custom_floor_category(category)
+
+
 # Categories whose matched span IS a secret value — the Fix 2A transparency line reports the
 # category + line number for these but NEVER echoes the matched token (it would print the secret
 # to the agent's console). Every other category echoes the matched identifier/keyword, which is
@@ -122,8 +174,10 @@ DEFAULT_GATE_TIGHTNESS = "focused"
 def is_hard_floor(category) -> bool:
     """True if `category` is a HARD-floor class — a floor category excluding SOFT_FLOOR. A
     hard-floor hunk blocks the commit at EVERY tightness level (even suppressed to LOW — a
-    floor near-miss must still block); a soft-floor hunk blocks only under 'thorough'."""
-    return category in FLOOR_CATEGORIES and category not in SOFT_FLOOR
+    floor near-miss must still block); a soft-floor hunk blocks only under 'thorough'.
+    Repo-defined custom floors are hard floors (they are never in SOFT_FLOOR); the
+    SOFT_FLOOR exclusion is preserved structurally (audit mcp_ea90ef02 F-001)."""
+    return is_floor_category(category) and category not in SOFT_FLOOR
 
 
 # Fix 4 P-a: on a TEST or DOCS path, the non-secret token-shape floor classes are DOWNGRADED to
@@ -168,8 +222,24 @@ def floor_exempt(category, path_class) -> bool:
     """True when `category` is a floor class EXEMPT from floor enforcement because the hunk lives
     in a test/docs path (Fix 4 P-a). Applied by BOTH gates and the server floor derivation so the
     exemption is coherent everywhere; secrets are never exempt. `path_class` is the conservative
-    bucket from classify_path_class (None → not exempt)."""
-    return path_class == PATH_CLASS_TEST_OR_DOCS and category in _FLOOR_EXEMPT_TEST_DOCS
+    bucket from classify_path_class (None → not exempt — for custom floors too).
+
+    Custom floors (CUSTOM-FLOORS-DESIGN.md §4.C-x hybrid, owner-ratified 2026-08-19): the
+    exemption-ELIGIBLE form (custom_floor_<name> — the default category for content/keyword
+    signals) IS exempt on a test/docs path, matching its built-in content-floor siblings
+    (auth/billing/...); the STRICT form (custom_floor_strict_<name> — path signals, where the
+    customer explicitly named the paths, plus test_exempt:false content signals) is NEVER
+    heuristic-exempt — the same reasoning that keeps the CI classes out of the allowlist above:
+    the path heuristic must not defeat a floor aimed at specific files. A malformed BARE prefix
+    (`custom_floor_`) floors (fail-closed, see is_custom_floor_category) and is never exempt.
+    For any non-prefix category this reduces exactly to the pre-custom-floors check."""
+    if path_class != PATH_CLASS_TEST_OR_DOCS:
+        return False
+    if category in _FLOOR_EXEMPT_TEST_DOCS:
+        return True
+    return (is_custom_floor_category(category)
+            and not category.startswith(CUSTOM_FLOOR_STRICT_PREFIX)
+            and len(category) > len(CUSTOM_FLOOR_PREFIX))
 
 
 def hunk_blocks_under_tightness(category, confidence, tightness, path_class=None) -> bool:
@@ -218,6 +288,19 @@ _PROSE_PATHS = re.compile(r"\.(md|markdown|mdx|rst|adoc|asciidoc|txt|html|htm)$"
 def _compile_config(cfg):
     signals = []
     for s in cfg["signals"]:
+        # Custom-floor namespace guard: the reserved `custom_floor_` category prefix
+        # belongs EXCLUSIVELY to repo-defined floors (compile_custom_floors, end of
+        # this module). A risk_signals.json signal declaring a category in that
+        # namespace would mint floor categories outside the validator (and, combined
+        # with path_gate, dodge the floor-never-path-gated invariant below, whose
+        # check tests membership in the static FLOOR_CATEGORIES only). Hard-fail like
+        # the sibling loader assertions — the module-level fail-open wrapper degrades
+        # a bad config to empty with a loud warning, never a crash.
+        if str(s.get("category", "")).startswith(CUSTOM_FLOOR_PREFIX):
+            raise ValueError(
+                "risk_classifier: signal %r: category %r uses the reserved custom-floor "
+                "prefix — built-in signals may never declare custom_floor_* categories"
+                % (s.get("name"), s.get("category")))
         # auto_trigger is honored ONLY on trigger-class signals (audit F-001): a
         # borderline-class signal can never reach the high band, by construction. If a
         # non-trigger signal is misconfigured with auto_trigger:true we strip it AND warn
@@ -1238,7 +1321,8 @@ def _resolve_m1_signals(parsed_hunks, file_content_fetcher=None):
     return fires, failsafe_names
 
 
-def _classify_hunk(path, added, removed, trigger_threshold=None, extra_fired=None):
+def _classify_hunk(path, added, removed, trigger_threshold=None, extra_fired=None,
+                   custom_signals=None):
     """Return a per-hunk verdict dict, or None if not risky.
 
     `extra_fired` (Mechanism M1): trigger-class signals resolved by the file-aware
@@ -1249,6 +1333,11 @@ def _classify_hunk(path, added, removed, trigger_threshold=None, extra_fired=Non
     `trigger_threshold` overrides _CFG["trigger"] for this call (the floor-bounded
     user override, F-011 — clamped by the caller in gate_lib; the engine just honors
     whatever effective threshold it's handed).
+
+    `custom_signals` (custom floor classes): compiled repo-defined floor signals from
+    compile_custom_floors, scored through this same loop after the built-ins. They are
+    engine-shaped dicts plus an `exclude` deny-list key; None/empty => byte-identical
+    to the no-custom-floors engine (the regression invariant, same discipline as M1).
     """
     # POLICY (audit F-003 + Phase 6): on a doc/prose path a CONTENT keyword is a false
     # positive (a keyword in a README/notes file is narrative, not gated risk). Phase 6
@@ -1258,12 +1347,20 @@ def _classify_hunk(path, added, removed, trigger_threshold=None, extra_fired=Non
     # prose — closes the secret-in-.md recall hole). The content-keyword signals are skipped.
     # A non-prose hunk runs the full scan. The F-007 floor still applies only to what fires.
     prose = bool(path) and bool(_PROSE_PATHS.search(path))
+    # Custom-floor meta-config carve-out (§4.A): the repo's own floor-config file
+    # DESCRIBES risky code, so most content signals are skipped on it (see the loop
+    # below) — a customer whose keywords include "password" must not trip the auth
+    # floor just by writing their config. Gated on custom_signals being ACTIVE
+    # (Finding 2): a repo NOT using custom floors classifies its (root) config file
+    # like any other, so behavior is byte-identical when the feature is unused.
+    meta_cfg = (bool(custom_signals) and bool(path)
+                and bool(_META_CONFIG_RE.search(path.replace("\\", "/"))))
 
     threshold = _CFG["trigger"] if trigger_threshold is None else int(trigger_threshold)
 
     # Build the comment/string-stripped "code skeleton" once per side (only when a
     # signal actually opts a pattern into skeleton matching — else it's free).
-    if _CFG.get("has_skeleton"):
+    if _CFG.get("has_skeleton") or any(cs["skeleton_match"] for cs in (custom_signals or ())):
         # JSX text-node blanking is scoped to .jsx/.tsx (audit F-002); comment/string
         # blanking is universal (safe in every language).
         is_jsx = bool(path) and path.lower().endswith((".jsx", ".tsx"))
@@ -1273,7 +1370,9 @@ def _classify_hunk(path, added, removed, trigger_threshold=None, extra_fired=Non
         sk_added, sk_removed = added, removed
 
     fired = []
-    for s in _CFG["signals"]:
+    signal_iter = (_CFG["signals"] if not custom_signals
+                   else list(_CFG["signals"]) + list(custom_signals))
+    for s in signal_iter:
         # M1 signals (all_of / and_not_added) are resolved by the file-aware _resolve_m1_signals
         # pass and merged via `extra_fired` below — never by this per-hunk loop. Skipping them here
         # is what keeps legacy scoring byte-identical.
@@ -1282,7 +1381,23 @@ def _classify_hunk(path, added, removed, trigger_threshold=None, extra_fired=Non
         # Prose path: skip CONTENT-keyword signals; keep path-role + auto-trigger (secret
         # value) signals so requirements.txt still fires (dependency) and a leaked key in a
         # README still fires (auto_trigger), but "the docs mention auth" does not.
+        # (Compiled custom signals follow the same rule — their `auto` is always False.)
         if prose and s["match"] != "path" and not s["auto"]:
+            continue
+        if s.get("is_custom"):
+            # Compiled custom-floor signal (audit F-003: keyed on the explicit flag, not
+            # on `exclude` presence): the repo's own floor config never trips the floors
+            # it defines, and a hunk under this floor's exclude_paths deny-list skips THIS
+            # floor's signals only — built-ins and sibling floors are untouched
+            # (CUSTOM-FLOORS-DESIGN.md §4.A/§4.C).
+            if meta_cfg or (s["exclude"] and _path_match(s["exclude"], path)):
+                continue
+        elif meta_cfg and s["match"] != "path" and not s["auto"] \
+                and not (s["path_gate"] and _path_match(s["path_gate"], path)):
+            # Meta-config carve-out for built-ins (§4.A): on .truverifai/risk.json only
+            # path-role signals, auto-trigger (secret-value) signals — a real key
+            # pasted into the config is still a leak — and signals explicitly
+            # path-gated to the file (the floor_config_change advisory) may fire.
             continue
         # M2 path-gate: a signal armed with path_gate scores ONLY on a hunk whose path matches the
         # allow-list. A None/unmatched path skips it (safe — path_gate is only on ADVISORIES by the
@@ -1293,19 +1408,29 @@ def _classify_hunk(path, added, removed, trigger_threshold=None, extra_fired=Non
         m = s["match"]
         if m == "path":
             hit = _path_match(s["patterns"], path)
-        elif m == "removed":
+        else:
+            raw_lines, sk_lines = ((removed, sk_removed) if m == "removed"
+                                   else (added, sk_added))
+            if s.get("is_custom"):
+                # Custom (untrusted) content pattern: don't scan a pathologically long
+                # line (Finding 1 defense-in-depth). _signal_hit picks ONE list per
+                # pattern and iterates it fully (no raw[i]<->sk[i] correspondence), so
+                # filtering the two lists by their own length can't desync — locked by
+                # test_custom_line_cap_no_skeleton_desync. Accepted semantics tradeoff
+                # (audit F-004): a custom floor won't match a keyword on a >2000-char
+                # line (minified/data blobs) — documented in the define-custom-floors skill.
+                raw_lines = [ln for ln in raw_lines if len(ln) <= _CUSTOM_LINE_SCAN_CAP]
+                sk_lines = [ln for ln in sk_lines if len(ln) <= _CUSTOM_LINE_SCAN_CAP]
             hit = _signal_hit(s["patterns"], s["skeleton_match"],
-                              s["value_filter_patterns"], removed, sk_removed)
-        else:  # "added"
-            hit = _signal_hit(s["patterns"], s["skeleton_match"],
-                              s["value_filter_patterns"], added, sk_added)
+                              s["value_filter_patterns"], raw_lines, sk_lines)
         if hit:
             fired.append(s)
 
     # Merge Mechanism-M1 fires (from the file-aware _resolve_m1_signals pass) into this hunk's
     # fired set — they then score/hash/floor via the same path below. M1 signals are content
-    # signals, so on a prose path they're dropped, consistent with the prose exclusion above.
-    if extra_fired and not prose:
+    # signals, so on a prose path they're dropped, consistent with the prose exclusion above
+    # (and on the custom-floor meta-config file, consistent with the carve-out above).
+    if extra_fired and not prose and not meta_cfg:
         fired.extend(extra_fired)
 
     fired_names = {s["name"] for s in fired}
@@ -1431,7 +1556,8 @@ def _classify_hunk(path, added, removed, trigger_threshold=None, extra_fired=Non
     }
 
 
-def classify_diff(diff_text, trigger_threshold=None, file_content_fetcher=None):
+def classify_diff(diff_text, trigger_threshold=None, file_content_fetcher=None,
+                  custom_signals=None):
     """Classify a unified diff. Returns:
 
         {
@@ -1456,6 +1582,11 @@ def classify_diff(diff_text, trigger_threshold=None, file_content_fetcher=None):
     content, used by two-stage `all_of` co-occurrence to confirm a co-signal that lives OUTSIDE the
     diff (e.g. a pre-existing CI trigger). None => two-stage falls back to the fail-safe (an
     unconfirmable all_of FLOOR fires conservatively; its name lands in the `m1_failsafe` list).
+    `custom_signals` (custom floor classes): compiled repo-defined floor signals from
+    load_repo_floors/compile_custom_floors, threaded into every hunk's scan. The gates load them
+    from the repo toplevel's .truverifai/risk.json; the SERVER's own classify_diff calls pass
+    None BY DESIGN (it has no repo — custom floors reach it only as category strings).
+    None/empty => byte-identical to the no-custom-floors engine.
     """
     hunks = []
     verdicts = []
@@ -1472,7 +1603,8 @@ def classify_diff(diff_text, trigger_threshold=None, file_content_fetcher=None):
 
     for hidx, (path, added, removed, hrange) in enumerate(parsed):
         verdict = _classify_hunk(path, added, removed, trigger_threshold=trigger_threshold,
-                                 extra_fired=m1_by_hunk.get(hidx))
+                                 extra_fired=m1_by_hunk.get(hidx),
+                                 custom_signals=custom_signals)
         if verdict is None:
             continue
         verdicts.append(verdict)
@@ -1540,6 +1672,422 @@ def classify_diff(diff_text, trigger_threshold=None, file_content_fetcher=None):
     }
 
 
+# ---------------------------------------------------------------------------
+# Custom floor classes — repo-config loader / validator / compiler
+# (docs/MCP/Custom floors/CUSTOM-FLOORS-DESIGN.md §4; reserved prefixes + floor
+# predicates live next to FLOOR_CATEGORIES above). The gate hooks call
+# load_repo_floors(<repo toplevel>) and thread the compiled signals into
+# classify_diff(custom_signals=...). The SERVER never calls this loader (it has no
+# repo; custom floors reach it only as category strings). Everything here fails
+# OPEN — a broken config degrades to "no custom floors" with a loud warning and can
+# never touch the built-in signal set: additive-only by construction (the schema has
+# no way to express weights, thresholds, suppressors, or built-in edits).
+# ---------------------------------------------------------------------------
+
+# The repo-relative location of the customer's floor config, and the pattern the
+# meta-config carve-out + the floor_config_change advisory recognize it by in a diff
+# (forward-slash-normalized before matching, like every path check in this module).
+REPO_RISK_CONFIG_RELPATH = ".truverifai/risk.json"
+# Root-anchored (adversarial-review Finding 2): only the repo-TOPLEVEL config is
+# loaded (load_repo_floors reads <root>/.truverifai/risk.json), so only that exact
+# repo-relative path gets the meta-config carve-out. A nested `sub/.truverifai/
+# risk.json` is never loaded as config, so it must classify like any other file — the
+# `(^|/)` form wrongly exempted those too. Diff paths are repo-root-relative, so `^`
+# is correct; a leading `./` (rare) simply doesn't match -> more scanning, safe.
+_META_CONFIG_RE = re.compile(r"^\.truverifai/risk\.json$", re.IGNORECASE)
+
+CUSTOM_FLOOR_WEIGHT = 36     # ties with the built-in floor weight so a custom floor wins
+                             # the deciding-category selection, and sits ABOVE
+                             # trigger_threshold_ceiling (29) so no user threshold
+                             # override can silence a custom floor (F-011 discipline).
+                             # Accepted edge (adversarial-review Finding 3): when a custom
+                             # floor co-fires with a lower-weight built-in floor in ONE
+                             # hunk it can win the deciding `category`, changing the hunk's
+                             # normalized_hash. NOT a loosening: content_hash (the primary
+                             # coverage key) is category-independent, the hunk still floors
+                             # either way, and _floor_first uses EFFECTIVE floor so an
+                             # exempt custom floor can never mask a non-exempt built-in one.
+MAX_CUSTOM_FLOORS = 16
+MAX_CUSTOM_MATCHERS = 32     # keywords + patterns per floor
+MAX_CUSTOM_PATTERN_LEN = 200
+MAX_CUSTOM_PATHS = 20        # per floor; exclude_paths carries the same cap
+MAX_CUSTOM_DESC_LEN = 300
+PREVIEW_SAMPLE_CAP = 8       # matched-file sample size in the coverage preview
+CUSTOM_SCHEMA_VERSION = 1    # the config `version` this gate build understands
+# Defense-in-depth for the ReDoS screen (Finding 1): custom (untrusted) content
+# patterns never scan a line longer than this — bounds the linear-blowup-on-a-huge-
+# minified-line case. Well above any real code line so it costs no recall; the
+# validation-time _looks_catastrophic screen is the primary guard for backtracking.
+_CUSTOM_LINE_SCAN_CAP = 2000
+
+_CUSTOM_TOP_KEYS = frozenset({"version", "custom_floors"})
+_CUSTOM_ENTRY_KEYS = frozenset({
+    "name", "description", "paths", "keywords", "patterns", "exclude_paths", "test_exempt"})
+_CUSTOM_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
+
+
+def _reserved_identifiers():
+    """Built-in category/signal/suppressor names a custom floor may not collide with.
+    Read from the compiled config; under the fail-open empty config this degrades to
+    the static sets alone (collision safety weakens gracefully, never crashes)."""
+    ids = set(FLOOR_CATEGORIES) | set(SOFT_FLOOR) | {"significance"}
+    try:
+        for s in _CFG.get("signals", []):
+            ids.add(s["name"])
+            ids.add(s["category"])
+        for s in _CFG.get("suppressors", []):
+            ids.add(s["name"])
+    except Exception:
+        pass
+    return ids
+
+
+# ReDoS screen (adversarial-review Finding 1, 2026-08-19). A repo's risk.json is
+# UNTRUSTED input (it travels with a cloned repo), and its regexes run in-process in
+# the blocking gate hook with no language-level timeout. Catastrophic backtracking is
+# superlinear in the INPUT line length — which the char/count caps do NOT bound — so a
+# cap-legal 7-char pattern like `(a+)+$` hangs the hook for tens of seconds on an
+# ordinary code line. We REJECT the dominant nested-unbounded-quantifier family at
+# VALIDATION time; because the gate re-validates on every load (load_repo_floors), a
+# rejected floor is dropped with a loud warning and its pattern is never compiled or
+# run — so this protects the runtime path, not just `tvai floors check`.
+# Screens the NESTED-UNBOUNDED-QUANTIFIER family (both alternatives below):
+#   (A) a group (capturing or (?:/(?=/(?!)) whose body carries an unbounded quantifier
+#       (+ * {n,}) and which is ITSELF unbounded-quantified — (a+)+, (a*)*, (a+|b+)+,
+#       ([A-Za-z]+){2,}, (a{2,})+, (?:.*x)+;
+#   (B) two unbounded-quantified group-CLOSES in a row — nested quantified groups like
+#       ((ab)+)+ that (A)'s no-nested-paren body can't see.
+# This is a HEURISTIC, not a complete ReDoS solver. Explicitly NOT caught (accepted
+# residual): alternation-OVERLAP like (a|a)* / (a|ab)* — structurally hard to detect.
+# The residual is a DoS-only availability surface (it cannot loosen a floor): a match
+# is bounded by the launcher's forceful 120s process kill (run_gate.js spawnSync
+# timeout, on EVERY host), after which the gate FAILS OPEN with a model-visible notice
+# — a per-action stall + fail-open, not an eternal freeze. (A POSIX kill of a child
+# stuck in a C-level regex may orphan a CPU-burner until the match returns.) The
+# _CUSTOM_LINE_SCAN_CAP below is the linear-blowup-on-a-huge-line defense. Pattern
+# length is capped at 200, so this screen itself can't backtrack pathologically.
+_REDOS_NESTED_QUANT = re.compile(
+    r"\((?:\?[:=!])?[^()]*(?:[+*]|\{\d+,\})[^()]*\)(?:[+*]|\{\d+,\})"
+    r"|\)(?:[+*]|\{\d+,\})[^()]*\)(?:[+*]|\{\d+,\})")
+
+
+def _looks_catastrophic(pattern):
+    """True if `pattern` contains a nested-unbounded-quantifier ReDoS shape (heuristic;
+    see _REDOS_NESTED_QUANT for the caught families and the accepted residual)."""
+    return bool(_REDOS_NESTED_QUANT.search(pattern))
+
+
+def _custom_regex_list(value, field, label, errors, cap):
+    """Compile a list-of-regex-strings entry field. Returns the compiled list, or None
+    after appending an entry-level error (the caller then skips the entry)."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(p, str) for p in value):
+        errors.append("floor %r: %s must be a list of strings" % (label, field))
+        return None
+    if len(value) > cap:
+        errors.append("floor %r: too many %s (%d > %d)" % (label, field, len(value), cap))
+        return None
+    out = []
+    for p in value:
+        if not p or len(p) > MAX_CUSTOM_PATTERN_LEN:
+            errors.append("floor %r: %s entries must be 1..%d chars"
+                          % (label, field, MAX_CUSTOM_PATTERN_LEN))
+            return None
+        if _looks_catastrophic(p):
+            errors.append("floor %r: %s regex %r has a nested unbounded quantifier "
+                          "(e.g. (x+)+ / (x*)*) — a catastrophic-backtracking (ReDoS) "
+                          "shape that can hang the gate; rewrite it without the nesting"
+                          % (label, field, p))
+            return None
+        try:
+            out.append(re.compile(p))
+        except re.error as exc:
+            errors.append("floor %r: %s regex %r does not compile (%s)"
+                          % (label, field, p, exc))
+            return None
+    return out
+
+
+def _validate_entry(entry, idx, seen, reserved, errors):
+    """Validate ONE custom_floors entry. Returns the normalized entry dict, or None
+    after appending the reason to `errors` (entry-level granularity: a bad entry is
+    skipped; its siblings survive)."""
+    if not isinstance(entry, dict):
+        errors.append("entry[%d]: must be a JSON object" % idx)
+        return None
+    name = entry.get("name")
+    label = name if isinstance(name, str) and name else ("entry[%d]" % idx)
+    extra = sorted(set(entry) - _CUSTOM_ENTRY_KEYS)
+    if extra:
+        errors.append("floor %r: unsupported key(s): %s" % (label, ", ".join(extra)))
+        return None
+    if not isinstance(name, str) or not _CUSTOM_NAME_RE.match(name):
+        errors.append("floor %r: 'name' must match [a-z][a-z0-9_]{1,40}" % label)
+        return None
+    if name.startswith("strict_"):
+        errors.append("floor %r: names starting with 'strict_' are reserved "
+                      "(they encode the never-exempt category form)" % name)
+        return None
+    if name in seen:
+        errors.append("floor %r: duplicate name" % name)
+        return None
+    if (name in reserved
+            or (CUSTOM_FLOOR_PREFIX + name) in reserved
+            or (CUSTOM_FLOOR_STRICT_PREFIX + name) in reserved):
+        errors.append("floor %r: collides with a built-in signal or category name" % name)
+        return None
+    desc = entry.get("description")
+    if not isinstance(desc, str) or not desc.strip():
+        errors.append("floor %r: 'description' is required — your own words; it is "
+                      "shown in block messages" % name)
+        return None
+    desc = desc.strip()[:MAX_CUSTOM_DESC_LEN]
+    kws = entry.get("keywords")
+    if kws is None:
+        kws = []
+    elif (not isinstance(kws, list)
+          or not all(isinstance(k, str) and k.strip() for k in kws)
+          or any(len(k) > MAX_CUSTOM_PATTERN_LEN for k in kws)):
+        errors.append("floor %r: keywords must be non-empty strings of at most %d chars"
+                      % (name, MAX_CUSTOM_PATTERN_LEN))
+        return None
+    paths = _custom_regex_list(entry.get("paths"), "paths", name, errors, MAX_CUSTOM_PATHS)
+    excludes = _custom_regex_list(entry.get("exclude_paths"), "exclude_paths", name,
+                                  errors, MAX_CUSTOM_PATHS)
+    patterns = _custom_regex_list(entry.get("patterns"), "patterns", name, errors,
+                                  MAX_CUSTOM_MATCHERS)
+    if paths is None or excludes is None or patterns is None:
+        return None
+    if len(kws) + len(patterns) > MAX_CUSTOM_MATCHERS:
+        errors.append("floor %r: too many keywords+patterns (%d > %d)"
+                      % (name, len(kws) + len(patterns), MAX_CUSTOM_MATCHERS))
+        return None
+    if not (paths or kws or patterns):
+        errors.append("floor %r: at least one of paths / keywords / patterns is required"
+                      % name)
+        return None
+    test_exempt = entry.get("test_exempt", True)
+    if not isinstance(test_exempt, bool):
+        errors.append("floor %r: test_exempt must be true or false" % name)
+        return None
+    return {"name": name, "description": desc, "paths": paths,
+            "keywords": [k.strip() for k in kws], "patterns": patterns,
+            "exclude_paths": excludes, "test_exempt": test_exempt}
+
+
+def validate_custom_floors(raw):
+    """Validate a parsed .truverifai/risk.json document. Returns
+    {"floors": [normalized entries], "errors": [entry-level strs], "file_error": str|None}.
+
+    FILE-level violations set file_error and yield zero floors: not a JSON object;
+    ANY top-level key outside {version, custom_floors} — the additive-only guarantee
+    is that loosening-shaped keys (signals / weights / thresholds / suppressors /
+    exemptions / ...) are not merely ignored but REJECT the file loudly;
+    custom_floors not a list; more than MAX_CUSTOM_FLOORS entries.
+    ENTRY-level violations append to errors and skip that entry only."""
+    result = {"floors": [], "errors": [], "file_error": None}
+    if not isinstance(raw, dict):
+        result["file_error"] = "config must be a JSON object"
+        return result
+    extra = sorted(set(raw) - _CUSTOM_TOP_KEYS)
+    if extra:
+        result["file_error"] = (
+            "unsupported top-level key(s): %s — only 'version' and 'custom_floors' are "
+            "allowed (the schema is additive-only; signals/weights/thresholds/"
+            "suppressors are not configurable here)" % ", ".join(extra))
+        return result
+    version = raw.get("version", CUSTOM_SCHEMA_VERSION)
+    if version != CUSTOM_SCHEMA_VERSION:
+        # Fail LOUDLY on an unknown schema version (C3 audit F-009): a future-version
+        # config half-understood by an old gate would silently mis-enforce; better no
+        # custom floors + a clear message than wrong ones.
+        result["file_error"] = (
+            "config version %r is not supported by this gate version (expected %d) — "
+            "update the TruVerifAI gates (`npx @truverifai/init`)"
+            % (version, CUSTOM_SCHEMA_VERSION))
+        return result
+    floors_raw = raw.get("custom_floors")
+    if not isinstance(floors_raw, list):
+        result["file_error"] = "'custom_floors' must be a list"
+        return result
+    if len(floors_raw) > MAX_CUSTOM_FLOORS:
+        result["file_error"] = ("too many custom floors (%d > %d)"
+                                % (len(floors_raw), MAX_CUSTOM_FLOORS))
+        return result
+    reserved = _reserved_identifiers()
+    seen = set()
+    for idx, entry in enumerate(floors_raw):
+        e = _validate_entry(entry, idx, seen, reserved, result["errors"])
+        if e is not None:
+            seen.add(e["name"])
+            result["floors"].append(e)
+    return result
+
+
+def compile_custom_floors(floors):
+    """Compile validated floor entries into (signals, meta).
+
+    `signals` are engine-shaped dicts (the same keys _compile_config emits, plus
+    `exclude` and `description`) so _classify_hunk scores them through the exact same
+    code path as built-ins. class/weight are FIXED (trigger / CUSTOM_FLOOR_WEIGHT) —
+    the schema cannot express weights, so it cannot express loosening. `meta` maps
+    each generated category -> {"name", "description"} for the gates' deny copy.
+
+    Category encoding (see the reserved-prefix block near FLOOR_CATEGORIES): PATH
+    signals always carry the STRICT category — the customer explicitly named those
+    paths, so the test/docs heuristic never exempts them; CONTENT signals carry the
+    exemption-eligible category unless test_exempt is false. Content signals fire on
+    added AND removed lines (removing a tax rule is as critical as adding one), with
+    the keyword union skeleton-matched so a keyword in a comment/string/prose does
+    not fire; raw `patterns` match raw lines (they may look inside strings, like the
+    built-in secret/SQL patterns)."""
+    signals, meta = [], {}
+    for f in floors:
+        name = f["name"]
+        strict_cat = CUSTOM_FLOOR_STRICT_PREFIX + name
+        content_cat = (CUSTOM_FLOOR_PREFIX + name) if f["test_exempt"] else strict_cat
+        base = {
+            "cls": _TRIGGER_CLASS, "weight": CUSTOM_FLOOR_WEIGHT, "auto": False,
+            "all_of": [], "and_not_added": False, "is_m1": False, "path_gate": [],
+            "value_filter_patterns": set(), "exclude": list(f["exclude_paths"]),
+            # Explicit marker (audit F-003): the engine keys the custom-signal paths
+            # (line-cap, exclude, meta-config skip) off THIS flag, never off the mere
+            # presence of `exclude` — so a future BUILT-IN signal gaining an exclude
+            # field can never silently inherit custom-signal handling.
+            "is_custom": True,
+            "description": f["description"],
+        }
+        meta[strict_cat] = {"name": name, "description": f["description"]}
+        meta[content_cat] = {"name": name, "description": f["description"]}
+        if f["paths"]:
+            sig = dict(base)
+            sig.update({"name": "custom:%s:path" % name, "category": strict_cat,
+                        "match": "path", "patterns": list(f["paths"]),
+                        "skeleton_match": set()})
+            signals.append(sig)
+        content, skeleton_idx = [], set()
+        if f["keywords"]:
+            union = "(?i)\\b(?:%s)\\b" % "|".join(re.escape(k) for k in f["keywords"])
+            skeleton_idx.add(len(content))
+            content.append(re.compile(union))
+        content.extend(f["patterns"])
+        if content:
+            for side in ("added", "removed"):
+                sig = dict(base)
+                sig.update({"name": "custom:%s:%s" % (name, side),
+                            "category": content_cat, "match": side,
+                            "patterns": content, "skeleton_match": set(skeleton_idx)})
+                signals.append(sig)
+    return signals, meta
+
+
+def load_repo_floors(repo_root):
+    """Load + compile `<repo_root>/.truverifai/risk.json` into (custom_signals, meta)
+    for classify_diff(custom_signals=...). Missing file -> ([], {}) silently (the
+    common case — zero cost). ANY other problem fails OPEN: degraded to no custom
+    floors with a loud stderr warning; the built-in signal set is never affected."""
+    try:
+        if not repo_root:
+            return [], {}
+        cfg_path = os.path.join(str(repo_root), ".truverifai", "risk.json")
+        if not os.path.isfile(cfg_path):
+            return [], {}
+        # utf-8-sig: Windows editors (Notepad, PowerShell Out-File) BOM their UTF-8;
+        # a BOM'd config must not silently disable every custom floor (found by the
+        # C3 behavior test — json.load rejects a BOM under plain utf-8).
+        with open(cfg_path, "r", encoding="utf-8-sig") as fh:
+            raw = json.load(fh)
+        res = validate_custom_floors(raw)
+        if res["file_error"]:
+            warnings.warn(
+                "TruVerifAI custom floors: %s — ALL custom floors are disabled until "
+                "fixed (built-in gates unaffected; run `tvai floors check`)"
+                % res["file_error"])
+            return [], {}
+        for msg in res["errors"]:
+            warnings.warn("TruVerifAI custom floors: %s — that floor is disabled until "
+                          "fixed (run `tvai floors check`)" % msg)
+        return compile_custom_floors(res["floors"])
+    except Exception as exc:  # noqa: BLE001 — fail-open guard: the gate must never brick
+        warnings.warn("TruVerifAI custom floors: failed to load the repo config (%s) — "
+                      "custom floors disabled; built-in gates unaffected" % exc)
+        return [], {}
+
+
+def preview_repo_floors(floors, path_list):
+    """Per-floor PATH-coverage preview for `tvai floors check --preview` (§6 step 3):
+    which of the given repo-relative paths (typically `git ls-files`) each floor's
+    path/exclude regexes actually cover, so the customer reviews CONCRETE coverage,
+    not abstract regexes. PATH matchers only — keyword/pattern (content) floors match
+    DIFFS at gate time, not files, so they are reported as content-matcher counts.
+    Lives here, next to the matching engine, so the CLI never re-implements the
+    Python regex dialect (Rule 8). A floor whose paths match ZERO files — e.g. its
+    exclude_paths nullify it — is the §6 'nullified floor' warning signal."""
+    sample_cap = PREVIEW_SAMPLE_CAP
+    out = []
+    norm = [str(p).replace("\\", "/").strip() for p in (path_list or [])
+            if str(p).strip()]
+    for f in floors:
+        inc, exc = f["paths"], f["exclude_paths"]
+        matched, excluded = [], 0
+        if inc:
+            for p in norm:
+                if any(r.search(p) for r in inc):
+                    if exc and any(r.search(p) for r in exc):
+                        excluded += 1
+                    else:
+                        matched.append(p)
+        out.append({
+            "name": f["name"],
+            "path_matched": len(matched),
+            "path_sample": matched[:sample_cap],
+            "path_excluded": excluded,
+            "content_matchers": len(f["keywords"]) + len(f["patterns"]),
+            "nullified": bool(inc) and not matched,
+        })
+    return out
+
+
+def check_repo_floors(repo_root, preview_paths=None):
+    """Offline validation report for `tvai floors check` (the CLI shells out to
+    `python -m mcp_server.risk_classifier --check-floors <repo>` so there is exactly
+    ONE validator — Rule 8). `preview_paths` (an iterable of repo-relative paths,
+    typically `git ls-files`) adds a per-floor coverage preview. Never raises."""
+    path = os.path.join(str(repo_root or "."), ".truverifai", "risk.json")
+    report = {"ok": False, "path": path, "exists": False, "floors": [],
+              "errors": [], "file_error": None}
+    try:
+        if not os.path.isfile(path):
+            report["file_error"] = "no .truverifai/risk.json found"
+            return report
+        report["exists"] = True
+        # utf-8-sig, matching load_repo_floors: a BOM'd Windows config must validate.
+        with open(path, "r", encoding="utf-8-sig") as fh:
+            raw = json.load(fh)
+    except Exception as exc:
+        report["exists"] = os.path.isfile(path)
+        report["file_error"] = "unreadable or invalid JSON: %s" % exc
+        return report
+    res = validate_custom_floors(raw)
+    report["errors"] = res["errors"]
+    report["file_error"] = res["file_error"]
+    for f in res["floors"]:
+        report["floors"].append({
+            "name": f["name"], "description": f["description"],
+            "test_exempt": f["test_exempt"],
+            "paths": len(f["paths"]), "keywords": len(f["keywords"]),
+            "patterns": len(f["patterns"]), "exclude_paths": len(f["exclude_paths"]),
+        })
+    if preview_paths is not None:
+        try:
+            report["preview"] = preview_repo_floors(res["floors"], preview_paths)
+        except Exception as exc:  # preview is advisory — never fail the report on it
+            report["preview_error"] = str(exc)
+    report["ok"] = report["file_error"] is None and not report["errors"]
+    return report
+
+
 def _cli_file_fetcher(path):
     """M1 two-stage fetcher for the CLI/diagnostic path: read the file relative to CWD, or None on
     any failure (-> classifier fail-safe). Keeps `python -m mcp_server.risk_classifier` behaving
@@ -1559,6 +2107,19 @@ def _cli_file_fetcher(path):
 
 
 def _main(argv):
+    # `--check-floors [repo_root]` — the custom-floors validator as a CLI (the tvai
+    # CLI's `floors check` shells out to this; one validator, Rule 8). Exit 0 iff the
+    # repo's .truverifai/risk.json exists and validates cleanly.
+    if "--check-floors" in argv:
+        i = argv.index("--check-floors")
+        target = argv[i + 1] if len(argv) > i + 1 and not argv[i + 1].startswith("-") \
+            else os.getcwd()
+        # `--preview`: stdin carries newline-delimited repo-relative paths (the CLI
+        # pipes `git ls-files`) -> per-floor concrete path coverage in the report.
+        preview_paths = sys.stdin.read().splitlines() if "--preview" in argv else None
+        report = check_repo_floors(target, preview_paths=preview_paths)
+        print(json.dumps(report, indent=2))
+        return 0 if report.get("ok") else 1
     diff_text = sys.stdin.read()
     print(json.dumps(classify_diff(diff_text, file_content_fetcher=_cli_file_fetcher), indent=2))
     return 0

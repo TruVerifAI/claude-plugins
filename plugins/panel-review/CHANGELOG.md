@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.19.39 (custom floor classes)
+
+- **Custom floor classes**: a repo can declare its own domain-critical floors
+  ("tax rules", "dosing logic") in a committed `.truverifai/risk.json` — changes
+  matching them block exactly like the built-in floors (judgment skips denied;
+  audit PASS / confirm_floor / SYNTH_CONFIRM / accept-risk release) and the block
+  quotes the repo owner's own description. Additive-only schema (`name`,
+  required `description`, `paths`/`keywords`/`patterns`, `exclude_paths`,
+  `test_exempt`); the file is compiled locally by the gates and never leaves the
+  machine; classifier config v2.13.0 adds two LOW non-blocking advisories when
+  the config itself is narrowed. New `define-custom-floors` skill runs the
+  guided setup; new `npx @truverifai/init floors [status|check|init|prompt]
+  [--preview]` CLI validates and shows concrete per-floor coverage. Requires the
+  server-side prefix rule (deploy server first); on an older server a custom
+  floor still blocks but the free judgment skip is not yet denied.
+
 ## 0.19.38 (round-3 findings batch)
 
 Every finding from the four-platform 0.19.37 test round, fixed:

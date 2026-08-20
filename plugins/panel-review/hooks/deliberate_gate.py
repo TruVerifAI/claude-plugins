@@ -63,6 +63,13 @@ def main():
         g.emit_allow()
 
     cwd = inp.get("cwd") or os.getcwd()
+    # Custom floor classes (CUSTOM-FLOORS-DESIGN.md): load the TARGET file's repo's
+    # committed .truverifai/risk.json (target-repo, not session-cwd — the F-1
+    # round-3-Mac lesson: the write's identity belongs to the repo being written).
+    # ([], {}) when absent; floors_meta feeds the deny copy below. This early
+    # receipt_repo_cwd call is for LOADER IDENTITY ONLY — the later call that keys
+    # the receipts is unchanged; the function is pure, same inputs, same result.
+    custom_signals, floors_meta = g.repo_custom_floors(g.receipt_repo_cwd(path, cwd))
     # Write-gate-deadlock-fix-v2 (Option D): classify a REAL delta (not the all-adds
     # synth_write_diff) so the fire's per-hunk content hashes match what a natural agent
     # gate_diff produces — the root-cause fix for the floor write-gate deadlock.
@@ -71,7 +78,8 @@ def main():
     # is adding a checkout to) — so reading it is correct for confirming an out-of-diff co-signal.
     classification = classify_diff(
         g.build_change_diff(inp, path, content), trigger_threshold=g.effective_threshold(cfg),
-        file_content_fetcher=g.file_content_fetcher(cwd))
+        file_content_fetcher=g.file_content_fetcher(cwd),
+        custom_signals=custom_signals)
 
     # P6.3 (repo-scope suppression): a write whose target resolves OUTSIDE the working repo
     # or into a temp/scratch dir cannot be committed/merged — it can't SHIP, and the gate's
@@ -218,8 +226,10 @@ def main():
             hh_line = "  target_hunk_hashes = %s\n" % json.dumps(all_hashes)
             g.emit_deny(
                 f"TruVerifAI flagged a {cats} change (a floor class: auth / secrets / money / "
-                "migrations / removed-guard).\n"
+                "migrations / removed-guard — or a repo-defined custom floor from "
+                ".truverifai/risk.json).\n"
                 + g.transparency_block(classification, resp)
+                + g.custom_floor_note(classification, floors_meta)
                 + g.area_diagnostic_block(area, resp) +
                 "Match the tool to your situation:\n"
                 "  • A GENUINE floor change you want reviewed → `audit_coding`. A PASS (final "
@@ -261,6 +271,7 @@ def main():
         g.emit_deny(
             f"TruVerifAI flagged a {cats} change worth a review before it ships.\n"
             + g.transparency_block(classification, resp)
+            + g.custom_floor_note(classification, floors_meta)
             + g.area_diagnostic_block(area, resp) +
             "This is finished code, so the natural review is `audit_coding` — run it ONCE with your "
             "proposed_action, AND pass:\n"

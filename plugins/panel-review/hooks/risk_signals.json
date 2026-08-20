@@ -1,6 +1,6 @@
 {
   "_comment": "SINGLE SOURCE OF TRUTH for the two-channel risk classifier (docs/MCP/Classifier/risk-trigger-classifier-design.md). Canonical: mcp_server/risk_signals.json; vendored byte-identical copy: plugin/hooks/risk_signals.json (synced by scripts/sync_risk_classifier.py, enforced by tests/test_classifier_sync.py). Edit signals/weights/thresholds HERE only.",
-  "version": "2.12.0",
+  "version": "2.13.0",
   "thresholds": { "trigger": 25, "borderline_low": 5 },
   "large_hunk_added_lines": 50,
   "large_hunk_weight": 10,
@@ -230,7 +230,15 @@
     { "name": "embedded_domain", "class": "domain", "category": "embedded", "weight": 10, "match": "added",
       "patterns": [ "\\*\\s*\\(\\s*volatile[^)]*\\)\\s*=", "(?i)\\b(IRQHandler|__interrupt|ISR_HANDLER)\\b", "(?i)\\b(vTaskDelay|xTaskCreate|portYIELD|taskENTER_CRITICAL)\\b", "\\b(NVIC_|GPIO_|HAL_)[A-Za-z0-9_]+\\s*\\(" ] },
     { "name": "embedded_path", "class": "domain", "category": "embedded", "weight": 8, "match": "path",
-      "patterns": [ "(?i)(^|/)firmware/", "(?i)\\.(ld|dts|dtsi)$" ] }
+      "patterns": [ "(?i)(^|/)firmware/", "(?i)\\.(ld|dts|dtsi)$" ] },
+    { "name": "floor_config_removed", "class": "significance", "category": "floor_config_change", "weight": 10, "match": "removed",
+      "path_gate": [ "(?i)(^|/)\\.truverifai/risk\\.json$" ],
+      "_comment": "Custom floor classes (docs/MCP/Custom floors/CUSTOM-FLOORS-DESIGN.md §4.A): NON-blocking visibility advisory — a line REMOVED from a repo's custom-floor config (.truverifai/risk.json) means a floor may have been narrowed or deleted. LOW, self-skippable, NON-floor by design (owner ruling 2026-08-19: the customer's floor file is the customer's — no gate-self, no tamper flow, no forced audit; visibility only). The category deliberately does NOT use the reserved `custom_floor_` prefix (that prefix DERIVES floor status; this advisory must never floor — the _compile_config namespace guard would reject it anyway). path_gate is legal here (non-floor advisory), and the _classify_hunk meta-config carve-out explicitly admits signals path-gated to the config file itself.",
+      "patterns": [ "\\S" ] },
+    { "name": "floor_config_exclusion_added", "class": "significance", "category": "floor_config_change", "weight": 10, "match": "added",
+      "path_gate": [ "(?i)(^|/)\\.truverifai/risk\\.json$" ],
+      "_comment": "Sibling of floor_config_removed: ADDING an exclude_paths line narrows a custom floor without removing any line, so it gets the same LOW non-blocking advisory (CUSTOM-FLOORS-DESIGN.md §4.C).",
+      "patterns": [ "\"exclude_paths\"" ] }
   ],
   "suppressors": [
     { "name": "test_path", "weight": -20, "match": "path",

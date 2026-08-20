@@ -50,6 +50,7 @@ from risk_classifier import (  # vendored, same dir
     floor_exempt,           # ...and the PATH demotion that makes that membership *effective*
     NORM_VERSION,
     clamp_threshold,
+    load_repo_floors,       # custom floor classes: repo-committed .truverifai/risk.json
     # Gate-self detection + the synthesized self-coverage hash live in the vendored
     # classifier so the client gate and the SERVER receipt writer agree byte-for-byte.
     is_gate_self_mutation,
@@ -1038,6 +1039,58 @@ def _untracked_diff(cwd, command=""):
 
 
 _M1_FETCH_MAX_BYTES = 1_000_000  # M1 two-stage: don't read a pathological file for a co-signal check
+
+
+# ---------------------------------------------------------------------------
+# Custom floor classes (docs/MCP/Custom floors/CUSTOM-FLOORS-DESIGN.md): both gates
+# load the repo's committed floor config and thread the compiled signals into
+# classify_diff. One loader call per process per toplevel (the hooks are one-shot
+# processes, so this is at most one file read per gate event).
+# ---------------------------------------------------------------------------
+
+_CUSTOM_FLOORS_CACHE = {}
+
+
+def repo_custom_floors(cwd):
+    """(custom_signals, floors_meta) for the repo containing `cwd` — compiled from
+    `<toplevel>/.truverifai/risk.json` via the vendored loader. Fail-open ([], {})
+    on ANY problem (no repo, no git, loader failure — the loader itself warns
+    loudly); missing file is the silent common case. Cached per toplevel."""
+    try:
+        root = _git(["rev-parse", "--show-toplevel"], cwd).strip()
+        if not root:
+            return [], {}
+        # Normalized cache key (C2 audit F-001): symlinked / case-varied / slash-varied
+        # spellings of the same toplevel must share one entry. (The cache lives for one
+        # one-shot hook process — a future daemon mode must invalidate it.)
+        root = os.path.realpath(root)
+        if root not in _CUSTOM_FLOORS_CACHE:
+            _CUSTOM_FLOORS_CACHE[root] = load_repo_floors(root)
+        return _CUSTOM_FLOORS_CACHE[root]
+    except Exception:
+        return [], {}
+
+
+def custom_floor_note(classification, floors_meta):
+    """Deny-message lines naming the repo-defined custom floor(s) a change tripped,
+    in the CUSTOMER's own words (the required `description` from their config) — the
+    block explains itself in their domain language, not classifier jargon. Returns ""
+    when the change involves no custom floor. Client-side copy only; nothing here is
+    sent to the server."""
+    if not floors_meta or not isinstance(classification, dict):
+        return ""
+    cats = {h.get("category") for h in classification.get("hunks", [])}
+    lines, seen = [], set()
+    for cat in sorted(c for c in cats if c and c in floors_meta):
+        m = floors_meta[cat]
+        if m["name"] in seen:
+            continue
+        seen.add(m["name"])
+        lines.append("  - %s: %s" % (m["name"], m["description"]))
+    if not lines:
+        return ""
+    return ("This repo defines custom floor classes (.truverifai/risk.json) that this "
+            "change touches:\n" + "\n".join(lines) + "\n")
 
 
 def file_content_fetcher(cwd):

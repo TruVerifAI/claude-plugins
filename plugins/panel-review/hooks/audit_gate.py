@@ -60,8 +60,13 @@ def main():
     if not diff.strip():
         g.emit_allow()  # nothing staged
 
+    # Custom floor classes (CUSTOM-FLOORS-DESIGN.md): the repo's committed
+    # .truverifai/risk.json compiles into extra floor signals; `floors_meta` carries
+    # the customer's own name+description for the deny copy. ([], {}) when absent.
+    custom_signals, floors_meta = g.repo_custom_floors(cwd)
     classification = classify_diff(diff, trigger_threshold=g.effective_threshold(cfg),
-                                   file_content_fetcher=g.file_content_fetcher(cwd))
+                                   file_content_fetcher=g.file_content_fetcher(cwd),
+                                   custom_signals=custom_signals)
     gate_self = g.diff_touches_gate_self(diff)
     if not classification["risky"] and not gate_self:
         g.emit_allow()  # trivial, non-gate-self change
@@ -166,7 +171,8 @@ def main():
         g.emit_deny(
             f"TruVerifAI flagged a high-risk change worth a review before it ships — this commit "
             f"touches {cats}.\n"
-            + g.transparency_block(classification, resp) +
+            + g.transparency_block(classification, resp)
+            + g.custom_floor_note(classification, floors_meta) +
             "Run `audit_coding` with your proposed_action + relevant_code, AND pass:\n"
             f'  gate_repo = "{repo}"\n'
             f"  gate_diff = the change being committed (run: {diff_cmd})\n"
@@ -180,7 +186,8 @@ def main():
             "still covers the rest.\n"
             "Each bucket in 'Still uncovered' above has its OWN release, and one does not do the "
             "other's job:\n"
-            "  - FLOOR (auth / secrets / money / migrations / removed-guard) you believe mis-fired: "
+            "  - FLOOR (auth / secrets / money / migrations / removed-guard — or a repo-defined "
+            "custom floor from .truverifai/risk.json) you believe mis-fired: "
             "`confirm_floor` (FREE, one model), or `synthesize_coding` (~15-30s) — a low-risk "
             "verdict releases the FLOOR hunks (forward gate_repo + gate_diff + the gate_context_id "
             "above). Neither releases a NON-floor hunk.\n"
@@ -223,7 +230,8 @@ def main():
         g.emit_allow_advisory(
             "TruVerifAI (focused tightness): this commit touches " + cats + " — lower-confidence, "
             "non-floor changes, so the gate is NOT blocking (floor classes — auth / secrets / money / "
-            "migrations / removed-guard — and high-confidence security changes still block). If any of "
+            "migrations / removed-guard, plus any repo-defined custom floors — and high-confidence "
+            "security changes still block). If any of "
             "this is genuinely consequential, consider running `audit_coding` before you rely on it. "
             "To block on every risky change instead, the USER can raise gate_tightness to "
             "'thorough' in the TruVerifAI CLI's gates settings (a user-run switch; it no "
