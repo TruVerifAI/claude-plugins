@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.19.41 (authoring experience)
+- `define-custom-floors` skill: the workflow now leads with the whole-codebase
+  scan (Step 1) and presents the FULL candidate floor list up front, so the user
+  trims rather than repeatedly asking to add areas. The interview moved to Step 2
+  (refine, not enumerate). Every floor — including ones added mid-conversation —
+  must ship thorough, code-derived keywords, and path floors get `exclude_paths`
+  for their test/example subtrees proposed by default (surfaced for review).
+  Removes a self-contradiction where "don't invent floors beyond the interview"
+  fought the "go wider" guidance.
+- `floors check --preview`: the per-floor file listing now prints "…and N more"
+  when the coverage sample is truncated, so a floor's true breadth (e.g. a floor
+  matching 20 files) is never hidden behind a short sample.
+
 ## 0.19.40 (authoring experience)
 - Custom floors: the meta-config carve-out now applies to `.truverifai/risk.json`
   unconditionally, so FIRST-TIME authoring no longer trips a built-in floor when
