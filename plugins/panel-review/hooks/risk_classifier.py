@@ -1349,12 +1349,25 @@ def _classify_hunk(path, added, removed, trigger_threshold=None, extra_fired=Non
     prose = bool(path) and bool(_PROSE_PATHS.search(path))
     # Custom-floor meta-config carve-out (§4.A): the repo's own floor-config file
     # DESCRIBES risky code, so most content signals are skipped on it (see the loop
-    # below) — a customer whose keywords include "password" must not trip the auth
-    # floor just by writing their config. Gated on custom_signals being ACTIVE
-    # (Finding 2): a repo NOT using custom floors classifies its (root) config file
-    # like any other, so behavior is byte-identical when the feature is unused.
-    meta_cfg = (bool(custom_signals) and bool(path)
-                and bool(_META_CONFIG_RE.search(path.replace("\\", "/"))))
+    # below) — a customer whose keywords name "password" or a Stripe identifier must
+    # not trip the auth/billing floor just by WRITING their config. Applies
+    # UNCONDITIONALLY on the root config path, NOT gated on floors being active: the
+    # 0.19.40 prod test (2026-08-20) showed the earlier custom_signals gate broke
+    # FIRST-TIME authoring — creating the config named domain identifiers (a keyword
+    # `sync_subscription_from_stripe` matched billing's `from…stripe` pattern), and
+    # no floors were loaded yet, so the carve-out was inactive and the built-in
+    # billing floor fired on the config itself. Root-anchored, so a nested lookalike
+    # is unaffected; secret AUTO-triggers still fire (a real pasted key in the config
+    # is still a leak), so this can't hide a genuine secret. The "byte-identical when
+    # unused" concern this reverts was rated LOW (a JSON config file that ships no
+    # runnable logic; there is nothing in it to review-before-merge).
+    # CONTRACT (audit mcp_72c20928 F-001/F-002): meta_cfg=True suppresses, on the root
+    # config path, every non-auto, non-path-gated built-in CONTENT signal AND the M1
+    # merge advisory (see the `not meta_cfg` guard on the extra_fired merge below). A
+    # NEW built-in signal that must fire on the config file has to be auto_trigger
+    # (like a secret) or path-gated to this path (like the floor_config_change
+    # advisory) — a plain content signal will be silently skipped here.
+    meta_cfg = bool(path) and bool(_META_CONFIG_RE.search(path.replace("\\", "/")))
 
     threshold = _CFG["trigger"] if trigger_threshold is None else int(trigger_threshold)
 

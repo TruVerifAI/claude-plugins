@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.19.40 (authoring experience)
+- Custom floors: the meta-config carve-out now applies to `.truverifai/risk.json`
+  unconditionally, so FIRST-TIME authoring no longer trips a built-in floor when
+  the config names domain identifiers (e.g. a Stripe keyword firing `billing`).
+  Secret auto-triggers still fire on the config; a real pasted key is still caught.
+- `define-custom-floors` skill: scans the whole codebase and proposes a broader
+  first draft (walks a critical-domain checklist on its own initiative), so the
+  user trims rather than repeatedly adds.
+
 ## 0.19.39 (custom floor classes)
 
 - **Custom floor classes**: a repo can declare its own domain-critical floors
