@@ -2847,9 +2847,12 @@ def _persist_gate_update(upd):
     was aimed at: exactly the backwards delivery it existed to fix. Persisting
     the flag whenever ANY process's POST sees it (a write-gate advisory, an
     audit evaluation, doctor's [gate endpoint] row) lets the backstop's clean
-    path render from the cache. Verdicts are persisted BOTH ways, so a
-    now-current machine clears the flag on its next flagged response rather
-    than nudging from stale data. Fail-silent everywhere."""
+    path render from the cache. NOTE: the server sends this field ONLY for a
+    stale client (ABSENT when current, by contract) — so a now-current machine
+    never receives a clearing verdict through this path. Invalidation is
+    client-side instead: update_nudge_line suppresses (and _drop_cached_update
+    drops the cache) when the installed version is >= the advertised one, and
+    the 7-day TTL is the backstop. Fail-silent everywhere."""
     try:
         if not isinstance(upd, dict):
             return
@@ -2874,6 +2877,25 @@ def _persist_gate_update(upd):
         pass
 
 
+def _drop_cached_update():
+    """Remove the persisted staleness verdict (merge-style — never clobber the
+    nudge-cap fields sharing the file). Called when the machine is found to
+    already run the advertised version or newer: the server sends NO clearing
+    verdict for a current client (the field is ABSENT by contract), so this
+    client-side drop is the only way the cache invalidates before its TTL.
+    Fail-silent — worst case the suppression check re-runs next render."""
+    try:
+        p = _nudge_state_path()
+        with open(p, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict) and "cached_update" in data:
+            del data["cached_update"]
+            with open(p, "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+    except Exception:
+        pass
+
+
 def _cached_gate_update():
     """The persisted staleness verdict, or None when absent/expired. The same
     strict validation update_nudge_line applies to the fresh flag applies
@@ -2891,18 +2913,34 @@ def _cached_gate_update():
         return None
 
 
+def _nudge_parse(version):
+    """Validated 'X.Y.Z' -> (x, y, z) int tuple, or None — the CLIENT-SIDE
+    twin of mcp_server/client_update._parse (keep identical; the regex gate
+    makes an int-tuple compare exactly correct, no packaging dependency)."""
+    if not (isinstance(version, str) and _NUDGE_SEMVER_RE.fullmatch(version)):
+        return None
+    return tuple(int(p) for p in version.split("."))
+
+
 def update_nudge_line():
     """The one-line agent-actionable update nudge, or None. Renders only on
-    the server's is_stale flag (the client never compares versions — the
-    server owns the comparison); re-validates the version shape client-side;
-    respects the 24h cap and records the render.
+    the server's is_stale flag (the client never compares versions to DECIDE
+    staleness — the server owns that comparison); re-validates the version
+    shape client-side; respects the 24h cap and records the render.
 
     Falls back to the PERSISTED flag when this process made no POST of its own
     (finding D above) — with one extra suppression for the cached path's tail:
-    if this machine now RUNS the advertised version, the nudge's goal is met
-    and rendering from a not-yet-expired cache would nag about an update the
-    user already did. (That equality check is cache invalidation, not a
-    staleness comparison — the server still owns "is it stale".)"""
+    if this machine now RUNS the advertised version OR NEWER, the nudge's goal
+    is met and rendering from a not-yet-expired cache would nag about an
+    update the user already did. NEWER matters: the server omits gate_update
+    entirely for a current client, so a machine that updated PAST the cached
+    target (2026-08-24: cache said 0.19.41, machine ran 0.19.42) never gets a
+    clearing verdict — an equality-only check kept nudging backwards until the
+    7-day TTL expired. Suppressing also DROPS the cached verdict so the file
+    self-heals instead of re-evaluating until expiry. (This is cache
+    invalidation, not a staleness comparison — the server still owns "is it
+    stale"; an unparseable installed version falls through to the nudge,
+    unchanged fail-open posture.)"""
     try:
         upd = _GATE_UPDATE or _cached_gate_update()
         if not (isinstance(upd, dict) and upd.get("is_stale") is True):
@@ -2910,8 +2948,10 @@ def update_nudge_line():
         latest = upd.get("latest_version")
         if not (isinstance(latest, str) and _NUDGE_SEMVER_RE.fullmatch(latest)):
             return None
-        if latest == plugin_version():
-            return None  # already on the advertised version — goal met
+        installed = _nudge_parse(plugin_version())
+        if installed is not None and installed >= _nudge_parse(latest):
+            _drop_cached_update()  # goal met (advertised version or newer)
+            return None
         if not _should_nudge():
             return None
         instruction = host_registry.current().update_instruction

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.19.43 (backwards update-nudge fix)
+- **FIX (stale advisory):** the update nudge could advertise an OLDER version
+  than the one installed ("update available: v0.19.41" on a machine running
+  v0.19.42). Cause: the persisted staleness verdict (7-day TTL) is never
+  cleared by the server — the `gate_update` field is ABSENT for a current
+  client — and the client's cache-invalidation check was equality-only, so a
+  machine that updated PAST the cached target kept nudging backwards until the
+  TTL expired. The suppression is now a numeric semver compare (installed >=
+  advertised) and dropping the spent cache entry so the state file self-heals.
+  Unparseable installed versions keep the fail-open posture (nudge renders).
+
 ## 0.19.42 (custom-floor `^file$` write-gate fix)
 - **FIX (silent coverage gap):** a custom floor whose `paths` used an exact-file
   anchor (`^tier_config\.py$`) matched the CLI preview and the COMMIT gate but
