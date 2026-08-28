@@ -63,13 +63,18 @@ def main():
         g.emit_allow()
 
     cwd = inp.get("cwd") or os.getcwd()
+    # F-1 (round-3 Mac): receipts identity comes from the TARGET FILE's repo, not the
+    # session cwd. Hoisted above classification (2026-08-27 unification) because the
+    # gate-self sentinel must probe the TARGET repo; pure function, same result as the
+    # pre-hoist call sites it replaces. Detection and the P6.3 scope suppression keep
+    # session-cwd semantics on purpose.
+    repo_cwd = g.receipt_repo_cwd(path, cwd)
     # Custom floor classes (CUSTOM-FLOORS-DESIGN.md): load the TARGET file's repo's
     # committed .truverifai/risk.json (target-repo, not session-cwd — the F-1
     # round-3-Mac lesson: the write's identity belongs to the repo being written).
-    # ([], {}) when absent; floors_meta feeds the deny copy below. This early
-    # receipt_repo_cwd call is for LOADER IDENTITY ONLY — the later call that keys
-    # the receipts is unchanged; the function is pure, same inputs, same result.
-    custom_signals, floors_meta = g.repo_custom_floors(g.receipt_repo_cwd(path, cwd))
+    # ([], {}) when absent; floors_meta feeds the deny copy below.
+    custom_signals, floors_meta = g.repo_custom_floors(repo_cwd)
+    write_diff = g.build_change_diff(inp, path, content)
     # Write-gate-deadlock-fix-v2 (Option D): classify a REAL delta (not the all-adds
     # synth_write_diff) so the fire's per-hunk content hashes match what a natural agent
     # gate_diff produces — the root-cause fix for the floor write-gate deadlock.
@@ -77,9 +82,14 @@ def main():
     # still carries the pre-existing co-signal (e.g. a pwn `pull_request_target` trigger the agent
     # is adding a checkout to) — so reading it is correct for confirming an out-of-diff co-signal.
     classification = classify_diff(
-        g.build_change_diff(inp, path, content), trigger_threshold=g.effective_threshold(cfg),
+        write_diff, trigger_threshold=g.effective_threshold(cfg),
         file_content_fetcher=g.file_content_fetcher(cwd),
-        custom_signals=custom_signals)
+        custom_signals=custom_signals,
+        # Gate-self floor unification (2026-08-27): hunks in the gate's own code/config
+        # tag the ordinary hard-floor category `gate_self` (two-tier partition +
+        # repo-identity sentinel, probed against the TARGET file's repo — and only when
+        # a Tier-2 path is present) and flow through the same floor lattice below.
+        gate_self_sentinel=g.gate_self_sentinel_for(repo_cwd, write_diff))
 
     # P6.3 (repo-scope suppression): a write whose target resolves OUTSIDE the working repo
     # or into a temp/scratch dir cannot be committed/merged — it can't SHIP, and the gate's
@@ -88,79 +98,27 @@ def main():
     # where it is written. Recall-safe by construction (an out-of-repo file has nothing to
     # review-before-merge); the secret carve-out preserves the one location-independent risk.
     # is_out_of_repo_scope fails toward REVIEW (uncertain -> not out-of-scope), so this only
-    # suppresses when confident. Checked before gate-self because an out-of-repo path is
-    # never a gate-self file (those live in the repo), and before the risky/advisory tiers.
+    # suppresses when confident. Checked before the risky/advisory tiers; an out-of-repo
+    # gate-self-named path is suppressed too (unchanged from the pre-unification order —
+    # an out-of-repo copy can't ship, and the LIVE .git/hooks/ surface is always in-repo).
     if (g.is_out_of_repo_scope(path, cwd)
             and "hardcoded_secret" not in (classification.get("risk_categories") or [])):
         g.emit_allow()
 
-    # Gate self-mutation (§6.1, audit F-005): writing the gate's own config/hooks is
-    # privilege escalation — ALWAYS require a review even if the content classifier finds
-    # nothing. The gate-self branch below releases ONLY on a real PASS of THIS exact change
-    # (its synthesized self-coverage hash), never recent_pass / skip / area (Option 4).
-    gate_self = g.is_gate_self_mutation(path)
-    if not classification["risky"] and not gate_self:
+    # Gate-self floor unification (2026-08-27, owner-ratified): the bespoke gate-self
+    # write branch (Option 4's synthesized gself: hash + PASS-only release) is retired.
+    # A gate-self write's hunks carry the hard-floor category `gate_self` (tagged by
+    # classify_diff above), so they block and release through the SAME floor lattice as
+    # every other floor write below — audit PASS / SYNTH_CONFIRM / confirm_floor /
+    # applied/deferred (the commit gate re-audits floor content before it ships), with
+    # judgment skips and the coarse area-unlock still floor-denied.
+    if not classification["risky"]:
         g.emit_allow()
 
-    # F-1 (round-3 Mac): receipts identity comes from the TARGET FILE's repo, not the
-    # session cwd — otherwise a write-gate PASS is filed under a repo id the commit gate
-    # never looks in and the free release rung fails closed. Detection (above) and the
-    # P6.3 scope suppression keep session-cwd semantics on purpose.
-    repo_cwd = g.receipt_repo_cwd(path, cwd)
     repo = g.repo_fingerprint(repo_cwd)
     session_id = inp.get("session_id")
 
-    # Gate self-mutation (§6.1, audit F-005): writing the gate's own config/hooks is
-    # privilege escalation. It releases ONLY on a real review (audit/deliberate PASS) of
-    # THIS exact write — keyed on the synthesized self-coverage hash of the content being
-    # written — never recent_pass, never a skip, never the coarse area-unlock (Option 4,
-    # 2026-06-17). The authoritative gate-self control is the commit gate; this is the
-    # symmetric pre-write layer. Still fails OPEN on infra error (no deadlock).
-    if gate_self:
-        # Repo-relative path (postmortem fix, 2026-08-08): the self-coverage hash
-        # includes the diff's file path, and the server mints its hash from the
-        # reviewer's unified diff whose paths are repo-relative. Hashing the
-        # absolute tool-input path made the gself hash unmatchable on every host
-        # (gate-self-write-deadlock-postmortem.md). Fail-safe: a bad relativize
-        # can only reproduce the old mismatch (re-review), never over-release.
-        rel_path = g.repo_relative_path(path, repo_cwd)
-        write_diff = g.synth_write_diff(rel_path, content)
-        # Phase 9 (inc 5): a purely INERT gate-self write (comment/whitespace only) to a
-        # NON-gate-core file releases without a review (same rule as the commit gate). gate-CORE
-        # always reviews. (For a whole-file Write this rarely fires — the content has code — so
-        # it's conservative; it mainly helps a comment-only Edit to a non-core gate-self file.)
-        if g.diff_is_inert(write_diff) and not g.diff_touches_gate_core(write_diff):
-            g.emit_allow("trivial gate-self edit (comment/whitespace only, non-core) — released")
-        self_hash = g.gate_self_coverage_hash(write_diff)
-        gs_resp = g.check_audit_coverage(cfg, repo, [self_hash])
-        gs_action, gs_detail = g.audit_decision_gate_self(gs_resp)
-        if gs_action == "deny":
-            g.emit_deny(
-                "TruVerifAI flagged a high-risk change for a quick review before it ships \u2014 "
-                "this write edits the review gate's own settings (risk_signals.json / "
-                "risk_classifier.py / gate_lib.py / hooks.json / .claude-plugin), the "
-                "highest-stakes area, so the review can't be skipped.\n"
-                "This is finished code, so run `audit_coding` with your proposed_action + "
-                "relevant_code, AND pass:\n"
-                f'  gate_repo = "{repo}"\n'
-                "  gate_diff = an ALL-ADDS unified diff of exactly the content this write "
-                "puts in the file:\n"
-                f"    header:  --- /dev/null   then   +++ b/{rel_path}   "
-                "(this exact repo-relative path)\n"
-                "    hunk:    @@ -0,0 +1,N @@   (REQUIRED line, N = the number of added "
-                "lines below; without this hunk header the diff parses to zero content and "
-                "can never release)\n"
-                "    body:    every line of the new content prefixed with '+' \u2014 for an "
-                "Edit the new_string, for a Write the whole file, for a MultiEdit each "
-                "edit's new text in order\n"
-                "TruVerifAI records the result and the write proceeds on retry. "
-                "(`deliberate_coding` is accepted if it's still an open design. Gate-self "
-                "changes need a real review of THIS change \u2014 they can't be skipped, and an "
-                "unrelated recent review won't release them.)"
-            )
-        g.emit_allow(gs_detail)  # covered / fail-open
-
-    # Non-gate-self design fork: coarse area-unlock (recent_pass escape valve OK). Send the
+    # Design fork: coarse area-unlock (recent_pass escape valve OK). Send the
     # fire-time classifier metadata so the minted gate-fire context is COMPLETE (Step 0), and
     # label it with the write gate's TIER. The two blocking tiers are deliberate (high-
     # confidence fork) and synthesize (low-confidence borderline). We only reach here for a

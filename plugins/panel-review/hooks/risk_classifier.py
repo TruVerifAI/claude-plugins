@@ -91,6 +91,15 @@ FLOOR_CATEGORIES = frozenset({
                                 #   TrustAllHostnameVerifier, ...), PATH-UNCONDITIONAL. Bare `pinning`/
                                 #   `sslPinning` (which collide with UI/version/thread pinning) are EXCLUDED
                                 #   from the floor. Directional: fire on enforcer-REMOVAL or bypass-ADDITION.
+    # --- Gate-self floor unification (2026-08-27, owner-ratified; deliberations mcp_338d53e5 +
+    # mcp_b798600a; docs/MCP/gate fixes/GATE-SELF-CONSISTENCY-OPTIONS-2026-08-26.md): the former
+    # bespoke gate-self tier is now an ordinary hard floor. Hunks in the gate's own code/config
+    # (path-triggered — see _GATE_SELF_TIER1/_TIER2 + the repo-identity sentinel below) are tagged
+    # this category and inherit the full floor lattice (audit PASS / SYNTH_CONFIRM / confirm_floor /
+    # lineage-verified recommendations_applied / accept_risk override; judgment skips and
+    # recent_pass stay floor-denied). Deliberately NOT in _FLOOR_EXEMPT_TEST_DOCS: gate files are
+    # never test scaffolding, so the test/docs heuristic must not demote them.
+    "gate_self",
 })
 
 # SOFT_FLOOR: a floor category that can only fire at LOW confidence — blocks under 'thorough' with
@@ -717,35 +726,96 @@ def _iter_file_hunks(diff_text):
 # gate-self (Option 4 audit F-003, 2026-06-17). NOTE the broad multi-route file
 # mcp_user_routes.py is intentionally NOT here (it carries dozens of unrelated routes);
 # its /receipts/check endpoint is protected by PR review + the manual Replit deploy gate.
-_GATE_SELF_PATHS = re.compile(
-    # Basename-anchored, so the gate files match wherever they live — plugin/hooks
-    # (the generated bundle), plugin-core/gate_core (the source of truth), or a
-    # marketplace clone. Cross-platform additions (2026-07-29): the host adapter
-    # package (host/*.py can rewrite every deny), every platform's manifest dir,
-    # platforms.yaml + build_bundles.py (the generator composes what ships), and
-    # the launchers that own the fail-open exit-code contract.
-    r"(^|/)(risk_signals\.json|risk_classifier\.py|gate_lib\.py|hooks\.json"
+# Gate-self floor unification (2026-08-27, rev-4 Vector-1 prevention — deliberated
+# mcp_b798600a, 0.88 agreement): the historical single alternation is PARTITIONED — never
+# re-authored — into two tiers, so the combined match set is a subset of the pre-partition
+# set by construction (no new path can ever match; only Tier-2-outside-sentinel de-floors).
+#
+# TIER 1 — DISTINCTIVE basenames, floor GLOBALLY (exactly the pre-partition behavior).
+# These names are product-specific; a collision in an ordinary repo is implausible.
+# Basename-anchored, so the gate files match wherever they live — plugin/hooks (the
+# generated bundle), plugin-core/gate_core (the source of truth), or a marketplace clone.
+# Cross-platform additions (2026-07-29): the host adapter package (host/*.py can rewrite
+# every deny), every platform's manifest dir, and the launchers that own the fail-open
+# exit-code contract. `.git/hooks/` is the LIVE enforcement surface in every repo (a
+# pre-commit edit can unhook the chained gate), so it is unconditional — and since `.git/`
+# never appears in a commit diff, it is write-gate-only in practice.
+_GATE_SELF_TIER1_ALT = (
+    r"risk_signals\.json|risk_classifier\.py|gate_lib\.py"
     r"|audit_gate\.py|deliberate_gate\.py"
-    r"|receipt_writer\.py|receipt_coverage\.py|gate_skip\.py"
+    r"|gate_skip\.py"
     r"|post_commit_backstop\.py|stash_precommit_head\.py|gate_selfcheck\.py"
-    # integrity.py is the tamper-evidence self-check; gate_manifest.json is its
-    # hash anchor — both must be gate-self (editing them is a gate mutation).
-    r"|integrity\.py|gate_manifest\.json"
-    # resolve_python.js decides WHICH interpreter every gate runs under, so an
-    # edit to it is a gate mutation in the fullest sense: change the resolution
-    # and you change (or silence) every gate on the machine.
-    # cacert.pem is the vendored TLS trust anchor the gates FALL BACK to when
-    # the system store is broken; swapping it swaps what the gates trust, so
-    # editing it is a gate mutation (its NOTICE rides along - it carries the
-    # tamper-seal hash the tests verify the pem against).
-    r"|commit-detected\.sh|run_gate\.(sh|cmd|js)|resolve_python\.js"
+    r"|gate_manifest\.json"
+    r"|commit-detected\.sh|run_gate\.(sh|cmd|js)"
+    r"|gate_core/host/"
+    r"|\.claude-plugin/|\.codex-plugin/|\.cursor-plugin/|gemini-extension\.json"
+    r"|\.git/hooks/"
+)
+
+# TIER 2 — COLLISION-PRONE basenames (hooks.json / integrity.py / cacert.pem /
+# platforms.yaml / hooks/host/ are common names in the wild — a React repo's hooks
+# config, a Django checksum helper, a vendored CA bundle). They floor ONLY when the
+# repo-identity sentinel says the repo demonstrably contains the gate product
+# (classify_diff's gate_self_sentinel — computed by the gate from the repo, errors
+# fail toward True/protect). Rationale: the privilege-escalation threat is editing code
+# the gates RUN or SHIP from; a repo that vendors the gates necessarily contains Tier-1
+# files (the bundles ship them together), so its Tier-2 companions stay protected —
+# while a lone stray hooks.json in a non-gate repo is a dead copy whose edit disables
+# nothing that runs. Contested names (receipt_writer/receipt_coverage/build_bundles/
+# resolve_python) sit here per the deliberation caveats (F-001/F-003): promote to
+# Tier 1 only on corpus evidence of negligible collision rate, never on intuition.
+# integrity.py is the tamper-evidence self-check (its hash anchor gate_manifest.json is
+# Tier 1); resolve_python.js decides WHICH interpreter every gate runs under; cacert.pem
+# is the vendored TLS trust anchor (its NOTICE rides along).
+_GATE_SELF_TIER2_ALT = (
+    r"hooks\.json"
+    r"|receipt_writer\.py|receipt_coverage\.py"
+    r"|integrity\.py"
+    r"|resolve_python\.js"
     r"|cacert\.pem|CACERT-NOTICE\.md"
     r"|platforms\.yaml|build_bundles\.py"
-    r"|gate_core/host/|hooks/host/"
-    r"|\.claude-plugin/|\.codex-plugin/|\.cursor-plugin/|gemini-extension\.json"
-    r"|\.git/hooks/)",
+    r"|hooks/host/"
+)
+
+_GATE_SELF_TIER1 = re.compile(r"(^|/)(" + _GATE_SELF_TIER1_ALT + r")", re.IGNORECASE)
+_GATE_SELF_TIER2 = re.compile(r"(^|/)(" + _GATE_SELF_TIER2_ALT + r")", re.IGNORECASE)
+
+# The FULL (pre-partition) match set — composed from the two tier alternations so the
+# partition invariant (TIER1 ∪ TIER2 == historical set) holds by construction. Still the
+# single oracle for "is this a gate file at all": the subset corpus test compares the
+# tagger's output against it and asserts the only differences are removals.
+_GATE_SELF_PATHS = re.compile(
+    r"(^|/)(" + _GATE_SELF_TIER1_ALT + r"|" + _GATE_SELF_TIER2_ALT + r")",
     re.IGNORECASE,
 )
+
+
+def is_gate_self_path(path, sentinel):
+    """Per-path gate-self floor membership under the two-tier partition: Tier 1 matches
+    globally; Tier 2 only when `sentinel` (repo_has_gate_product) is truthy. With
+    sentinel=True this is exactly is_gate_self_mutation (the pre-partition oracle)."""
+    if not path:
+        return False
+    norm = path.replace("\\", "/")
+    if _GATE_SELF_TIER1.search(norm):
+        return True
+    return bool(sentinel) and bool(_GATE_SELF_TIER2.search(norm))
+
+
+def is_gate_self_tier2(path):
+    """True if `path` matches a Tier-2 (collision-prone, sentinel-gated) gate-self pattern.
+    Cheap pre-check the gates use to decide whether the repo-identity sentinel is even
+    needed for this change — when no Tier-2 path is present, the sentinel's value is
+    unused by the tagger, so the hook can skip the `git ls-files` probe entirely."""
+    if not path:
+        return False
+    return bool(_GATE_SELF_TIER2.search(path.replace("\\", "/")))
+
+
+def diff_touches_gate_self_tier2(diff_text):
+    """True if any file the diff adds, removes, or renames matches a Tier-2 gate-self
+    pattern (both diff sides + rename headers, like diff_touches_gate_self)."""
+    return any(is_gate_self_tier2(p) for p in _diff_paths(diff_text) if p and p != "/dev/null")
 
 
 def is_gate_self_mutation(path):
@@ -830,11 +900,23 @@ def diff_is_inert(diff_text):
     saw_hunk = False
     for path, added, removed, _r in _iter_file_hunks(diff_text or ""):
         saw_hunk = True
-        is_jsx = bool(path) and path.lower().endswith((".jsx", ".tsx"))
-        for line in _skeletonize(added, is_jsx) + _skeletonize(removed, is_jsx):
-            if line.strip():
-                return False
+        if not _hunk_is_inert(path, added, removed):
+            return False
     return saw_hunk
+
+
+def _hunk_is_inert(path, added, removed):
+    """True iff every added AND removed line of THIS hunk is structurally inert — a comment,
+    a blank, or whitespace-only (its code skeleton is empty). Per-hunk sibling of
+    diff_is_inert, used by the gate-self floor's trivial-edit carve-out (owner-ratified
+    2026-08-27): a comment/whitespace-only hunk in a NON-gate-core gate-self file is not
+    tagged; gate-CORE files always are (a comment there can be load-bearing — e.g. in
+    risk_signals.json). A string-value change is NOT inert (the skeleton keeps delimiters)."""
+    is_jsx = bool(path) and path.lower().endswith((".jsx", ".tsx"))
+    for line in _skeletonize(added, is_jsx) + _skeletonize(removed, is_jsx):
+        if line.strip():
+            return False
+    return True
 
 
 # Namespace so a synthesized gate-self hash can never collide with — or be satisfied
@@ -1577,7 +1659,7 @@ def _classify_hunk(path, added, removed, trigger_threshold=None, extra_fired=Non
 
 
 def classify_diff(diff_text, trigger_threshold=None, file_content_fetcher=None,
-                  custom_signals=None):
+                  custom_signals=None, gate_self_sentinel=None):
     """Classify a unified diff. Returns:
 
         {
@@ -1607,6 +1689,20 @@ def classify_diff(diff_text, trigger_threshold=None, file_content_fetcher=None,
     from the repo toplevel's .truverifai/risk.json; the SERVER's own classify_diff calls pass
     None BY DESIGN (it has no repo — custom floors reach it only as category strings).
     None/empty => byte-identical to the no-custom-floors engine.
+    `gate_self_sentinel` (gate-self floor unification, 2026-08-27): opts the caller into
+    path-triggered `gate_self` floor tagging. None (the default) keeps the pass entirely OFF —
+    byte-identical to the pre-unification engine (the same regression invariant as M1 /
+    custom_signals). True/False is the repo-identity sentinel value (repo_has_gate_product,
+    computed by the gate; errors fail toward True): Tier-1 gate files tag regardless, Tier-2
+    (collision-prone basenames) tag only when True. A tagged hunk is FORCED to category
+    `gate_self` at HIGH confidence (uniform override — even over another floor category — so
+    the enforcement-code identity is never masked); an inert (comment/whitespace-only) hunk
+    in a NON-gate-core file is not tagged (the owner-ratified trivial-edit carve-out). A
+    HUNKLESS gate-self file op (pure rename / mode-only / binary) tags one synthetic
+    path-derived floor hunk (see the fileop fallback below) — the path is the semantics
+    for gate-self, so a zero-line rename of a gate file still reviews. The
+    server's receipt-minting classify calls pass True (over-tagging in a RECEIPT only widens
+    what a real review covers — it never fires a gate).
     """
     hunks = []
     verdicts = []
@@ -1625,6 +1721,38 @@ def classify_diff(diff_text, trigger_threshold=None, file_content_fetcher=None,
         verdict = _classify_hunk(path, added, removed, trigger_threshold=trigger_threshold,
                                  extra_fired=m1_by_hunk.get(hidx),
                                  custom_signals=custom_signals)
+        # Gate-self floor tagging (2026-08-27 unification; see the gate_self_sentinel
+        # docstring above). Gated on `is not None` so every legacy call site is
+        # byte-identical. The tag is a pure path predicate (is_gate_self_path — the
+        # two-tier partition of the historical _GATE_SELF_PATHS set, so no path that
+        # didn't already count as gate-self can ever be tagged); the inert carve-out
+        # skips comment/whitespace-only hunks in non-gate-core files.
+        if (gate_self_sentinel is not None
+                and is_gate_self_path(path, gate_self_sentinel)
+                and (is_gate_core_mutation(path)
+                     or not _hunk_is_inert(path, added, removed))):
+            if verdict is None:
+                verdict = {
+                    "category": "gate_self",
+                    "confidence": HIGH,
+                    "signals": ["gate_self_path"],
+                    "score": 0,
+                    "reason": "gate_self_path",
+                    "suppressed": [],
+                    "spike": False,
+                    "content_basis": added if added else removed,
+                    "matched": None,
+                }
+            else:
+                # Uniform override: the file being enforcement code is the deciding fact
+                # about this hunk, so `gate_self` wins even over another floor category
+                # (both release identically; this can only ever PROMOTE — a non-floor
+                # verdict becomes hard-floor, never the reverse). `matched` was computed
+                # before the override, so a secret token was already redacted upstream.
+                verdict = dict(verdict)
+                verdict["category"] = "gate_self"
+                verdict["confidence"] = HIGH
+                verdict["signals"] = sorted(set(verdict["signals"]) | {"gate_self_path"})
         if verdict is None:
             continue
         verdicts.append(verdict)
@@ -1654,6 +1782,40 @@ def classify_diff(diff_text, trigger_threshold=None, file_content_fetcher=None,
         })
         if verdict["spike"]:
             any_spike = True
+
+    # Hunkless gate-self file operations (owner ruling 2026-08-27; audit mcp_5cec8837
+    # F-002): a pure RENAME, a mode-only change, or a binary swap of a gate file records
+    # NO changed lines, so the per-hunk tagger above never sees it — yet for gate-self
+    # the PATH is the semantics (renaming a gate file out of its enforced location
+    # disables it with zero changed lines; the pre-unification detector read the diff
+    # HEADERS and caught exactly this). Tag ONE synthetic `gate_self` floor hunk per
+    # qualifying hunkless path. The hash basis is derived from the PATH alone, so the
+    # reviewer's identical diff (and the server's receipt-side classify of it) yields
+    # the same hash and an audit PASS covers it through the normal floor lattice.
+    # Sentinel-gated like the rest of the pass — unreachable for legacy callers, and a
+    # non-gate-self hunkless path (any ordinary rename) never enters the loop.
+    if gate_self_sentinel is not None:
+        hunked_paths = {p for (p, _a, _r, _hr) in parsed}
+        for gp in sorted({p for p in _diff_paths(diff_text or "")
+                          if p and p != "/dev/null"
+                          and p not in hunked_paths
+                          and is_gate_self_path(p, gate_self_sentinel)}):
+            basis = ["gate_self_fileop:" + gp.replace("\\", "/")]
+            hunks.append({
+                "path": gp,
+                "content_hash": hunk_content_hash(basis),
+                "structural": None,   # no @@ range exists for a hunkless file op
+                "normalized_hash": hunk_normalized_hash(basis, gp, "gate_self"),
+                "filetype": hunk_filetype(gp),
+                "category": "gate_self",
+                "confidence": HIGH,
+                "signals": ["gate_self_fileop"],
+                "path_class": classify_path_class(gp, ""),
+                "matched": None,
+            })
+            # hunks-only append: `risky`/`max_confidence`/`risk_categories` derive from
+            # `hunks`; the deciding-hunk score comes from `verdicts` and stays with the
+            # content hunks (a fileop carries no score — telemetry-only difference).
 
     max_conf = None
     if any(h["confidence"] == HIGH for h in hunks):

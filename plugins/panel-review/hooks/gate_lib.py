@@ -51,10 +51,14 @@ from risk_classifier import (  # vendored, same dir
     NORM_VERSION,
     clamp_threshold,
     load_repo_floors,       # custom floor classes: repo-committed .truverifai/risk.json
-    # Gate-self detection + the synthesized self-coverage hash live in the vendored
-    # classifier so the client gate and the SERVER receipt writer agree byte-for-byte.
+    # Gate-self detection lives in the vendored classifier so the client gate and the
+    # SERVER receipt writer agree byte-for-byte. Since the 2026-08-27 floor unification
+    # the hooks tag gate-self via classify_diff(gate_self_sentinel=...) — these helpers
+    # remain for the Tier-2 pre-check, tests, and legacy-artifact defense-in-depth.
     is_gate_self_mutation,
     diff_touches_gate_self,
+    diff_touches_gate_self_tier2,
+    is_gate_self_tier2,
     diff_touches_gate_core,
     diff_is_inert,
     gate_self_coverage_hash,
@@ -304,6 +308,61 @@ def _git(args, cwd):
         return out.stdout if out.returncode == 0 else ""
     except Exception:
         return ""
+
+
+# The repo-identity sentinel's distinctive-file set (gate-self floor unification,
+# owner-ratified 2026-08-27; deliberation mcp_b798600a): product-specific basenames a
+# repo that ships or vendors the gates necessarily contains (the bundles ship them
+# together). Single-file sentinel by design — a two-file co-occurrence requirement was
+# rejected (recall risk on partial bundle layouts, panel F-004).
+_GATE_PRODUCT_SENTINEL_RE = re.compile(
+    r"(^|/)(gate_manifest\.json|gate_lib\.py|risk_classifier\.py"
+    r"|gate_selfcheck\.py|commit-detected\.sh)$",
+    re.IGNORECASE,
+)
+
+
+def repo_has_gate_product(cwd):
+    """Repo-identity sentinel for Tier-2 gate-self tagging (rev-4 Vector-1 prevention):
+    True iff the repo demonstrably contains the gate product — a distinctive gate file
+    in the INDEX or in HEAD. Checking HEAD too closes the same-diff removal hole
+    (deliberation caveat F-002: a commit that deletes the last distinctive file must not
+    de-floor its Tier-2 companions in that very diff).
+
+    Failure directions, deliberately asymmetric:
+      - the INDEX listing itself fails (git missing/broken, unreadable repo) → True
+        (fail toward protection — worst case reproduces the pre-partition behavior);
+      - the HEAD listing fails after a CLEAN empty index result (unborn HEAD in a fresh
+        repo is the common benign case) → False: there is no base state to consult, so
+        the removal-hole guard is vacuous and the clean index answer stands."""
+    def _scan(args):
+        try:
+            out = subprocess.run(
+                ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=20,
+                encoding="utf-8", errors="replace")
+        except Exception:
+            return None
+        if out.returncode != 0:
+            return None
+        return any(_GATE_PRODUCT_SENTINEL_RE.search(ln.strip().replace("\\", "/"))
+                   for ln in out.stdout.splitlines())
+
+    idx = _scan(["ls-files"])
+    if idx is None:
+        return True   # can't read the index at all → protect
+    if idx:
+        return True
+    return _scan(["ls-tree", "-r", "--name-only", "HEAD"]) is True
+
+
+def gate_self_sentinel_for(cwd, diff):
+    """The `gate_self_sentinel` value a gate passes to classify_diff for this change.
+    The sentinel only ever gates TIER-2 tagging, so when the diff touches no Tier-2
+    path its value is unused — pass True and skip the `git ls-files` probe entirely
+    (the ordinary-commit hot path pays nothing for the unification)."""
+    if not diff_touches_gate_self_tier2(diff):
+        return True
+    return repo_has_gate_product(cwd)
 
 
 def repo_fingerprint(cwd):
@@ -1953,7 +2012,14 @@ def audit_decision(classification, check_response, force_risky=False, tightness=
 
 
 def audit_decision_gate_self(check_response):
-    """Decision for a GATE-SELF change (a write/commit touching the gate's own
+    """LEGACY (no caller in this tree since the 2026-08-27 gate-self floor unification —
+    gate-self now classifies to the ordinary `gate_self` floor and flows through
+    audit_decision like every floor). Retained deliberately: STALE deployed bundles still
+    run this exact logic, and its version-skew fail-open (the absent `gate_self_coverage`
+    capability flag → allow_warn) is precisely how they degrade safely against the
+    unified server — keeping it here keeps that contract documented and unit-tested.
+
+    Decision for a GATE-SELF change (a write/commit touching the gate's own
     config/hooks). Return (action, detail). action ∈ {'allow', 'allow_warn', 'deny'}.
 
     Gate-self changes are the highest-stakes — weakening these files disables the

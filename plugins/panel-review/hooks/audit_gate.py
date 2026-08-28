@@ -64,53 +64,23 @@ def main():
     # .truverifai/risk.json compiles into extra floor signals; `floors_meta` carries
     # the customer's own name+description for the deny copy. ([], {}) when absent.
     custom_signals, floors_meta = g.repo_custom_floors(cwd)
+    # Gate-self floor unification (2026-08-27, owner-ratified): the bespoke gate-self
+    # branch is retired. Hunks in the gate's own code/config classify to the ordinary
+    # hard-floor category `gate_self` (two-tier partition + repo-identity sentinel —
+    # gate_self_sentinel_for skips the sentinel probe unless a Tier-2 path is present)
+    # and flow through the SAME floor deny/release lattice as every other floor below.
     classification = classify_diff(diff, trigger_threshold=g.effective_threshold(cfg),
                                    file_content_fetcher=g.file_content_fetcher(cwd),
-                                   custom_signals=custom_signals)
-    gate_self = g.diff_touches_gate_self(diff)
-    if not classification["risky"] and not gate_self:
-        g.emit_allow()  # trivial, non-gate-self change
+                                   custom_signals=custom_signals,
+                                   gate_self_sentinel=g.gate_self_sentinel_for(cwd, diff))
+    if not classification["risky"]:
+        g.emit_allow()  # trivial change
 
     repo = g.repo_fingerprint(cwd)
 
-    # Gate self-mutation (§6.1, audit F-005): a commit that modifies the gate's own
-    # config/hooks can disable it from inside — privilege escalation. It releases ONLY
-    # on a real audit PASS of THIS exact change (no recent_pass, no skip; Option 4,
-    # 2026-06-17). ALL gate-self changes bind to the synthesized self-coverage hash —
-    # empty-hunk AND risky-hunk (re-audit F-001): the `gself:` namespace is what the
-    # SKIP / recent_pass exclusions key off, so a risky gate-self change must NOT fall back
-    # to bare-hex hunk hashes (those would be SKIP-releasable). audit_decision_gate_self
-    # ignores recent_pass; the server writes the matching gself hash on a PASS.
-    if gate_self:
-        # Phase 9 (inc 5): a purely INERT gate-self edit (comment / whitespace only — its code
-        # skeleton is empty) to a NON-gate-core file doesn't change enforcement behavior, so
-        # release it without forcing a full review. gate-CORE files (the classifier, the decision
-        # logic, the hook entrypoints + config, the plugin manifest, the real git hooks) ALWAYS
-        # require a review, even for an inert edit (a comment there can be load-bearing). A
-        # string-value / code change is NOT inert (diff_is_inert keeps string delimiters).
-        if g.diff_is_inert(diff) and not g.diff_touches_gate_core(diff):
-            g.emit_allow("trivial gate-self edit (comment/whitespace only, non-core) — released")
-        resp = g.check_audit_coverage(cfg, repo, [g.gate_self_coverage_hash(diff)])
-        action, detail = g.audit_decision_gate_self(resp)
-        if action == "deny":
-            g.emit_deny(
-                "TruVerifAI flagged a high-risk change for a quick review before it ships — "
-                "this commit edits the review gate's own settings (risk_signals.json / "
-                "risk_classifier.py / gate_lib.py / hooks.json / .claude-plugin), the "
-                "highest-stakes area, so the review can't be skipped.\n"
-                "Run `audit_coding` with your proposed_action + relevant_code, AND pass:\n"
-                f'  gate_repo = "{repo}"\n'
-                + ("  gate_diff = the change being committed (run: git add -N . && git diff HEAD)\n"
-                   if (g.commit_targets_worktree(command)
-                       or not g._git(["diff", "--staged"], cwd).strip())
-                   else "  gate_diff = the staged diff (run: git diff --staged)\n") +
-                "A PASS lets the commit proceed on retry. (`deliberate_coding` is accepted if the "
-                "design is still open. Gate-self changes need a real audit/deliberate PASS of THIS "
-                "change — they can't be skipped, and an unrelated recent review won't release them.)"
-            )
-        g.emit_allow(detail if action == "allow_warn" else None)
-
-    # Non-gate-self risky change: covered / recent_pass escape valve / fail-open. Send the
+    # Risky change (gate_self floor hunks included): covered / recent_pass escape valve /
+    # fail-open. (recent_pass never releases a floor hunk — audit_decision denies it while
+    # floor_uncovered, which covers gate_self like every floor.) Send the
     # fire-time classifier metadata (+ session_id) so the server can mint a COMPLETE
     # gate-fire context (Step 0, design §2.2) and return its gate_context_id — the
     # preferred skip handle surfaced by skip_and_signal below.

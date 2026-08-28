@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.19.45 (gate-self floor unification)
+- **Gate-self is now an ordinary hard floor (`gate_self`), not a separate
+  un-skippable tier.** The bespoke `gself:` whole-diff coverage hash, the
+  dedicated gate-self branches in both gates, and their PASS-only release are
+  retired. A change to the gate's own code/config classifies to per-hunk
+  `gate_self` floor hunks and inherits the FULL floor lattice: `audit_coding`
+  PASS, `synthesize_coding` SYNTH_CONFIRM, `confirm_floor` (free), the
+  lineage-verified `recommendations_applied` release, and the
+  `accept_risk_no_review` override — while judgment/path skips and an uncovered
+  `recent_pass` still never release it. This eliminates the gate-self commit
+  deadlock (2026-08-15 incident: review → findings → apply → re-fire → no
+  admissible release → `--no-verify`): the re-fired block now releases with the
+  free applied skip after ONE real review.
+- **False-floor prevention (two-tier partition + repo sentinel):** collision-
+  prone gate basenames (`hooks.json`, `integrity.py`, `cacert.pem`,
+  `platforms.yaml`, …) floor ONLY in repos that demonstrably contain the gate
+  product (a distinctive gate file in the index or HEAD); distinctive names
+  (`risk_classifier.py`, `gate_lib.py`, `audit_gate.py`, …) and `.git/hooks/`
+  stay global. No new path can match that didn't match before (partition of the
+  historical set — subset-tested against the old detector as oracle).
+- **Zero-changed-line gate file ops still review:** a pure rename / mode-only /
+  binary change to a gate file (e.g. `git mv audit_gate.py disabled.py`) tags a
+  synthetic path-derived `gate_self` floor hunk instead of slipping through.
+- Comment/whitespace-only edits to NON-core gate files stay review-free (the
+  trivial-edit carve-out, now per-hunk); gate-CORE files still always review.
+- Copy updated everywhere the old "gate-self can't be skipped" promise
+  appeared (server instructions, tool descriptions, skills, settings page).
+- Stale-hook compatibility: a pre-0.19.45 hook against the new server fails
+  OPEN on gate-self ("server has not deployed scoped gate-self coverage yet")
+  — never a deadlock.
+
 ## 0.19.43 (backwards update-nudge fix)
 - **FIX (stale advisory):** the update nudge could advertise an OLDER version
   than the one installed ("update available: v0.19.41" on a machine running
