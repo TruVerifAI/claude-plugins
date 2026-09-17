@@ -121,7 +121,15 @@ def main():
                 "after releasing, re-run your full command.\n")
         else:
             diff_cmd = "git diff --staged"
-            staging_note = ""
+            # 0.19.47 backlog 7c (FW1 report finding 4): the not-executed fact is
+            # now UNCONDITIONAL. This branch used to stay silent because the
+            # staged diff was capturable — but a chained command's PREFIX (a
+            # `git restore`/`cd`/`mv` before the commit) also never ran, and an
+            # agent that assumed it had lost attempts un-doing phantom effects.
+            staging_note = (
+                "  NOTE: this command was blocked BEFORE it ran — NO part of it "
+                "executed, including anything chained before the `git commit`. "
+                "After releasing, re-run the full command.\n")
         # Phase 9: pass the gate_context_id to audit_coding so coverage binds to the gate's OWN
         # recorded hunks — a cosmetically-drifted gate_diff (a smart-quote, an em-dash an LLM
         # courier mangled) then still releases the change instead of silently missing coverage.

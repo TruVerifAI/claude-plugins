@@ -2484,7 +2484,13 @@ def override_ask_message(classification, cell=CELL_SUSTAINED_OUTAGE):
                 "Approve ONLY if you've personally verified this change is safe; otherwise deny and "
                 "wait for the review tool to recover (or review it out-of-band). Your call, not the "
                 "agent's.")
-    return head + body
+    # 0.19.47 backlog 7c: the not-executed fact rides EVERY deny shape,
+    # including this human-facing ask — a denied chained command's prefix
+    # steps also never ran, and both the human and the agent reading the
+    # transcript need that stated, not inferred.
+    return (head + body
+            + "\n(Nothing has run yet: the blocked command — including anything "
+              "chained before the commit — did not execute.)")
 
 
 def maybe_human_override(cfg, classification, check_response, session_id, repo,

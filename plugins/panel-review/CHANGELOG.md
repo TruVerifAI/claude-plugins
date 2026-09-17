@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.19.47 (FW1 test-round fixes: sandbox-honest doctor, codex config repair, complete uninstall)
+
+Fixes found during the 0.19.46 prod test round (backlog:
+`docs/MCP/Feedback fixes/0.19.47-BACKLOG.md`). Client-only — no server change.
+
+- **doctor is honest under `TVAI_HOME_OVERRIDE`:** every home-resolution
+  site (10 in doctor.js/gates.js) now uses the override-aware
+  `mcpconf/config.homeDir()`, and the macOS Keychain probes are skipped
+  under the override. A sandboxed run no longer compares its fresh key
+  against the real machine's configs (which produced false
+  `tools config STALE` rows and exit 1). A pinning test bans raw
+  `os.homedir()` outside an allowlist.
+- **codex dangling-subtable repair:** a hand-added
+  `[mcp_servers.truverifai.*]` subtable with no parent table made codex's
+  ENTIRE config unloadable ("invalid transport"), breaking every
+  `codex plugin` command. `uninstall` now removes the whole
+  `mcp_servers.truverifai` namespace (subtables included); `init` repairs
+  the dangling state before running any codex command (comment-tolerant
+  parent detection); `doctor` flags it; the failure copy is honest instead
+  of suggesting the same failing commands.
+- **complete uninstall:** also deletes host-added
+  `Bash(npx @truverifai/init:*)` permission rules from
+  `~/.claude/settings.json`, and (Option B) removes the Claude Code and
+  Codex plugins via their own CLIs when available (best-effort, printed;
+  desktop app gets the in-app step). Names its survivors (other repos'
+  hooks; anything a host CLI couldn't reach). A 401 on a re-run revoke
+  reads as "already revoked or not valid for this server", never a false
+  verified-success.
+- **the "blocked BEFORE it ran" note is unconditional** on commit-gate
+  denies and the human-decision ask — a chained command's prefix
+  (`git restore`/`cd`/`mv` before the commit) also never ran.
+- **consent prompt:** a mixed bad answer reports ALL problem classes in one
+  corrective message (count-correct grammar); a separators-only answer
+  re-prompts instead of proceeding with zero agents.
+- **docs:** deleting a whole risky file (removal-only diff) deliberately
+  fires no gate — now documented. The /panel-review FAQ renders repo URLs
+  as links.
+
 ## 0.19.46 (external-feedback wave: real line numbers, consent-first init, complete uninstall)
 
 Fixes and changes from the first outside developer trial (triage doc:

@@ -68,8 +68,10 @@ Submit each of these slash commands on its own — Claude Code parses one slash 
 The commands below remove only this Claude Code plugin. For a **complete**
 removal — the gate code, every platform's hook and tool configs, the git
 pre-commit hook, your key file, plus server-side revocation of the API key —
-run `npx @truverifai/init uninstall`; it lists anything it could not remove
-and exits nonzero if secret-bearing residue remains.
+run `npx @truverifai/init uninstall`; as of 0.19.47 it also removes this
+plugin itself via the claude CLI when one is available (best-effort, printed;
+desktop-app installs get the in-app step instead), and it lists anything it
+could not remove and exits nonzero if secret-bearing residue remains.
 
 To remove the plugin, submit each slash command on its own:
 
@@ -101,7 +103,7 @@ Beyond the auto-activating skills, the plugin ships **PreToolUse review gates** 
 - **Write gate** — before a risky **Write / Edit** (schema, migration, dependency, auth, IaC exposure, etc.). A Write/Edit is *finished code*, so its natural review is **`audit_coding`** (a PASS releases it); use **`deliberate_coding`** only when the design is still open. On a **floor-class** write, match the tool to the situation: a **genuine** floor change → `audit_coding` (a PASS releases it, and it covers non-floor hunks too); you believe the gate **mis-fired** → a free **`confirm_floor`** or a **`synthesize_coding`** SYNTH_CONFIRM, each of which releases the **floor hunks only**, and only if the model agrees the change isn't risky. Both gates release the same way — a review releases either.
 - **Post-commit backstop** *(non-blocking)* — a file **created and committed in one shell command** (e.g. `printf … > f.py && git add f.py && git commit`) never touches the Write tool and doesn't exist on disk when the commit gate runs, so it slips past both gates. A PostToolUse hook catches it *after the fact*: it classifies the **real committed diff** and, if a **floor** change shipped **unreviewed**, surfaces a **non-blocking advisory** (nudging you to review/amend — it can't block a commit that already happened) and logs a row on the admin dashboard so the owner can see the miss (that row carries only the repo fingerprint + floor category labels + hunk count + a pushed flag — never a diff, path, command text, or commit SHA). It fires on both success and a non-zero-exit command. This is a visibility backstop, not a gate — it never blocks and never nags twice for the same commit.
 
-A local classifier scores the change across many domains — web (auth, billing, secrets), data migrations, infra-as-code, systems & mobile security (memory-safety, TLS, CI/CD), plus universal risk shapes and **risky deletions** (e.g. a removed permission or validation check) — and routes by confidence: high-confidence risks prompt a review; lower-confidence "borderline" changes get a fast `synthesize_coding` nudge (see `borderline_mode`).
+A local classifier scores the change across many domains — web (auth, billing, secrets), data migrations, infra-as-code, systems & mobile security (memory-safety, TLS, CI/CD), plus universal risk shapes and **risky deletions** (e.g. a removed permission or validation check) — and routes by confidence: high-confidence risks prompt a review; lower-confidence "borderline" changes get a fast `synthesize_coding` nudge (see `borderline_mode`). One deliberate carve-out: **deleting a whole risky file** (e.g. `git rm` of a DROP-TABLE migration) does not fire a gate — a removal-only diff adds no code to review, and deleting a dangerous file is usually the safer direction. (Removed *guards inside surviving code* still fire; and zero-changed-line operations on the gate's own files still review.)
 
 To release a blocked gate, run the suggested tool **or** call `record_gate_skip` to log a skip-with-reason (free; the reason improves the classifier). The block message prints the exact release key to copy: a server-issued `gate_context_id` (`gc_…`), which the server verifies, consumes single-use, and binds to the hunks **it** recorded. That id is **required** — a skip can only release a gate the server can verify actually fired, so the agent never supplies hunk hashes itself. (If the gate can't mint one — rare — there's no skip; `audit_coding` still releases the change.) Copy the key, never reconstruct it.
 
