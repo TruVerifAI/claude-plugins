@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.19.46 (external-feedback wave: real line numbers, consent-first init, complete uninstall)
+
+Fixes and changes from the first outside developer trial (triage doc:
+`docs/MCP/Feedback fixes/2026-09-11-developer-feedback-triage.md`).
+
+**Gate fixes**
+- **Real line numbers in gate blocks (A1):** deny messages now cite the
+  actual file line of the flagged code (mapped from the hunk's `@@` header),
+  not `:1`. Display-only; nothing hashed or POSTed changed.
+- **`TRUNCATE` in prose no longer fires `sql_risk` (A3):** comment and
+  plain-string text is blanked before matching (f-strings and interpolated
+  templates stay raw, so real injection shapes still fire). `TRUNCATE TABLE`
+  still floors via `migration_destructive`.
+- **`package.json` fires only on dependency-shaped lines (A4):** scripts- and
+  metadata-only edits stop firing the `dependency` signal; version-spec /
+  resolution-protocol adds still fire (new `dependency_manifest_js` signal,
+  path-gated to `package.json`).
+- **The commit gate prints `target_hunk_hashes` (A5):** floor commit blocks
+  now carry the hashes `confirm_floor` needs, ending the `no_binding`
+  dead-end on comment-drifted diffs.
+- Review responses gain `degraded_reason` (A7) naming why a panel was
+  degraded, and the gate-selfcheck asserts the unified coverage contract.
+
+**Installer (`npx @truverifai/init`) — consent-first (B2)**
+- `init` now prints a full plan of everything it will write for YOUR machine
+  and asks ONCE before touching anything (rules consent folded in). New
+  flags: `--dry-run` (plan only, zero writes), `--only <agents>`,
+  `--skip <agents,hook,rules>`, `--yes` (non-interactive). Declining exits
+  with nothing written.
+- Git preflight: `git` is verified by EXECUTION (`git --version`), not
+  existence, so a broken shim can't silently disable the pre-commit gate;
+  a no-git machine gets a clear manifest line instead of a silent skip.
+- Claude Code desktop app (no CLI): setup stages the marketplace
+  (`extraKnownMarketplaces`) and prints the one in-app step to finish
+  (+ button, then Plugins) instead of failing.
+- `doctor`: the `[gate endpoint]` row no longer false-FAILs on a healthy
+  install; new `[git]` headline row; a staged desktop install reports as
+  STAGED (warn), not broken.
+
+**Complete uninstall (A8) — BEHAVIOR CHANGE for scripts/CI**
+- `uninstall` now also: revokes the API key server-side (new
+  `POST /v1/keys/self/revoke`; fail-open if the server is unreachable),
+  clears the plugin token from the macOS Keychain (edits our leaf only),
+  and deletes the `.tvai-bak` backups once the live files are verified
+  clean.
+- **`uninstall` and `logout` now exit NONZERO when secret-bearing residue
+  remains**, with a "needs your attention" list naming exactly what was
+  left and why. Scripts that assumed exit 0 unconditionally should check
+  their handling. Silence still means clean.
+- Hardening from the pre-release adversarial review: per-file guarded
+  removals (one unreadable config no longer aborts the rest), tri-state
+  macOS Keychain handling (only "item not found" reads as absent),
+  revocation always uses the stored key and warns when
+  `TRUVERIFAI_API_KEY` diverges, and `--only vscode` no longer strands a
+  repo-committed Copilot gate.
+
 ## 0.19.45 (gate-self floor unification)
 - **Gate-self is now an ordinary hard floor (`gate_self`), not a separate
   un-skippable tier.** The bespoke `gself:` whole-diff coverage hash, the

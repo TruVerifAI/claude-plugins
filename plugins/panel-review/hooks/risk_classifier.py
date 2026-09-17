@@ -646,24 +646,35 @@ def _parse_hunk_header(line):
 
 
 def _iter_file_hunks(diff_text):
-    """Yield (path, added_lines, removed_lines, structural) per hunk. `structural` is the parsed
-    @@ position dict (or None for a header that doesn't parse / pre-Phase-9.1 callers ignore it)."""
+    """Yield (path, added_lines, removed_lines, structural, linenos) per hunk. `structural` is the
+    parsed @@ position dict (or None for a header that doesn't parse / pre-Phase-9.1 callers ignore
+    it). `linenos` (fix A1, wrong-line-number deny messages) is {"added": [...], "removed": [...]}:
+    the 1-based FILE line of each added line (new-file side) / removed line (old-file side),
+    parallel to `added`/`removed`; entries are None when the @@ header didn't parse. DISPLAY-ONLY
+    metadata — it feeds matched.file_line for the local deny message and never enters any hash,
+    receipt, structural comparison, or coverage POST."""
     path = None
     old_path = None
     added = []
     removed = []
+    added_ln = []
+    removed_ln = []
+    new_ln = None
+    old_ln = None
     in_hunk = False
     ranges = None
     results = []
 
     def flush():
         if path and (added or removed):
-            results.append((path, list(added), list(removed), ranges))
+            results.append((path, list(added), list(removed), ranges,
+                            {"added": list(added_ln), "removed": list(removed_ln)}))
 
     for line in diff_text.splitlines():
         if line.startswith("diff --git"):
             flush()
             added, removed = [], []
+            added_ln, removed_ln = [], []
             path = None
             old_path = None
             in_hunk = False
@@ -686,6 +697,7 @@ def _iter_file_hunks(diff_text):
             # separators — it's the only inter-file boundary in that format.
             flush()
             added, removed = [], []
+            added_ln, removed_ln = [], []
             ranges = None
             p = line[4:].strip()
             if p.startswith("b/"):
@@ -696,15 +708,32 @@ def _iter_file_hunks(diff_text):
         if line.startswith("@@"):
             flush()
             added, removed = [], []
+            added_ln, removed_ln = [], []
             ranges = _parse_hunk_header(line)
+            new_ln = ranges["new_start"] if ranges else None
+            old_ln = ranges["old_start"] if ranges else None
             in_hunk = True
             continue
         if not in_hunk:
             continue
         if line.startswith("+"):
             added.append(line[1:])
+            added_ln.append(new_ln)
+            if new_ln is not None:
+                new_ln += 1
         elif line.startswith("-"):
             removed.append(line[1:])
+            removed_ln.append(old_ln)
+            if old_ln is not None:
+                old_ln += 1
+        elif line.startswith("\\"):
+            pass  # "\ No newline at end of file" marker — occupies no file line on either side
+        else:
+            # Context line: present in both the old and the new file.
+            if new_ln is not None:
+                new_ln += 1
+            if old_ln is not None:
+                old_ln += 1
     flush()
     return results
 
@@ -898,7 +927,7 @@ def diff_is_inert(diff_text):
     Used by the gate-self trivial-edit skip (increment 5): a comment/whitespace-only edit to a
     NON-gate-core gate-self file releases without a full review."""
     saw_hunk = False
-    for path, added, removed, _r in _iter_file_hunks(diff_text or ""):
+    for path, added, removed, _r, _ln in _iter_file_hunks(diff_text or ""):
         saw_hunk = True
         if not _hunk_is_inert(path, added, removed):
             return False
@@ -954,7 +983,7 @@ def gate_self_coverage_hash(diff_text):
     them would collide on coverage — accepted as a known edge, not a security gap.
     """
     segments = {}
-    for path, added, removed, _r in _iter_file_hunks(diff_text):
+    for path, added, removed, _r, _ln in _iter_file_hunks(diff_text):
         norm_path = (path or "").replace("\\", "/")
         if not _GATE_SELF_PATHS.search(norm_path):
             continue
@@ -1263,17 +1292,19 @@ def _signal_hit(patterns, skeleton_idx, value_filter_idx, raw_lines, sk_lines):
 
 
 def _signal_first_match(signal, path, added, removed, sk_added, sk_removed):
-    """Return (token, line_no) for the first pattern of `signal` that fires — the matched
-    substring and the 1-based line index within the hunk side (line_no is None for a
-    path-match signal). CLIENT-SIDE TRANSPARENCY ONLY (Fix 2A): this returns source text used
-    to build the LOCAL deny message; it is NEVER added to the coverage POST (_hunk_evidence
-    sends hashes only). Mirrors _signal_hit's skeleton/value-filter logic so the reported span
-    is the one that actually fired."""
+    """Return (token, line_no, side) for the first pattern of `signal` that fires — the matched
+    substring, the 1-based line index within the hunk side, and which side ("added"/"removed")
+    it matched on (line_no and side are None for a path-match signal). `side` (fix A1) lets the
+    caller map line_no to a real FILE line via the hunk's linenos lists. CLIENT-SIDE TRANSPARENCY
+    ONLY (Fix 2A): this returns source text used to build the LOCAL deny message; it is NEVER
+    added to the coverage POST (_hunk_evidence sends hashes only). Mirrors _signal_hit's
+    skeleton/value-filter logic so the reported span is the one that actually fired."""
     # M1 signals (all_of / and_not_added) fire via the file-aware pass, not patterns[]/skeleton —
     # report the first co-occurrence match on the signal's match side so the deny line points at
     # real code (Rule 8: mirror the firing logic). all_of => first match of any group; and_not_added
     # => first match of the removed alternation (which lives in patterns[]).
     if signal.get("is_m1"):
+        side = "removed" if signal["match"] == "removed" else "added"
         lines = removed if signal["match"] == "removed" else added
         groups = signal["all_of"] if signal["all_of"] else [signal["patterns"]]
         for group in groups:
@@ -1281,8 +1312,8 @@ def _signal_first_match(signal, path, added, removed, sk_added, sk_removed):
                 for idx, ln in enumerate(lines):
                     hit = pat.search(ln)
                     if hit:
-                        return (hit.group(0), idx + 1)
-        return (None, None)
+                        return (hit.group(0), idx + 1, side)
+        return (None, None, None)
     m = signal["match"]
     if m == "path":
         # Normalize separators before matching (Layer 0b, custom-floor `^file$`
@@ -1295,8 +1326,9 @@ def _signal_first_match(signal, path, added, removed, sk_added, sk_removed):
         for pat in signal["patterns"]:
             hit = pat.search(norm_path)
             if hit:
-                return (hit.group(0), None)
-        return (None, None)
+                return (hit.group(0), None, None)
+        return (None, None, None)
+    side = "removed" if m == "removed" else "added"
     raw, sk = (removed, sk_removed) if m == "removed" else (added, sk_added)
     skmatch = signal["skeleton_match"]
     vfilter = signal["value_filter_patterns"]
@@ -1308,8 +1340,8 @@ def _signal_first_match(signal, path, added, removed, sk_added, sk_removed):
             if hit:
                 if vf and not _has_real_secret_value(ln):
                     continue
-                return (hit.group(0), idx + 1)
-    return (None, None)
+                return (hit.group(0), idx + 1, side)
+    return (None, None, None)
 
 
 def _resolve_m1_signals(parsed_hunks, file_content_fetcher=None):
@@ -1318,7 +1350,7 @@ def _resolve_m1_signals(parsed_hunks, file_content_fetcher=None):
     The returned fires are merged into that hunk's verdict as ordinary trigger-class signals, so
     scoring / hashing / floor-derivation all reuse the existing per-hunk path.
 
-    `parsed_hunks` is the materialized list of (path, added, removed, structural) tuples.
+    `parsed_hunks` is the materialized list of (path, added, removed, structural, linenos) tuples.
 
     - **and_not_added** (match:"removed"): fires on a hunk whose REMOVED lines match `patterns`,
       UNLESS an equivalent is re-added anywhere in the SAME FILE's added lines (patch-wide union
@@ -1339,7 +1371,7 @@ def _resolve_m1_signals(parsed_hunks, file_content_fetcher=None):
     fires = {}
     failsafe_names = []
     by_path = {}
-    for i, (path, _a, _r, _hr) in enumerate(parsed_hunks):
+    for i, (path, _a, _r, _hr, _ln) in enumerate(parsed_hunks):
         by_path.setdefault(path, []).append(i)
 
     for path, idxs in by_path.items():
@@ -1629,13 +1661,16 @@ def _classify_hunk(path, added, removed, trigger_threshold=None, extra_fired=Non
     # Client-side only: not added to _hunk_evidence, so it never leaves the machine at fire time.
     matched = None
     if deciding_signal is not None:
-        mtoken, mline = _signal_first_match(
+        mtoken, mline, mside = _signal_first_match(
             deciding_signal, path, added, removed, sk_added, sk_removed)
         if cat in _SECRET_CATS:
             mtoken = None
         if mtoken or mline:
+            # `side` (fix A1): which hunk side `line` indexes into, so classify_diff can map
+            # it to a real file line (matched.file_line) via the hunk's linenos lists.
             matched = {"signal": deciding_signal["name"],
-                       "token": (mtoken[:80] if mtoken else None), "line": mline}
+                       "token": (mtoken[:80] if mtoken else None), "line": mline,
+                       "side": mside}
     return {
         "category": cat,
         "confidence": confidence,
@@ -1717,7 +1752,7 @@ def classify_diff(diff_text, trigger_threshold=None, file_content_fetcher=None,
     if _CFG.get("has_m1"):
         m1_by_hunk, m1_failsafe = _resolve_m1_signals(parsed, file_content_fetcher)
 
-    for hidx, (path, added, removed, hrange) in enumerate(parsed):
+    for hidx, (path, added, removed, hrange, hlinenos) in enumerate(parsed):
         verdict = _classify_hunk(path, added, removed, trigger_threshold=trigger_threshold,
                                  extra_fired=m1_by_hunk.get(hidx),
                                  custom_signals=custom_signals)
@@ -1755,6 +1790,18 @@ def classify_diff(diff_text, trigger_threshold=None, file_content_fetcher=None,
                 verdict["signals"] = sorted(set(verdict["signals"]) | {"gate_self_path"})
         if verdict is None:
             continue
+        # Fix A1 (wrong-line-number deny messages): map matched.line — a 1-based index within
+        # the hunk SIDE's added/removed list — to the real FILE line via the parser's linenos,
+        # so the deny message can print path:<file line> instead of path:<hunk index> (which
+        # rendered as file:1 for the first flagged line of any hunk). Additive display-only
+        # field; `line` is kept unchanged for any consumer of the old shape, and nothing here
+        # enters a hash, receipt, or POST.
+        m = verdict.get("matched")
+        if m and m.get("line") and m.get("side"):
+            lns = (hlinenos or {}).get(m["side"]) or []
+            li = m["line"] - 1
+            if 0 <= li < len(lns) and lns[li] is not None:
+                m["file_line"] = lns[li]
         verdicts.append(verdict)
         hunks.append({
             "path": path,
@@ -1795,7 +1842,7 @@ def classify_diff(diff_text, trigger_threshold=None, file_content_fetcher=None,
     # Sentinel-gated like the rest of the pass — unreachable for legacy callers, and a
     # non-gate-self hunkless path (any ordinary rename) never enters the loop.
     if gate_self_sentinel is not None:
-        hunked_paths = {p for (p, _a, _r, _hr) in parsed}
+        hunked_paths = {p for (p, _a, _r, _hr, _ln) in parsed}
         for gp in sorted({p for p in _diff_paths(diff_text or "")
                           if p and p != "/dev/null"
                           and p not in hunked_paths

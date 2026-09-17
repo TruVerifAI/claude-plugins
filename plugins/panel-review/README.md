@@ -65,6 +65,12 @@ Submit each of these slash commands on its own — Claude Code parses one slash 
 
 ## Uninstall
 
+The commands below remove only this Claude Code plugin. For a **complete**
+removal — the gate code, every platform's hook and tool configs, the git
+pre-commit hook, your key file, plus server-side revocation of the API key —
+run `npx @truverifai/init uninstall`; it lists anything it could not remove
+and exits nonzero if secret-bearing residue remains.
+
 To remove the plugin, submit each slash command on its own:
 
 ```
@@ -178,7 +184,7 @@ One command sets up every supported platform — Codex CLI, Gemini CLI, Cursor (
 npx @truverifai/init
 ```
 
-It connects the review tools (MCP), installs the gate code, writes each platform's hook config (user- or repo-level as that platform requires), and offers the proactive-invocation rules. `npx @truverifai/init doctor` verifies gates and tools separately per platform. Full per-platform walkthroughs: https://truverif.ai/settings/mcp.
+It shows a plan of everything it will write for your machine and asks once before touching anything (`--dry-run` previews; `--only claude,codex` / `--skip gemini,hook,rules` scope it). Then it connects the review tools (MCP), installs the gate code, writes each platform's hook config (user- or repo-level as that platform requires), and offers the proactive-invocation rules. `npx @truverifai/init doctor` verifies gates and tools separately per platform. Full per-platform walkthroughs: https://truverif.ai/settings/mcp.
 
 The review gates and the post-commit backstop were live-certified on all of the platforms above (2026-08). Cursor note: skills don't auto-activate there (invoke `/skill-name` manually); the rules file init writes covers proactive invocation instead.
 

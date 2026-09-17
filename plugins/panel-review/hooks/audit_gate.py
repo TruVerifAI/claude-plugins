@@ -11,6 +11,7 @@ the gate never traps the agent. The `recent_pass` escape valve prevents a
 hash-misalignment deadlock.
 """
 
+import json
 import os
 import sys
 
@@ -125,6 +126,18 @@ def main():
         # recorded hunks — a cosmetically-drifted gate_diff (a smart-quote, an em-dash an LLM
         # courier mangled) then still releases the change instead of silently missing coverage.
         gcid_line = f'  gate_context_id = "{gcid}"  (binds coverage to THIS change)\n' if gcid else ""
+        # Fix A5 (2026-09-16, external tester): the COMMIT gate now prints target_hunk_hashes,
+        # exactly like the write gate (deliberate_gate.py). Without it, a commit-gate caller had
+        # only the hash/structural fallbacks — and the normalized hash deliberately KEEPS comment
+        # text (risk_classifier NORM contract), so a comment-only reword between fire and
+        # confirm_floor bound nothing (`no_binding`) and wasted the free call. Forwarding these
+        # hashes binds deterministically with drift FLAGGED, not dropped. ALL risky hunks, not
+        # just floor ones (the 2026-07-12 floor-only-list deadlock applies here identically).
+        all_hashes = [h["content_hash"] for h in classification.get("hunks", [])
+                      if h.get("content_hash")]
+        thh_line = ("  target_hunk_hashes = %s\n" % json.dumps(all_hashes)) if all_hashes else ""
+        thh_note = ("Copy `target_hunk_hashes` verbatim — it binds coverage to this change's "
+                    "hunks, so a cosmetically-drifted diff still releases.\n") if all_hashes else ""
         # Wave 3 (§3.3): a MERGE commit re-presents branch content whose per-commit
         # receipts don't hash-match the merge diff's re-hunked boundaries. Offer the
         # first-class merge release instead of teaching the accept-risk + external-review
@@ -146,7 +159,7 @@ def main():
             "Run `audit_coding` with your proposed_action + relevant_code, AND pass:\n"
             f'  gate_repo = "{repo}"\n'
             f"  gate_diff = the change being committed (run: {diff_cmd})\n"
-            + staging_note + gcid_line + merge_line +
+            + staging_note + gcid_line + thh_line + thh_note + merge_line +
             "A PASS — a review whose final action is proceed/proceed_with_caveats; a major "
             "finding raises the action past that — releases the commit on retry. It covers FLOOR "
             "and non-floor hunks alike, so "

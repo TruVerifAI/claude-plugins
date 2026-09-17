@@ -63,14 +63,32 @@ def main():
         print("      The gates will FAIL OPEN - they are NOT enforcing until this "
               "is fixed.")
         return 1
-    if resp.get("covered") is not True or resp.get("gate_self_coverage") is not True:
-        # gate_self_coverage proves the empty-hunks SHORT-CIRCUIT path answered
-        # (audit mcp_a5ee7682 F-004) - an incidental covered:true from another
-        # branch must not pass the self-check.
+    # Unified-contract shape proof (DOCTOR-GATE-ENDPOINT-FALSE-FAIL, 2026-09-16):
+    # the empty-hunks SHORT-CIRCUIT returns exactly
+    #     {"covered": true, "uncovered": [], "recent_pass": <bool>}
+    # (mcp_user_routes.py, gate-self floor unification 2026-08-27). The old
+    # assertion also required the `gate_self_coverage` capability flag, which
+    # that unification DELIBERATELY retired server-side - so from the 0.19.45
+    # bundles against prod, every doctor run failed this row in red while the
+    # gates were healthy and denying. `uncovered == []` plus the presence of
+    # `recent_pass` still proves the coverage short-circuit answered (not an
+    # incidental covered:true from another branch - the original point of
+    # audit mcp_a5ee7682 F-004); the retired flag must NOT be re-required,
+    # and the server must not re-emit it (it would re-arm the stale-hook
+    # `gself:` capability probe the unification retired on purpose).
+    # `recent_pass` is checked by PRESENCE, deliberately (audit F-004 follow-up):
+    # its VALUE (true/false) reports recent gate activity, which is not what this
+    # row proves - presence is the forward-compatible proof the short-circuit
+    # branch answered.
+    if (resp.get("covered") is not True
+            or resp.get("uncovered") != []
+            or "recent_pass" not in resp):
         print(f"FAIL: unexpected gate-endpoint response: {resp!r}")
         return 1
-    print("PASS: gate endpoint reachable and authorized "
-          f"(gate_self_coverage={resp.get('gate_self_coverage')})")
+    # recent_pass=False here is NORMAL (no recent review in the window), not a
+    # fault - the row proves reachability + response shape, not gate activity.
+    print("PASS: gate endpoint reachable and coverage shape valid "
+          f"(recent_pass={resp.get('recent_pass')} - informational only)")
     return 0
 
 

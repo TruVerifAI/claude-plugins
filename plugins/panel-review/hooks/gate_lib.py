@@ -1793,7 +1793,15 @@ def transparency_block(classification, check_response, max_items=8):
         cat = h.get("category") or "risk"
         path = h.get("path") or "?"
         m = h.get("matched") or {}
-        ln = m.get("line")
+        # Fix A1: `file_line` is the real file line (mapped from the @@ header by the
+        # classifier); `line` is the legacy hunk-side index, kept as a fallback so an
+        # old classifier's output still renders. Real line numbers make the deny
+        # message's `path:N` reference actually land on the flagged code.
+        # Explicit is-not-None (audit F-005): never let a falsy-but-present value
+        # silently fall through to the legacy index.
+        ln = m.get("file_line")
+        if ln is None:
+            ln = m.get("line")
         tok = m.get("token")
         loc = "%s:%s" % (path, ln) if ln else path
         lines.append(("  - %s - matched `%s` at %s" % (cat, tok, loc)) if tok
