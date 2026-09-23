@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.19.49 (fail-open advisories say what to do; init respects every flag)
+
+Backlog burn-down for the 0.19.47 feedback wave (items 11, 12, 13, 16,
+17, 18, 20, 21). Client half of the release; the matching server deploy
+ships the gate-skip error-copy fixes (16, 17) and the confirm_floor
+contract copy (21).
+
+- **Fail-open advisories now carry the diagnosis and a class-matched
+  remedy (item 18, owner ruled).** When a gate cannot run, the advisory
+  the agent sees no longer says a generic "re-run init": it names the
+  actual failure (no Python, dead gate script, crash detail) and the
+  one remedy that fixes that class, phrased for the agent to relay to
+  the user ("Tell the user: install Python 3 ...", reinstall, or run
+  doctor and share the output).
+- **`npx @truverifai/init --version` prints the version instead of
+  running a full install (item 20).** Any unknown top-level flag now
+  exits 2 with a corrective message and writes nothing; the known init
+  flags are validated up front.
+- **`--only`/`--skip` name components as components (item 13).**
+  `--only hook` says hook is a component controlled with `--skip`, and
+  a mixed bad list reports every problem class in one message.
+- **Doctor's codex tools row checks config loadability first (item
+  11).** A config codex itself cannot parse no longer shows a green
+  "tools connected" under the row calling the same file unloadable.
+- **Re-running init actually bumps the codex plugin (item 12).** Codex
+  has no update verb, so init now refreshes an existing install by
+  remove + re-add (marketplace snapshot included), with teardown gated
+  on an already-exists failure so network/auth errors never remove a
+  working marketplace.
+- **Skip-gate skill copy: truncated-id guidance (items 16, 17, 21).**
+  The skill now says gate_context_ids are exactly gc_ + 32 hex and must
+  be forwarded verbatim (never reconstructed), names the two id-free
+  recoveries when a skip dead-ends, and tells floor tools to forward
+  BOTH printed lines (id + target_hunk_hashes), always.
+
 ## 0.19.48 (gates-off is silent and honest)
 
 Fixes from a live external incident (Cursor/Windows, diagnostics

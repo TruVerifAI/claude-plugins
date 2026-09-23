@@ -59,11 +59,14 @@ much higher than ~15s–5min of review.
      `time_critical_hotfix`) at the write/commit gates**; a 1-sentence reason. General terms
      only — no secrets, file paths, or proprietary identifiers (same privacy rule as
      `record_outcome`).
-   - `gate_context_id` — **REQUIRED. Copy it verbatim.** It is single-use and short-lived: if
-     it's expired or already used, just re-run the original action so the gate issues a fresh
-     one. There is **no way to skip without it** — if the gate message has no id (rare: it
-     couldn't mint one), don't skip. Run `audit_coding` with `gate_repo` + `gate_diff`; a PASS
-     releases the change, floor and non-floor hunks alike. You are not stuck.
+   - `gate_context_id` — **REQUIRED. Copy it verbatim — never reconstruct one from memory.**
+     Issued ids are exactly `gc_` + 32 hex characters; if the id in your context looks shorter,
+     it was truncated (a compacted transcript does this) and the server will say so. It is
+     single-use and short-lived: if it's expired, already used, or not found, **two recoveries
+     need no id at all** — re-run the original action so the gate issues a fresh one, or run
+     `audit_coding` with `gate_repo` + your real `gate_diff` (a PASS releases by content
+     coverage). If the gate message has no id (rare: it couldn't mint one), don't skip — use the
+     `audit_coding` path. You are not stuck.
    - Optionally the `gate_signal` fields (`classifier_version` / `score` / `risk_categories`) —
      forwarding them sharpens the data that tunes the classifier.
 
@@ -163,16 +166,18 @@ skip.
 release tool reported success and the uncovered count did not move, you cleared the wrong bucket;
 you are not deadlocked — clear the other one.
 
-To release a floor change, **match the tool to your situation** and forward the `gate_context_id` the
-gate printed (coverage then binds to the gate's own hunks, so a cosmetically drifted `gate_diff` still
-releases); when the block printed a `target_hunk_hashes = [...]` line (write and commit gates both
-do), also forward it so coverage binds deterministically to exactly those hunks.
+To release a floor change, **match the tool to your situation** and forward BOTH the
+`gate_context_id` AND the `target_hunk_hashes = [...]` line the gate printed (write and commit gates
+both print them). The hashes are the deterministic binding tier — with them, coverage binds to
+exactly the gate's own recorded hunks even when your `gate_diff` is cosmetically drifted. The id
+alone binds only when your `gate_diff` genuinely overlaps the fire's hunks, so a summarized or
+hand-assembled diff without the hashes returns `no_binding` — never omit them.
 - **A genuine floor change you want reviewed → `audit_coding`** (same args); a PASS releases it. This
   is the **recommended** path for a real auth/secrets/money/migration/guard/gate-self change.
   (`deliberate_coding` is only for a still-open design; it does not release a floor change.)
 - **You believe the gate mis-fired (a false positive — an auth word in a comment, a rename, a test
   fixture) → `confirm_floor` (FREE).** Run `confirm_floor` (`gate_repo` / `gate_diff` /
-  `gate_context_id`, plus `target_hunk_hashes` when the block printed one). It runs ONE cheap model;
+  `gate_context_id` / `target_hunk_hashes` — always all four). It runs ONE cheap model;
   if it agrees the change is token-shape noise it releases the gate. Material / uncertain /
   non-floor → it releases nothing (run `audit_coding`). For a broader multi-model read, run
   `synthesize_coding` (same args; ~15–30s) — it releases only if the panel agrees it's low-risk.

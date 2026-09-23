@@ -148,7 +148,42 @@ function emitModelAdvisory(text) {
   }
 }
 
-function giveUp(reason, detail) {
+// Backlog #18 (owner ruled 2026-09-23): a fail-open advisory that only says
+// "re-run init" is a dead end when init cannot fix the cause — the launcher
+// KNOWS the failure class at give-up time, so the advisory carries the
+// class-matched remedy, phrased for the agent to RELAY to the human. The
+// remedy text is user-facing copy (through the agent): plain punctuation,
+// no em dashes, concrete actions.
+const REMEDY_REINSTALL =
+  "run `npx @truverifai/init@latest` to repair the TruVerifAI install";
+const REMEDY_INSTALL_PYTHON =
+  "install Python 3 (from python.org, or on Windows: winget install "
+  + "Python.Python.3.12), then run `npx @truverifai/init@latest`. The review "
+  + "gates need Python and none was found on this machine";
+const REMEDY_PYTHON_BROKEN =
+  "run `npx @truverifai/init@latest`; if this repeats, this machine's Python "
+  + "installation is damaged and needs reinstalling (then run init again)";
+const REMEDY_REPORT =
+  "run `npx @truverifai/init doctor` and share its output with TruVerifAI "
+  + "(https://truverif.ai/settings/mcp) so we can diagnose it";
+
+/** Bounded detail for the advisory: code-point-safe (Array.from — a UTF-16
+ *  slice could split a surrogate pair in a non-Latin path) and MARKED when
+ *  cut, so a partial errno/path never reads as complete (audit
+ *  mcp_2fbe663a F-003). */
+function capDetail(s, n) {
+  const chars = Array.from(String(s));
+  return chars.length > n ? chars.slice(0, n).join("") + "[truncated]" : String(s);
+}
+
+// The remedy param is a COMPATIBILITY fallback, not a classification: every
+// current call site passes its class's remedy explicitly (audited, audit
+// mcp_2fbe663a F-002). A future call site that omits it gets the reinstall
+// default — right for damaged-install classes, WRONG for unknown-cause
+// classes — so new give-ups must pass their remedy explicitly.
+function giveUp(reason, detail, remedy) {
+  const fix = remedy || REMEDY_REINSTALL;
+  const why = reason + (detail ? " (" + capDetail(detail, 160) + ")" : "");
   try {
     // Do NOT clobber an existing reason. When a repair ran, resolve_python has
     // already recorded the per-candidate detail ("py: not installed; python3:
@@ -162,15 +197,15 @@ function giveUp(reason, detail) {
   }
   try {
     process.stderr.write(
-      "TruVerifAI: the gates are NOT running — " + reason +
-      ". Fix: npx @truverifai/init@latest\n"
+      "TruVerifAI: the gates are NOT running — " + why +
+      ". Tell the user: " + fix + "\n"
     );
   } catch (e) {
     /* stderr may be closed */
   }
   emitModelAdvisory(
-    "TruVerifAI: the gate could not run (" + reason + ") — this action was "
-    + "NOT gated (fail-open). Tell the user; re-run npx @truverifai/init@latest to repair.");
+    "TruVerifAI: the gate could not run (" + why + ") — this action was "
+    + "NOT gated (fail-open). Tell the user: " + fix + ".");
 }
 
 /** Mark / clear "this GATE SCRIPT crashes with a healthy interpreter" on the
@@ -227,15 +262,20 @@ function main() {
   if (!R) {
     // Finding A: the resolver module is missing or unloadable. Everything this
     // file could do next needs it, so this is a give-up — but a LOUD one, and
-    // through the fail-open exit, never a module-load crash.
+    // through the fail-open exit, never a module-load crash. #18: the agent
+    // gets the same diagnosis + remedy as every other give-up class.
     try {
       process.stderr.write(
         "TruVerifAI: the gates are NOT running — resolve_python.js is missing or "
         + "unreadable beside run_gate.js (a damaged install). "
-        + "Fix: npx @truverifai/init@latest\n");
+        + "Tell the user: " + REMEDY_REINSTALL + "\n");
     } catch (e) {
       /* stderr may be closed */
     }
+    emitModelAdvisory(
+      "TruVerifAI: the gate could not run (gate code is damaged: "
+      + "resolve_python.js is missing beside run_gate.js) — this action was "
+      + "NOT gated (fail-open). Tell the user: " + REMEDY_REINSTALL + ".");
     return;
   }
 
@@ -257,7 +297,11 @@ function main() {
           : rec && rec.python
             ? "the recorded Python is gone and could not be replaced"
             : "no Python interpreter has been recorded",
-        rec && rec.python ? String(rec.python) : ""
+        rec && rec.python ? String(rec.python) : "",
+        // #18: "re-run init" cannot conjure an interpreter — the remedy for
+        // this class is installing Python. (When one exists but repair is in
+        // back-off, init still fixes it, and the remedy says to run it too.)
+        REMEDY_INSTALL_PYTHON
       );
       return; // fail OPEN — the agent is never trapped by our own breakage
     }
@@ -323,7 +367,7 @@ function main() {
     }
     emitModelAdvisory(
       "TruVerifAI: " + script + " exited without producing a decision — this "
-      + "action was NOT gated (fail-open). Tell the user; re-run npx @truverifai/init@latest.");
+      + "action was NOT gated (fail-open). Tell the user: " + REMEDY_REINSTALL + ".");
     return true;
   };
   if (handlePipeBreak(r)) return;
@@ -362,7 +406,7 @@ function main() {
     if (r.stderr) process.stderr.write(r.stderr);
     emitModelAdvisory(
       "TruVerifAI: " + script + " is crashing (known, repair suppressed) — this "
-      + "action was NOT gated (fail-open). Tell the user; re-run npx @truverifai/init@latest.");
+      + "action was NOT gated (fail-open). Tell the user: " + REMEDY_REINSTALL + ".");
     return;
   }
 
@@ -371,14 +415,19 @@ function main() {
                         : "exited " + r.status + " with no output";
     const fixed = repair();
     if (!fixed) {
-      giveUp("the recorded Python could not run the gate", why);
+      giveUp("the recorded Python could not run the gate", why,
+             REMEDY_PYTHON_BROKEN);
       return;
     }
     r = spawnSync(fixed, [gate], opts);
     if (handlePipeBreak(r)) return; // ran-but-didn't-drain ≠ launch failure
     if (r.error) {
+      // #18: repair just re-verified the interpreter and the spawn STILL
+      // errored — an unknown-cause class no local action reliably fixes, so
+      // the honest remedy is doctor + report (the errno rides in `why`).
       giveUp("the gate could not be launched after repair",
-             String((r.error && r.error.code) || r.error));
+             String((r.error && r.error.code) || r.error),
+             REMEDY_REPORT);
       return;
     }
     if (startedButFailed && failedSilently(r)) {
@@ -401,8 +450,8 @@ function main() {
       }
       emitModelAdvisory(
         "TruVerifAI: " + script + " could not run (interpreter is healthy — the gate "
-        + "script is broken). This action was NOT gated (fail-open). Tell the user; "
-        + "re-run npx @truverifai/init@latest to repair.");
+        + "script is broken). This action was NOT gated (fail-open). Tell the "
+        + "user: " + REMEDY_REINSTALL + ".");
     }
   } else if (r.status === 0 && rec && rec.gateCrash && rec.gateCrash.script === script) {
     clearGateCrash(rec, script); // the script works again — lift the suppression
