@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.19.48 (gates-off is silent and honest)
+
+Fixes from a live external incident (Cursor/Windows, diagnostics
+2026-09-22): with the gates switched off machine-wide, every large write
+raised a false "the gate could not be launched after repair" (EOF)
+fail-open alarm and looped through pointless repairs, and doctor painted
+a wall of red for a healthy install in a deliberately-off state.
+Client-only; no server change.
+
+- **A disabled gate is silent on writes of any size.** The gate scripts
+  now drain their stdin payload before the enabled/token early exit, so a
+  large write can no longer break the pipe (the source of the EOF error).
+- **The launcher no longer mistakes "the gate ran and exited" for "the
+  gate could not be launched."** A stdin-pipe break (EOF/EPIPE) is judged
+  by the gate's output and exit status: clean exits pass through quietly;
+  a genuine crash is marked as a script problem (with back-off), never
+  fed to the interpreter-repair loop that re-fired forever.
+- **A healthy gate run clears a stale failure-reason file**, so a past
+  false alarm stops haunting doctor (previously only a repair cleared it).
+- **doctor presents gates-off as a chosen state:** one informational line
+  ("SKIPPED: gates are OFF on this machine, a chosen state, not a
+  failure") instead of a wall of red enforcement rows and exit 1; the
+  nested-repo check explains a missing resolver log instead of a raw
+  ENOENT, and error details are no longer truncated mid-path.
+
 ## 0.19.47 (FW1 test-round fixes: sandbox-honest doctor, codex config repair, complete uninstall)
 
 Fixes found during the 0.19.46 prod test round (backlog:

@@ -22,10 +22,13 @@ from risk_classifier import classify_diff
 
 def main():
     cfg = g.config()
+    # Read stdin BEFORE the enabled/token check (gates-off EOF fix, 2026-09-22:
+    # exiting without draining the launcher's piped payload breaks the pipe on
+    # >~64KB payloads; spawnSync reports error EOF and run_gate misread the
+    # deliberate allow as a launch failure). See deliberate_gate.main.
+    inp = g.read_hook_input()
     if not cfg["enabled"] or not cfg["token"]:
         g.emit_allow()  # not configured → fail open
-
-    inp = g.read_hook_input()
     if inp.get("tool_name") != "Bash":
         # Observability for the PowerShell-bypass class (audit F-002,
         # 2026-08-03): a tool we don't recognize as a shell but whose input

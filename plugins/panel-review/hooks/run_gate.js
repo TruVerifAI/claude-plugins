@@ -280,6 +280,54 @@ function main() {
 
   let r = spawnSync(py, [gate], opts);
 
+  // stdin-pipe break (EOF on Windows, EPIPE on POSIX): the gate RAN and
+  // exited before draining the piped payload — NOT a launch failure. The
+  // legitimate producer is an early allow-exit (a disabled gate on pre-fix
+  // gate code) meeting a payload larger than the OS pipe buffer (~64KB);
+  // before this check, that combination raised a false "could not be
+  // launched after repair" fail-open alarm on every large write and looped
+  // through pointless repairs forever, because a successful repair reset
+  // the back-off counter each cycle (live incident, Cursor/Windows
+  // 2026-09). Judge the run by its OUTPUT and EXIT STATUS instead:
+  //  - stdout present, exit 0, the reserved DENY exit, or an unknowable
+  //    status -> pass through (an empty allow is a normal outcome);
+  //  - a real nonzero exit with no output -> the SCRIPT died mid-run: the
+  //    interpreter provably started, so mark the script crashing (the
+  //    gateCrash path) — never the interpreter-repair loop, which cannot
+  //    fix a script.
+  const pipeBrokeRes = (res) => !!(res.error &&
+    (res.error.code === "EOF" || res.error.code === "EPIPE"));
+  const handlePipeBreak = (res) => {
+    if (!pipeBrokeRes(res)) return false;
+    const out = String(res.stdout || "").trim();
+    const st = res.status;
+    if (out || st === 0 || st === DENY_STATUS || typeof st !== "number") {
+      if (res.stdout) process.stdout.write(res.stdout);
+      if (res.stderr) process.stderr.write(res.stderr);
+      FINAL_STATUS = (typeof st === "number") ? st : 0;
+      return true;
+    }
+    setGateCrash(script);
+    try {
+      R.writeReason("gate script exited without reading its input",
+                    script + " exited " + st + " with no output");
+    } catch (e) {
+      /* best effort */
+    }
+    try {
+      process.stderr.write(
+        "TruVerifAI: " + script + " exited " + st + " without reading its "
+        + "input — this gate is NOT enforcing. Fix: npx @truverifai/init@latest\n");
+    } catch (e) {
+      /* stderr may be closed */
+    }
+    emitModelAdvisory(
+      "TruVerifAI: " + script + " exited without producing a decision — this "
+      + "action was NOT gated (fail-open). Tell the user; re-run npx @truverifai/init@latest.");
+    return true;
+  };
+  if (handlePipeBreak(r)) return;
+
   // Is the recorded interpreter actually working?
   //
   // TWO shapes of "no", and we used to catch only the first:
@@ -327,6 +375,7 @@ function main() {
       return;
     }
     r = spawnSync(fixed, [gate], opts);
+    if (handlePipeBreak(r)) return; // ran-but-didn't-drain ≠ launch failure
     if (r.error) {
       giveUp("the gate could not be launched after repair",
              String((r.error && r.error.code) || r.error));
@@ -357,6 +406,19 @@ function main() {
     }
   } else if (r.status === 0 && rec && rec.gateCrash && rec.gateCrash.script === script) {
     clearGateCrash(rec, script); // the script works again — lift the suppression
+  }
+
+  // A healthy run also clears a stale failure reason, so doctor stops
+  // reporting an outage that has ended. Previously only a REPAIR cleared it,
+  // and a false alarm (the pipe-break misclassification above) could leave a
+  // "could not be launched" reason on disk indefinitely while every gate ran
+  // fine.
+  if (!r.error && (r.status === 0 || r.status === DENY_STATUS)) {
+    try {
+      if (R.hasReason()) R.clearReason();
+    } catch (e) {
+      /* best effort */
+    }
   }
 
   if (r.stdout) process.stdout.write(r.stdout);

@@ -41,10 +41,12 @@ def _record():
     import gate_lib as g
 
     cfg = g.config()
+    # Read stdin BEFORE the enabled check (gates-off EOF fix, 2026-09-22:
+    # an undrained pipe on a large payload surfaces as spawnSync error EOF
+    # in the launcher). See deliberate_gate.main.
+    inp = g.read_hook_input()
     if not cfg["enabled"] or not cfg["token"]:
         return  # feature off / not configured → nothing to stash
-
-    inp = g.read_hook_input()
     if inp.get("tool_name") != "Bash":
         return
     command = (inp.get("tool_input") or {}).get("command", "") or ""

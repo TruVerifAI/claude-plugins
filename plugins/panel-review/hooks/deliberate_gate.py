@@ -49,10 +49,17 @@ def _content_and_path(inp):
 
 def main():
     cfg = g.config()
+    # Read stdin BEFORE the enabled/token check (gates-off EOF fix, 2026-09-22).
+    # The launcher pipes the whole hook payload into stdin; exiting without
+    # draining it breaks the pipe on payloads over the OS buffer (~64KB), which
+    # Node's spawnSync surfaces as error EOF — run_gate then misread a
+    # deliberate "gates off" allow as "the gate could not be launched", looped
+    # through pointless repairs, and alarmed the user with fail-open advisories
+    # (live incident, Cursor/Windows). Reading first makes every early allow
+    # exit clean regardless of payload size, on every host and OS.
+    inp = g.read_hook_input()
     if not cfg["enabled"] or not cfg["token"]:
         g.emit_allow()
-
-    inp = g.read_hook_input()
     # Core vocabulary post-normalization: the host adapter has already mapped its
     # native write tools onto Write / Edit / MultiEdit / PrebuiltDiff (host/base).
     if inp.get("tool_name") not in ("Write", "Edit", "MultiEdit", "PrebuiltDiff"):

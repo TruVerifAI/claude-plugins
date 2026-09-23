@@ -49,9 +49,12 @@ def main():
     try:
         import gate_lib as g
         cfg = g.config()
+        # Read stdin BEFORE the enabled check (gates-off EOF fix, 2026-09-22:
+        # an undrained pipe on a large payload surfaces as spawnSync error EOF
+        # in the launcher). See deliberate_gate.main.
+        inp = g.read_hook_input()
         if not cfg["enabled"] or not cfg["token"]:
             return  # feature off / not configured
-        inp = g.read_hook_input()
         # Effective cwd — emulates workdir args / cd-chains / `git -C`, so the
         # backstop classifies the repo the commit actually landed in, not the
         # session root (the 2026-08-05 Codex incident: sub-repo commits made
